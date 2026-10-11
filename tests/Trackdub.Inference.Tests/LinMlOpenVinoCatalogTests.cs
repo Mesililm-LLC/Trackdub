@@ -86,10 +86,19 @@ public sealed class LinMlOpenVinoCatalogTests
         };
         using var options = new SessionOptions();
 
-        bool appended = new LinMlOpenVinoCatalog(new FakeCatalog(provider)).TryAppend(options, out string? reason);
+        bool appended = new LinMlOpenVinoCatalog(new FakeCatalog(provider)).TryAppend(options, cpuOnly: false, out string? reason);
 
         Assert.False(appended);
         Assert.False(string.IsNullOrWhiteSpace(reason));
+    }
+
+    [Fact]
+    public void Cpu_proxy_mode_prefers_only_the_cpu_device()
+    {
+        Assert.Equal([OrtHardwareDeviceType.CPU], LinMlOpenVinoCatalog.PreferredDeviceTypes(cpuOnly: true));
+        Assert.Equal(
+            [OrtHardwareDeviceType.NPU, OrtHardwareDeviceType.GPU, OrtHardwareDeviceType.CPU],
+            LinMlOpenVinoCatalog.PreferredDeviceTypes(cpuOnly: false));
     }
 
     private static ProviderEnsureResult Result(ProviderEnsureStatus status) =>

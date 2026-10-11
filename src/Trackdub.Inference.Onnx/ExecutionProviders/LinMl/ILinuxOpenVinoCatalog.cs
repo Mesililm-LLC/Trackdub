@@ -16,7 +16,10 @@ public interface ILinuxOpenVinoCatalog
 
     Task<LinuxOpenVinoCatalogResult> EnsureReadyAsync(bool allowDownloads, CancellationToken cancellationToken);
 
-    bool TryAppend(SessionOptions options, out string? failureReason);
+    /// <param name="cpuOnly">
+    /// OpenVINO CPU-proxy mode: append only the CPU device, matching the session pool's host-RAM accounting.
+    /// </param>
+    bool TryAppend(SessionOptions options, bool cpuOnly, out string? failureReason);
 }
 
 /// <summary>
@@ -33,7 +36,7 @@ internal sealed class UnavailableLinuxOpenVinoCatalog : ILinuxOpenVinoCatalog
     public Task<LinuxOpenVinoCatalogResult> EnsureReadyAsync(bool allowDownloads, CancellationToken cancellationToken) =>
         Task.FromResult(new LinuxOpenVinoCatalogResult(false, Reason));
 
-    public bool TryAppend(SessionOptions options, out string? failureReason)
+    public bool TryAppend(SessionOptions options, bool cpuOnly, out string? failureReason)
     {
         failureReason = Reason;
         return false;

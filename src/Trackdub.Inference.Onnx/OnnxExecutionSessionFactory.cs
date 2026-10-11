@@ -1623,7 +1623,8 @@ internal static class OnnxExecutionSessionFactory
     [System.Runtime.Versioning.SupportedOSPlatform("linux")]
     private static SessionOptionsSelection CreateLinuxOpenVinoSelection(SessionOptions options)
     {
-        if (!ExecutionProviders.LinMl.LinMlOpenVinoCatalog.Default.TryAppend(options, out string? failureReason))
+        if (!ExecutionProviders.LinMl.LinMlOpenVinoCatalog.Default.TryAppend(
+                options, cpuOnly: _openVinoAvailability.UseOpenVinoCpuProxy, out string? failureReason))
         {
             return new SessionOptionsSelection(
                 options,

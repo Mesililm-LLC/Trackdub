@@ -15,8 +15,13 @@ public sealed class LinMlOpenVinoCatalog : ILinuxOpenVinoCatalog
     internal static readonly TimeSpan DownloadTimeout = TimeSpan.FromMinutes(5);
 
     // NPU first, matching WinMlCatalogSessionOptionsExtensions.TryAppendOpenVinoCatalogProvider.
-    private static readonly OrtHardwareDeviceType[] PreferredDeviceTypes =
+    private static readonly OrtHardwareDeviceType[] AcceleratorFirst =
         [OrtHardwareDeviceType.NPU, OrtHardwareDeviceType.GPU, OrtHardwareDeviceType.CPU];
+
+    private static readonly OrtHardwareDeviceType[] CpuOnly = [OrtHardwareDeviceType.CPU];
+
+    internal static IReadOnlyList<OrtHardwareDeviceType> PreferredDeviceTypes(bool cpuOnly) =>
+        cpuOnly ? CpuOnly : AcceleratorFirst;
 
     public static LinMlOpenVinoCatalog Default { get; } = new(ExecutionProviderCatalog.GetDefault());
 
@@ -56,7 +61,7 @@ public sealed class LinMlOpenVinoCatalog : ILinuxOpenVinoCatalog
         }
     }
 
-    public bool TryAppend(SessionOptions options, out string? failureReason)
+    public bool TryAppend(SessionOptions options, bool cpuOnly, out string? failureReason)
     {
         ArgumentNullException.ThrowIfNull(options);
 
@@ -67,7 +72,7 @@ public sealed class LinMlOpenVinoCatalog : ILinuxOpenVinoCatalog
             return false;
         }
 
-        ProviderAppendResult appended = options.AppendFromCatalog(provider, PreferredDeviceTypes);
+        ProviderAppendResult appended = options.AppendFromCatalog(provider, PreferredDeviceTypes(cpuOnly));
         failureReason = appended.FailureReason;
         return appended.Appended;
     }

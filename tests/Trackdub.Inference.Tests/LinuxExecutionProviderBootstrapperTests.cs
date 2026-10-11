@@ -310,7 +310,7 @@ public sealed class LinuxExecutionProviderBootstrapperTests
             return Task.FromResult(new LinuxOpenVinoCatalogResult(isReady, isReady ? "stub: ready" : "stub: not ready"));
         }
 
-        public bool TryAppend(Microsoft.ML.OnnxRuntime.SessionOptions options, out string? failureReason)
+        public bool TryAppend(Microsoft.ML.OnnxRuntime.SessionOptions options, bool cpuOnly, out string? failureReason)
         {
             failureReason = isReady ? null : "stub: not ready";
             return isReady;
