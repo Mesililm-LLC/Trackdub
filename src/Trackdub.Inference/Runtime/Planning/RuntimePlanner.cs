@@ -436,6 +436,18 @@ public sealed class RuntimePlanner : IRuntimePlanner
             bool hasEligibleDevice = devicesByProvider.TryGetValue(availability.Provider, out var providerDevices)
                 && providerDevices.Any(device => !excludedIndices.Contains(device.DeviceIndex));
 
+            // The Linux OpenVINO catalog currently receives only device-type preferences,
+            // not the planner's selected device identity. If any OpenVINO-capable device is
+            // excluded, leaving OpenVINO available could make the catalog select that device
+            // despite an otherwise eligible device being present. Conservatively suppress the
+            // route until the identity can be carried through session creation.
+            if (availability.Provider is ExecutionProviderKind.OpenVino
+                && providerDevices is not null
+                && providerDevices.Any(device => excludedIndices.Contains(device.DeviceIndex)))
+            {
+                hasEligibleDevice = false;
+            }
+
             if (hasEligibleDevice)
             {
                 filtered.Add(availability);
