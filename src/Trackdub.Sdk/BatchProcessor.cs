@@ -151,13 +151,13 @@ public sealed class BatchProcessor
 
             if (cancellation is not null)
             {
-                skippedCount += MarkRemainingAsSkipped(mediaFiles, i + 1, outcomes, batchProgress);
+                skippedCount += MarkRemainingAsSkipped(mediaFiles, i + 1, outcomes, batchProgress, "Skipped due to cancellation.");
                 ExceptionDispatchInfo.Throw(cancellation);
             }
 
             if (outcome.Status == BatchFileStatus.Failed && !batchOptions.ContinueOnError)
             {
-                skippedCount += MarkRemainingAsSkipped(mediaFiles, i + 1, outcomes, batchProgress);
+                skippedCount += MarkRemainingAsSkipped(mediaFiles, i + 1, outcomes, batchProgress, "Skipped due to prior failure (fail-fast mode).");
                 break;
             }
         }
@@ -226,9 +226,9 @@ public sealed class BatchProcessor
         IReadOnlyList<string> mediaFiles,
         int startIndex,
         List<BatchFileOutcome> outcomes,
-        IProgress<BatchFileProgressEvent>? batchProgress)
+        IProgress<BatchFileProgressEvent>? batchProgress,
+        string skipReason)
     {
-        const string skipReason = "Skipped due to prior failure (fail-fast mode).";
         int count = 0;
         for (int j = startIndex; j < mediaFiles.Count; j++)
         {
