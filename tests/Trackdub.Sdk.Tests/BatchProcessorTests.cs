@@ -120,7 +120,10 @@ public sealed class BatchProcessorTests : IDisposable
         Assert.Equal(BatchFileStatus.Failed, report.Files[0].Status);
         Assert.Equal(BatchFileStatus.Success, report.Files[1].Status);
         Assert.Contains(events, e => e.FileIndex == 0 && e.Kind == BatchFileProgressKind.Started);
-        Assert.Contains(events, e => e.FileIndex == 0 && e.Kind == BatchFileProgressKind.Failed);
+        Assert.Contains(events, e => e.FileIndex == 0
+            && e.Kind == BatchFileProgressKind.Failed
+            && !string.IsNullOrEmpty(e.Reason)
+            && e.Reason.Contains("not found", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(events, e => e.FileIndex == 1 && e.Kind == BatchFileProgressKind.Started);
         Assert.Contains(events, e => e.FileIndex == 1 && e.Kind == BatchFileProgressKind.Succeeded);
         Assert.Equal(existing, Assert.Single(recording.Options).SourceMediaPath);
