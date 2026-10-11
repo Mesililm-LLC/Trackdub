@@ -1537,6 +1537,9 @@ internal static class OnnxExecutionSessionFactory
             ExecutionProviderKind.Cuda => CreateCudaSelection(options),
             ExecutionProviderKind.TensorRt => CreateTensorRtSelection(options),
 #endif
+#if LINML
+            ExecutionProviderKind.OpenVino => CreateLinuxOpenVinoSelection(options),
+#endif
             _ => null,
         };
     }
@@ -1616,6 +1619,21 @@ internal static class OnnxExecutionSessionFactory
     }
 #endif
 
+#if LINML
+    private static SessionOptionsSelection CreateLinuxOpenVinoSelection(SessionOptions options)
+    {
+        if (!ExecutionProviders.Linux.LinMlOpenVinoCatalog.Default.TryAppend(options, out string? failureReason))
+        {
+            return new SessionOptionsSelection(
+                options,
+                ExecutionProviderKind.Cpu,
+                $"Requested openvino but the OpenVINO plugin EP append failed; CPU fallback activated. {failureReason}");
+        }
+
+        return new SessionOptionsSelection(options, ExecutionProviderKind.OpenVino);
+    }
+#endif
+
     private static SessionOptionsSelection CreateOpenVinoCatalogSelection(SessionOptions options)
     {
         ExecutionProviderKind selectedProvider =
@@ -1685,6 +1703,15 @@ internal static class OnnxExecutionSessionFactory
         if (optionsSelectedProvider is ExecutionProviderKind.Cuda or ExecutionProviderKind.TensorRt)
         {
             return optionsSelectedProvider;
+        }
+
+        // Linux OpenVINO is the same OpenVINOExecutionProvider plugin the Windows ML catalog
+        // registers, so the catalog mapper reports it as OpenVinoCatalog.
+        if (optionsSelectedProvider is ExecutionProviderKind.OpenVino)
+        {
+            return ResolveCatalogEffectiveProviderFromSession(session) is ExecutionProviderKind.OpenVinoCatalog
+                ? ExecutionProviderKind.OpenVino
+                : ExecutionProviderKind.Cpu;
         }
 
         // Always probe GetEpDeviceForInputs for GPU / catalog routes so TRT sessions that

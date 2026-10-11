@@ -45,9 +45,17 @@
     <Compile Remove="WindowsMlProviderRegistrationPolicyTests.cs" />
   </ItemGroup>
 
+  <!-- LinML.Catalog is referenced by the portable TFM only. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041.0'">
+    <Compile Remove="LinMlOpenVinoCatalogTests.cs" />
+    <Compile Remove="LinuxOpenVinoSessionE2ETests.cs" />
+  </ItemGroup>
+
   <ItemGroup Condition="!$([MSBuild]::IsOSPlatform('Linux'))">
     <Compile Remove="LinuxDeviceEnumeratorTests.cs" />
     <Compile Remove="LinuxExecutionProviderBootstrapperTests.cs" />
+    <Compile Remove="LinMlOpenVinoCatalogTests.cs" />
+    <Compile Remove="LinuxOpenVinoSessionE2ETests.cs" />
   </ItemGroup>
 
   <ItemGroup Condition="!$([MSBuild]::IsOSPlatform('OSX'))">

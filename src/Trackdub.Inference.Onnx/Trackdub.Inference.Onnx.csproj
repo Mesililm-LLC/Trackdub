@@ -10,6 +10,11 @@
     <NoWarn>$(NoWarn);CA1416</NoWarn>
   </PropertyGroup>
 
+  <!-- LINML: LinML.Catalog is referenced (portable TFM) and Linux sources are compiled (Linux host). -->
+  <PropertyGroup Condition="'$(TargetFramework)' != 'net10.0-windows10.0.19041.0' And $([MSBuild]::IsOSPlatform('Linux'))">
+    <DefineConstants>$(DefineConstants);LINML</DefineConstants>
+  </PropertyGroup>
+
   <!-- Inject LINUX / MACOS preprocessor symbols when building on those hosts -->
   <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Linux'))">
     <DefineConstants>$(DefineConstants);LINUX</DefineConstants>
@@ -103,6 +108,7 @@
     <PackageReference Include="Microsoft.ML.OnnxRuntimeGenAI.Cuda" GeneratePathProperty="true" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" GeneratePathProperty="true" />
     <PackageReference Include="Microsoft.ML.OnnxRuntimeGenAI" GeneratePathProperty="true" />
+    <PackageReference Include="LinML.Catalog" />
   </ItemGroup>
 
   <!-- Non-Windows: exclude Windows-specific sources -->
@@ -137,6 +143,8 @@
   <!-- Windows: remove the deferred WinML stub (compiled separately) -->
   <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041.0'">
     <Compile Remove="WindowsMl\WindowsMlExecutionProviderBootstrapper.Deferred.cs" />
+    <!-- LinML.Catalog is portable-TFM only; Windows uses the Windows ML catalog. -->
+    <Compile Remove="ExecutionProviders\Linux\LinMlOpenVinoCatalog.cs" />
   </ItemGroup>
 
   <Import Project="../../build/Trackdub.NativePair.targets" />

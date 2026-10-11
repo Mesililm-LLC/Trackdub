@@ -76,6 +76,7 @@ Deferred items; not required for accepting this strategy ADR:
 ### OpenVINO dual path
 
 - **Standalone ExecutionProviderKind.OpenVino** — existing Linux/optional Windows install path via IOpenVinoAvailabilityProvider and Infrastructure component downloader. Registration ≠ readiness; smoke still required per model.
+  - **Update (2026-10):** on Linux, `OpenVino` sessions now run on the OpenVINO plugin EP from `LinML.Catalog` (pinned, sha256-verified, installed and registered by the catalog), the Linux counterpart to `OpenVinoCatalog`. Readiness and discovery come from the catalog; the standalone runtime component no longer backs Linux sessions. See `docs/reference/gpu-execution-providers.md`.
 - **Future ExecutionProviderKind.OpenVinoCatalog** — WinML catalog Intel EP on Windows, distinct enum value so planner, discovery, and session code do not conflate with standalone OpenVINO. Same honesty rules as MIGraphX: catalog registration and smoke before allow-list or probe-order changes.
 
 ### QNN / NPU path

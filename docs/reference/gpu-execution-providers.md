@@ -12,13 +12,32 @@ on Windows:
 |------------------|---------------------------------------------|
 | `net10.0` (portable, every OS) | CPU, **TensorRT RTX** (EP ABI plugin, Windows/Linux NVIDIA) |
 | `net10.0-windows10.0.19041.0` | CPU, TensorRT RTX, **DirectML**, Windows ML catalog EPs (MIGraphX, OpenVINO catalog, QNN, VitisAI) |
-| Linux `net10.0` | CPU, TensorRT RTX, native CUDA/TensorRT (system ORT GPU build) |
+| Linux `net10.0` | CPU, TensorRT RTX, native CUDA/TensorRT (system ORT GPU build), **OpenVINO** (plugin EP via [LinML.Catalog](https://github.com/trackdubllc/LinML)) |
 
 `OnnxRuntimeBuildCapabilities` encodes this per target framework. Provider
 discovery consults it, so `trackdub providers list` on the portable build reports
 DirectML and the Windows ML catalog EPs as unavailable instead of listing them
 as selectable. Requesting an unrunnable provider prints a CLI warning naming the
 required target; the request then falls through to the next provider.
+
+### OpenVINO on Linux
+
+`ExecutionProviderKind.OpenVino` on Linux runs on the OpenVINO plugin EP that
+`LinML.Catalog` pins, installs, registers and appends — the Linux counterpart to
+the Windows ML catalog's OpenVINO EP. Session bootstrap calls
+`EnsureReadyAsync` (downloads allowed, bounded at 5 minutes; 15 seconds when only
+registering), and the session appends the first NPU, GPU or CPU device the plugin
+exposes. Discovery never downloads: it reports OpenVINO available once the plugin
+is installed under LinML's install root. The standalone OpenVINO runtime component
+(`libopenvino_c.so`) registers no ORT execution provider and no longer decides
+OpenVINO readiness on Linux.
+
+Opt-in end-to-end check on an Intel host:
+
+```bash
+TRACKDUB_LINML_OPENVINO_MODEL=/path/to/small-model.onnx \
+  dotnet test tests/Trackdub.Inference.Tests -f net10.0 --filter LinuxOpenVinoSessionE2ETests
+```
 
 ## Provider order
 

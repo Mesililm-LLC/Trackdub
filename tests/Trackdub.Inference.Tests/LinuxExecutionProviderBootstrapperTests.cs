@@ -130,7 +130,7 @@ public sealed class LinuxExecutionProviderBootstrapperTests
     // ── OpenVINO delegation ──────────────────────────────────────────────────
 
     [Fact]
-    public async Task OpenVino_succeeds_when_runtime_is_available()
+    public async Task OpenVino_succeeds_when_catalog_plugin_is_ready()
     {
         var bootstrapper = Make(openVinoAvailable: true);
 
@@ -141,7 +141,7 @@ public sealed class LinuxExecutionProviderBootstrapperTests
     }
 
     [Fact]
-    public async Task OpenVino_falls_back_to_Cpu_when_runtime_is_not_installed()
+    public async Task OpenVino_falls_back_to_Cpu_when_catalog_plugin_is_not_ready()
     {
         var bootstrapper = Make(openVinoAvailable: false);
 
@@ -149,7 +149,47 @@ public sealed class LinuxExecutionProviderBootstrapperTests
 
         Assert.False(result.Succeeded);
         Assert.Equal(ExecutionProviderKind.Cpu, result.SelectedProvider);
-        Assert.NotNull(result.FailureReason);
+        Assert.Equal("stub: not ready", result.FailureReason);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task OpenVino_passes_allowDownloads_to_catalog(bool allowDownloads)
+    {
+        var catalog = new StubOpenVinoCatalog(isReady: true);
+        var bootstrapper = Make(catalog);
+
+        await bootstrapper.BootstrapAsync(ExecutionProviderKind.OpenVino, allowDownloads, default);
+
+        Assert.Equal([allowDownloads], catalog.EnsureCalls);
+    }
+
+    [Fact]
+    public async Task OpenVino_ignores_standalone_runtime_when_catalog_is_not_ready()
+    {
+        // The standalone runtime registers no ORT EP, so it cannot make an OpenVINO session work.
+        var bootstrapper = new LinuxExecutionProviderBootstrapper(
+            new StubOpenVinoProvider(isAvailable: true),
+            new StubLinuxNativeGpuRuntimeProbe(false, false),
+            FailingTrtRtx(),
+            new StubOpenVinoCatalog(isReady: false));
+
+        var result = await bootstrapper.BootstrapAsync(ExecutionProviderKind.OpenVino, allowDownloads: true, default);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(ExecutionProviderKind.Cpu, result.SelectedProvider);
+    }
+
+    [Fact]
+    public async Task CheckReadiness_for_OpenVino_never_allows_downloads()
+    {
+        var catalog = new StubOpenVinoCatalog(isReady: true);
+        var bootstrapper = Make(catalog);
+
+        await bootstrapper.CheckReadinessAsync(ExecutionProviderKind.OpenVino, default);
+
+        Assert.Equal([false], catalog.EnsureCalls);
     }
 
     [Fact]
@@ -237,7 +277,44 @@ public sealed class LinuxExecutionProviderBootstrapperTests
     private static LinuxExecutionProviderBootstrapper Make(
         bool openVinoAvailable,
         ILinuxNativeGpuRuntimeProbe? linuxRuntimeProbe = null) =>
-        new(new StubOpenVinoProvider(openVinoAvailable), linuxRuntimeProbe ?? new StubLinuxNativeGpuRuntimeProbe(false, false));
+        new(
+            new StubOpenVinoProvider(openVinoAvailable),
+            linuxRuntimeProbe ?? new StubLinuxNativeGpuRuntimeProbe(false, false),
+            FailingTrtRtx(),
+            new StubOpenVinoCatalog(openVinoAvailable));
+
+    private static LinuxExecutionProviderBootstrapper Make(StubOpenVinoCatalog catalog) =>
+        new(
+            new StubOpenVinoProvider(isAvailable: false),
+            new StubLinuxNativeGpuRuntimeProbe(false, false),
+            FailingTrtRtx(),
+            catalog);
+
+    private static StubTensorRtRtxProviderBootstrap FailingTrtRtx() =>
+        new(new TensorRtRtxBootstrapResult(
+            Succeeded: false,
+            ProviderId: TensorRtRtxProviderIds.PluginEpAbi,
+            Blocker: TensorRtRtxReadinessBlocker.EpNotPresent,
+            Detail: "TensorRT RTX plugin missing."));
+
+    private sealed class StubOpenVinoCatalog(bool isReady) : ILinuxOpenVinoCatalog
+    {
+        public List<bool> EnsureCalls { get; } = [];
+
+        public bool IsInstalled => isReady;
+
+        public Task<LinuxOpenVinoCatalogResult> EnsureReadyAsync(bool allowDownloads, CancellationToken cancellationToken)
+        {
+            EnsureCalls.Add(allowDownloads);
+            return Task.FromResult(new LinuxOpenVinoCatalogResult(isReady, isReady ? "stub: ready" : "stub: not ready"));
+        }
+
+        public bool TryAppend(Microsoft.ML.OnnxRuntime.SessionOptions options, out string? failureReason)
+        {
+            failureReason = isReady ? null : "stub: not ready";
+            return isReady;
+        }
+    }
 
     private sealed class StubOpenVinoProvider : IOpenVinoAvailabilityProvider
     {
