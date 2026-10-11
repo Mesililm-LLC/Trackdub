@@ -127,6 +127,17 @@ public sealed class AudioArtifactValidatorTests : IDisposable
     }
 
     [Fact]
+    public async Task Rf64WithoutDs64_Throws()
+    {
+        using SparseWaveStream stream = SparseWaveStream.CreatePcm16Stereo48k(rf64: true, dataChunkSize: uint.MaxValue, ds64DataLength: null, dataLength: 5_000_000_000L);
+
+        InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => AudioArtifactValidator.ReadAndValidateAsync(stream, "normalized.wav", TestContext.Current.CancellationToken));
+
+        Assert.Contains("ds64", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task DataLengthNotMultipleOfBlockAlign_Throws()
     {
         // Stereo 16-bit: blockAlign = 4. Use dataBytes = 6 (not a multiple of 4, but even so no pad-byte overflow).

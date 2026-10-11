@@ -265,6 +265,17 @@ public sealed class MemoryMappedWaveAudioReaderTests
         Assert.Contains("0xFFFFFFFF placeholder", exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ReadHeaderAsync_rejects_rf64_without_ds64()
+    {
+        using SparseWaveStream stream = SparseWaveStream.CreatePcm16Stereo48k(rf64: true, dataChunkSize: uint.MaxValue, ds64DataLength: null, dataLength: 5_000_000_000L);
+
+        InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => WaveAudioReader.ReadHeaderAsync(stream, CancellationToken.None));
+
+        Assert.Contains("ds64", exception.Message, StringComparison.Ordinal);
+    }
+
     private static string CreateTempDirectory()
     {
         string directory = Path.Join(Path.GetTempPath(), $"trackdub-memorymapped-wave-{Guid.NewGuid():N}");

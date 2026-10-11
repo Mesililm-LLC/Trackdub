@@ -190,4 +190,26 @@ public sealed class StemLabWaveAnalyzerHeaderTests
 
         Assert.Equal(dataLength, header.DataByteLength);
     }
+
+    [Fact]
+    public void ReadHeader_rejects_riff_data_chunk_size_placeholder()
+    {
+        using SparseWaveStream stream = SparseWaveStream.CreatePcm16Stereo48k(rf64: false, dataChunkSize: uint.MaxValue, ds64DataLength: null, dataLength: 5_000_000_000L);
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+            () => StemLabWaveAnalyzer.ReadHeader(stream, "stem-source.wav"));
+
+        Assert.Contains("0xFFFFFFFF", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ReadHeader_rejects_rf64_without_ds64()
+    {
+        using SparseWaveStream stream = SparseWaveStream.CreatePcm16Stereo48k(rf64: true, dataChunkSize: uint.MaxValue, ds64DataLength: null, dataLength: 5_000_000_000L);
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+            () => StemLabWaveAnalyzer.ReadHeader(stream, "stem-source.wav"));
+
+        Assert.Contains("ds64", exception.Message, StringComparison.Ordinal);
+    }
 }

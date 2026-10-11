@@ -1015,7 +1015,14 @@ internal static class StemLabWaveAnalyzer
             }
             else if (chunkId.Equals("data", StringComparison.Ordinal))
             {
-                // RF64 writers (ffmpeg -rf64 auto) put 0xFFFFFFFF here and the real size in ds64.
+                // RF64 writers (ffmpeg -rf64 auto) put 0xFFFFFFFF here and the real size in ds64; in plain RIFF it
+                // is the placeholder a writer left unpatched, so the length is unknown.
+                if (!isRf64 && chunkSize == uint.MaxValue)
+                {
+                    throw new InvalidOperationException(
+                        $"File '{path}' has an unpatched 0xFFFFFFFF data chunk size placeholder; the audio length is unknown.");
+                }
+
                 if (isRf64 && chunkSize == uint.MaxValue)
                 {
                     if (ds64DataLength is not ulong length || length > long.MaxValue)
