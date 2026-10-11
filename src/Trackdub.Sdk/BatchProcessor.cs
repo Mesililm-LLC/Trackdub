@@ -46,7 +46,8 @@ public sealed class BatchProcessor
     /// <param name="mediaFiles">Ordered list of media file paths to process.</param>
     /// <param name="templateOptions">Template session options; SourceMediaPath is overridden per file.</param>
     /// <param name="batchOptions">Batch behavior configuration (fail-fast vs continue-on-error, output root).</param>
-    /// <param name="progress">Optional progress reporter for stage-level events.</param>
+    /// <param name="progress">Optional progress reporter for engine stage-level events.</param>
+    /// <param name="batchProgress">Optional progress reporter for per-file start and outcome boundaries.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>A <see cref="BatchReport"/> summarizing per-file outcomes and aggregate counts.</returns>
     public async Task<BatchReport> ExecuteAsync(
@@ -54,7 +55,8 @@ public sealed class BatchProcessor
         DubbingSessionOptions templateOptions,
         BatchOptions batchOptions,
         IProgress<PipelineProgressEvent>? progress,
-        CancellationToken ct)
+        CancellationToken ct,
+        IProgress<BatchFileProgressEvent>? batchProgress = null)
     {
         ArgumentNullException.ThrowIfNull(mediaFiles);
         ArgumentNullException.ThrowIfNull(templateOptions);
@@ -71,6 +73,8 @@ public sealed class BatchProcessor
 
             // Build per-file options from template
             DubbingSessionOptions fileOptions = BuildFileOptions(filePath, templateOptions, batchOptions);
+
+            ReportFileProgress(batchProgress, i, filePath, BatchFileProgressKind.Started);
 
             try
             {
@@ -99,11 +103,12 @@ public sealed class BatchProcessor
                         Reason = reason,
                     });
                     failedCount++;
+                    ReportFileProgress(batchProgress, i, filePath, BatchFileProgressKind.Failed, reason);
 
                     if (!batchOptions.ContinueOnError)
                     {
                         // Mark remaining files as skipped
-                        skippedCount += MarkRemainingAsSkipped(mediaFiles, i + 1, outcomes);
+                        skippedCount += MarkRemainingAsSkipped(mediaFiles, i + 1, outcomes, batchProgress);
                         break;
                     }
                 }
@@ -116,6 +121,7 @@ public sealed class BatchProcessor
                         Status = BatchFileStatus.Success,
                     });
                     succeededCount++;
+                    ReportFileProgress(batchProgress, i, filePath, BatchFileProgressKind.Succeeded);
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -128,54 +134,61 @@ public sealed class BatchProcessor
                     Reason = "Processing cancelled.",
                 });
                 failedCount++;
-                skippedCount += MarkRemainingAsSkipped(mediaFiles, i + 1, outcomes);
+                ReportFileProgress(batchProgress, i, filePath, BatchFileProgressKind.Failed, "Processing cancelled.");
+                skippedCount += MarkRemainingAsSkipped(mediaFiles, i + 1, outcomes, batchProgress);
                 throw;
             }
             catch (FileNotFoundException ex)
             {
+                string reason = $"File not found: {ex.Message}";
                 outcomes.Add(new BatchFileOutcome
                 {
                     FilePath = filePath,
                     Status = BatchFileStatus.Failed,
-                    Reason = $"File not found: {ex.Message}",
+                    Reason = reason,
                 });
                 failedCount++;
+                ReportFileProgress(batchProgress, i, filePath, BatchFileProgressKind.Failed, reason);
 
                 if (!batchOptions.ContinueOnError)
                 {
-                    skippedCount += MarkRemainingAsSkipped(mediaFiles, i + 1, outcomes);
+                    skippedCount += MarkRemainingAsSkipped(mediaFiles, i + 1, outcomes, batchProgress);
                     break;
                 }
             }
             catch (IOException ex)
             {
+                string reason = $"I/O error: {ex.Message}";
                 outcomes.Add(new BatchFileOutcome
                 {
                     FilePath = filePath,
                     Status = BatchFileStatus.Failed,
-                    Reason = $"I/O error: {ex.Message}",
+                    Reason = reason,
                 });
                 failedCount++;
+                ReportFileProgress(batchProgress, i, filePath, BatchFileProgressKind.Failed, reason);
 
                 if (!batchOptions.ContinueOnError)
                 {
-                    skippedCount += MarkRemainingAsSkipped(mediaFiles, i + 1, outcomes);
+                    skippedCount += MarkRemainingAsSkipped(mediaFiles, i + 1, outcomes, batchProgress);
                     break;
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                string reason = ex.Message;
                 outcomes.Add(new BatchFileOutcome
                 {
                     FilePath = filePath,
                     Status = BatchFileStatus.Failed,
-                    Reason = ex.Message,
+                    Reason = reason,
                 });
                 failedCount++;
+                ReportFileProgress(batchProgress, i, filePath, BatchFileProgressKind.Failed, reason);
 
                 if (!batchOptions.ContinueOnError)
                 {
-                    skippedCount += MarkRemainingAsSkipped(mediaFiles, i + 1, outcomes);
+                    skippedCount += MarkRemainingAsSkipped(mediaFiles, i + 1, outcomes, batchProgress);
                     break;
                 }
             }
@@ -185,17 +198,19 @@ public sealed class BatchProcessor
                 // longer requested) — an OCE that does not match the requested-cancel guard
                 // above. Record it as a per-file failure so cancellation always yields a
                 // BatchReport instead of crashing the whole batch.
+                string reason = $"Processing cancelled: {ex.Message}";
                 outcomes.Add(new BatchFileOutcome
                 {
                     FilePath = filePath,
                     Status = BatchFileStatus.Failed,
-                    Reason = $"Processing cancelled: {ex.Message}",
+                    Reason = reason,
                 });
                 failedCount++;
+                ReportFileProgress(batchProgress, i, filePath, BatchFileProgressKind.Failed, reason);
 
                 if (!batchOptions.ContinueOnError)
                 {
-                    skippedCount += MarkRemainingAsSkipped(mediaFiles, i + 1, outcomes);
+                    skippedCount += MarkRemainingAsSkipped(mediaFiles, i + 1, outcomes, batchProgress);
                     break;
                 }
             }
@@ -237,20 +252,40 @@ public sealed class BatchProcessor
         return "Pipeline execution failed.";
     }
 
+    private static void ReportFileProgress(
+        IProgress<BatchFileProgressEvent>? batchProgress,
+        int fileIndex,
+        string filePath,
+        BatchFileProgressKind kind,
+        string? reason = null)
+    {
+        batchProgress?.Report(new BatchFileProgressEvent
+        {
+            FileIndex = fileIndex,
+            FilePath = filePath,
+            Kind = kind,
+            Reason = reason,
+        });
+    }
+
     private static int MarkRemainingAsSkipped(
         IReadOnlyList<string> mediaFiles,
         int startIndex,
-        List<BatchFileOutcome> outcomes)
+        List<BatchFileOutcome> outcomes,
+        IProgress<BatchFileProgressEvent>? batchProgress)
     {
+        const string skipReason = "Skipped due to prior failure (fail-fast mode).";
         int count = 0;
         for (int j = startIndex; j < mediaFiles.Count; j++)
         {
+            string filePath = mediaFiles[j];
             outcomes.Add(new BatchFileOutcome
             {
-                FilePath = mediaFiles[j],
+                FilePath = filePath,
                 Status = BatchFileStatus.Skipped,
-                Reason = "Skipped due to prior failure (fail-fast mode).",
+                Reason = skipReason,
             });
+            ReportFileProgress(batchProgress, j, filePath, BatchFileProgressKind.Skipped, skipReason);
             count++;
         }
 
