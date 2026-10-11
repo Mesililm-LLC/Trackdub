@@ -1,4 +1,5 @@
 using Trackdub.Contracts.ApplicationContracts;
+using Trackdub.Inference.Onnx.ExecutionProviders.LinMl;
 #if WINDOWS
 using Trackdub.Inference.Onnx.OpenVino;
 using Trackdub.Inference.Onnx.Qnn;
@@ -63,6 +64,26 @@ public sealed class OpenVinoCatalogReadinessProbe : IOpenVinoCatalogReadinessPro
 #if WINDOWS
     private readonly WindowsMlOpenVinoCatalogService _catalog = new();
 #endif
+    private readonly ILinuxOpenVinoCatalog? _linuxCatalog;
+    private readonly Func<bool> _isLinuxIntelHardware;
+
+    public OpenVinoCatalogReadinessProbe()
+        : this(DefaultLinuxCatalog(), LinuxIntelHardwareGate.IsEligible)
+    {
+    }
+
+    internal OpenVinoCatalogReadinessProbe(ILinuxOpenVinoCatalog? linuxCatalog, Func<bool>? isLinuxIntelHardware = null)
+    {
+        _linuxCatalog = linuxCatalog;
+        _isLinuxIntelHardware = isLinuxIntelHardware ?? (static () => true);
+    }
+
+    private static ILinuxOpenVinoCatalog? DefaultLinuxCatalog() =>
+#if LINML
+        OperatingSystem.IsLinux() ? LinMlOpenVinoCatalog.Default : null;
+#else
+        null;
+#endif
 
     public Task<WinMlCatalogReadinessReport> ProbeAsync(
         bool allowProviderDownloads,
@@ -83,8 +104,76 @@ public sealed class OpenVinoCatalogReadinessProbe : IOpenVinoCatalogReadinessPro
         }
 #endif
 
-        return Task.FromResult(Unsupported());
+        return _linuxCatalog is not null
+            ? ProbeLinuxAsync(_linuxCatalog, _isLinuxIntelHardware, allowProviderDownloads, cancellationToken)
+            : Task.FromResult(Unsupported());
     }
+
+    private static async Task<WinMlCatalogReadinessReport> ProbeLinuxAsync(
+        ILinuxOpenVinoCatalog catalog,
+        Func<bool> isIntelHardware,
+        bool allowProviderDownloads,
+        CancellationToken cancellationToken)
+    {
+        if (!isIntelHardware())
+        {
+            return new(
+                OpenVinoCatalogProviderIds.LinMl,
+                WinMlCatalogPlatformRoute.LinMlCatalog,
+                WinMlCatalogReadinessBlocker.HardwareNotSupported,
+                IsHardwareEligible: false,
+                IsOrtProviderListed: false,
+                IsRegisteredWithOrt: false,
+                Detail: "No Intel CPU, GPU or NPU found; the OpenVINO plugin EP is not offered.");
+        }
+
+        LinuxOpenVinoCatalogResult result = await catalog
+            .EnsureReadyAsync(allowProviderDownloads, cancellationToken)
+            .ConfigureAwait(false);
+        return ToReport(result, allowProviderDownloads);
+    }
+
+    internal static WinMlCatalogReadinessReport ToReport(LinuxOpenVinoCatalogResult result, bool allowProviderDownloads) =>
+        result.Status switch
+        {
+            LinuxOpenVinoCatalogStatus.Ready => LinuxReport(WinMlCatalogReadinessBlocker.None, ready: true, result.Detail),
+            LinuxOpenVinoCatalogStatus.NotInstalled => LinuxReport(WinMlCatalogReadinessBlocker.EpNotPresent, ready: false, result.Detail),
+            // With downloads allowed the failure may be the download: the install may be retried.
+            // Without, an installed plugin failed to register, and reinstalling would not help.
+            LinuxOpenVinoCatalogStatus.Failed => LinuxReport(
+                allowProviderDownloads ? WinMlCatalogReadinessBlocker.EpDownloadFailed : WinMlCatalogReadinessBlocker.EpRegisterFailed,
+                ready: false,
+                result.Detail),
+            LinuxOpenVinoCatalogStatus.NoDevices => new(
+                OpenVinoCatalogProviderIds.LinMl,
+                WinMlCatalogPlatformRoute.LinMlCatalog,
+                WinMlCatalogReadinessBlocker.HardwareNotSupported,
+                IsHardwareEligible: false,
+                IsOrtProviderListed: false,
+                IsRegisteredWithOrt: false,
+                Detail: result.Detail),
+            _ => new(
+                OpenVinoCatalogProviderIds.LinMl,
+                WinMlCatalogPlatformRoute.None,
+                WinMlCatalogReadinessBlocker.PlatformUnsupported,
+                IsHardwareEligible: false,
+                IsOrtProviderListed: false,
+                IsRegisteredWithOrt: false,
+                Detail: result.Detail),
+        };
+
+    private static WinMlCatalogReadinessReport LinuxReport(
+        WinMlCatalogReadinessBlocker blocker,
+        bool ready,
+        string detail) =>
+        new(
+            OpenVinoCatalogProviderIds.LinMl,
+            WinMlCatalogPlatformRoute.LinMlCatalog,
+            blocker,
+            IsHardwareEligible: true,
+            IsOrtProviderListed: ready,
+            IsRegisteredWithOrt: ready,
+            Detail: detail);
 
     private static WinMlCatalogReadinessReport Unsupported() =>
         new(
@@ -94,7 +183,7 @@ public sealed class OpenVinoCatalogReadinessProbe : IOpenVinoCatalogReadinessPro
             IsHardwareEligible: false,
             IsOrtProviderListed: false,
             IsRegisteredWithOrt: false,
-            Detail: "OpenVINO catalog EP is supported on Windows only.");
+            Detail: "OpenVINO catalog EP is supported on Windows (Windows ML) and Linux (LinML) only.");
 }
 
 public sealed class QnnCatalogReadinessProbe : IQnnCatalogReadinessProbe

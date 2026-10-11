@@ -56,12 +56,20 @@ public abstract class WinMlCatalogRuntimeReadinessServiceBase
 
     protected abstract string InstallHint { get; }
 
+    protected virtual string LinuxRouteLabel => "Linux (LinML catalog)";
+
+    protected virtual string LinuxInstallHint =>
+        "Download the pinned execution provider plugin through the LinML catalog, then refresh.";
+
     public async Task<WinMlCatalogRuntimeReadinessSnapshot> ProbeAsync(
         bool allowProviderDownloads,
         CancellationToken cancellationToken = default)
     {
         WinMlCatalogReadinessReport report = await _probeAsync(allowProviderDownloads, cancellationToken)
             .ConfigureAwait(false);
+        bool linux = report.Route is WinMlCatalogPlatformRoute.LinMlCatalog;
+        string routeLabel = linux ? LinuxRouteLabel : RouteLabel;
+        string installHint = linux ? LinuxInstallHint : InstallHint;
 
         if (report.Route is WinMlCatalogPlatformRoute.None)
         {
@@ -86,7 +94,7 @@ public abstract class WinMlCatalogRuntimeReadinessServiceBase
                 IsSupportedPlatform: true,
                 IsReady: true,
                 ProviderId: report.ProviderId,
-                RouteDisplay: RouteLabel,
+                RouteDisplay: routeLabel,
                 StatusLabel: "Ready",
                 Blocker: WinMlCatalogReadinessBlocker.None,
                 Detail: report.Detail,
@@ -97,7 +105,7 @@ public abstract class WinMlCatalogRuntimeReadinessServiceBase
                 InstallHint: null);
         }
 
-        bool canInstall = report.Route is WinMlCatalogPlatformRoute.WinMlCatalog &&
+        bool canInstall = report.Route is (WinMlCatalogPlatformRoute.WinMlCatalog or WinMlCatalogPlatformRoute.LinMlCatalog) &&
                           report.Blocker is WinMlCatalogReadinessBlocker.EpNotPresent
                               or WinMlCatalogReadinessBlocker.EpDownloadFailed;
 
@@ -105,7 +113,7 @@ public abstract class WinMlCatalogRuntimeReadinessServiceBase
             IsSupportedPlatform: true,
             IsReady: false,
             ProviderId: string.IsNullOrWhiteSpace(report.ProviderId) ? null : report.ProviderId,
-            RouteDisplay: RouteLabel,
+            RouteDisplay: routeLabel,
             StatusLabel: FormatBlockedStatus(report.Blocker),
             Blocker: report.Blocker,
             Detail: report.Detail,
@@ -113,7 +121,7 @@ public abstract class WinMlCatalogRuntimeReadinessServiceBase
             IsOrtProviderListed: report.IsOrtProviderListed,
             IsRegisteredWithOrt: report.IsRegisteredWithOrt,
             CanInstallWinMlProvider: canInstall,
-            InstallHint: canInstall ? InstallHint : null);
+            InstallHint: canInstall ? installHint : null);
     }
 
     private static string FormatBlockedStatus(WinMlCatalogReadinessBlocker blocker) =>

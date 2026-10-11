@@ -39,7 +39,7 @@ public sealed class LinMlOpenVinoCatalog : ILinuxOpenVinoCatalog
         IExecutionProvider? provider = _catalog.Find(ProviderId.OpenVino);
         if (provider is null)
         {
-            return new(false, "The LinML catalog has no OpenVINO provider.");
+            return new(LinuxOpenVinoCatalogStatus.Unsupported, "The LinML catalog has no OpenVINO provider.");
         }
 
         TimeSpan timeout = allowDownloads ? DownloadTimeout : RegisterOnlyTimeout;
@@ -50,13 +50,23 @@ public sealed class LinMlOpenVinoCatalog : ILinuxOpenVinoCatalog
             ProviderEnsureResult ensured = await provider
                 .EnsureReadyAsync(new EnsureOptions(allowDownloads), bounded.Token)
                 .ConfigureAwait(false);
-            return new(ensured.IsReady, $"OpenVINO plugin EP ({provider.PinnedVersion}): {ensured.Status}. {ensured.Detail}");
+            return new(MapStatus(ensured.Status), $"OpenVINO plugin EP ({provider.PinnedVersion}): {ensured.Status}. {ensured.Detail}");
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return new(false, $"OpenVINO plugin EP preparation timed out after {timeout.TotalSeconds:0} s.");
+            return new(LinuxOpenVinoCatalogStatus.Failed, $"OpenVINO plugin EP preparation timed out after {timeout.TotalSeconds:0} s.");
         }
     }
+
+    internal static LinuxOpenVinoCatalogStatus MapStatus(ProviderEnsureStatus status) =>
+        status switch
+        {
+            ProviderEnsureStatus.Ready or ProviderEnsureStatus.Downloaded => LinuxOpenVinoCatalogStatus.Ready,
+            ProviderEnsureStatus.DownloadDisallowed => LinuxOpenVinoCatalogStatus.NotInstalled,
+            ProviderEnsureStatus.NoDevices => LinuxOpenVinoCatalogStatus.NoDevices,
+            ProviderEnsureStatus.AbiIncompatible or ProviderEnsureStatus.NotAvailable => LinuxOpenVinoCatalogStatus.Unsupported,
+            _ => LinuxOpenVinoCatalogStatus.Failed,
+        };
 
     public bool TryAppend(SessionOptions options, bool cpuOnly, out string? failureReason)
     {
