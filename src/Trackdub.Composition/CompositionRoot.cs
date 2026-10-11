@@ -182,7 +182,7 @@ public static class CompositionRoot
                 HardwareProfile profile = await hardware.GetCurrentAsync(cancellationToken).ConfigureAwait(false);
                 IReadOnlyList<ExecutionProviderAvailability> availability =
                     await discovery.DiscoverAsync(profile, cancellationToken).ConfigureAwait(false);
-                return availability.Where(static item => item.IsAvailable).Select(static item => item.Provider).ToList();
+                return ExecutionProviderProbeOrder.InProcessAvailable(availability);
             });
         });
         // Readiness probes are wrapped in thread-safe caching decorators so a single

@@ -244,9 +244,10 @@ internal static class ServeHandler
             {
                 using JsonDocument document = JsonDocument.Parse(await File.ReadAllTextAsync(warmupFile, cancellationToken)
                     .ConfigureAwait(false));
-                if (!document.RootElement.TryGetProperty("tensors", out JsonElement tensors))
+                if (document.RootElement.ValueKind != JsonValueKind.Object
+                    || !document.RootElement.TryGetProperty("tensors", out JsonElement tensors))
                 {
-                    throw BadInputs($"Warmup file '{warmupFile}' has no \"tensors\" array.");
+                    throw BadInputs($"Warmup file '{warmupFile}' must be an object with a \"tensors\" array.");
                 }
 
                 ResidentRunResult? result = await host.WarmAsync(info.Name, ParseTensors(tensors), cancellationToken)

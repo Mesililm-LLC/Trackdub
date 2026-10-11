@@ -123,9 +123,8 @@ public sealed class ResidentWarmupService : IResidentWarmupService
 
         // CPU needs no registration.
         var outcomes = new List<ResidentProviderBootstrapOutcome>();
-        foreach (ExecutionProviderKind provider in ExecutionProviderProbeOrder.Global.Where(provider =>
-                     provider is not ExecutionProviderKind.Cpu
-                     && availability.Any(item => item.Provider == provider && item.IsAvailable)))
+        foreach (ExecutionProviderKind provider in ExecutionProviderProbeOrder.InProcessAvailable(availability)
+                     .Where(static provider => provider is not ExecutionProviderKind.Cpu))
         {
             ResidentProviderBootstrapOutcome outcome;
             try

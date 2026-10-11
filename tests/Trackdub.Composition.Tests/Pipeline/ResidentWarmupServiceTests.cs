@@ -19,10 +19,12 @@ public class ResidentWarmupServiceTests
         new ExecutionProviderAvailability(ExecutionProviderKind.DirectMl, IsAvailable: true),
         new ExecutionProviderAvailability(ExecutionProviderKind.Qnn, IsAvailable: false),
         new ExecutionProviderAvailability(ExecutionProviderKind.TensorRTRtx, IsAvailable: true),
+        // Reachable only through the inference worker: never bootstrapped in-process.
+        new ExecutionProviderAvailability(ExecutionProviderKind.Cuda, IsAvailable: true, EngineFamilies: ["kokoro"]),
     ]);
 
     [Fact]
-    public async Task WarmAsync_BootstrapsAvailableProvidersInProbeOrder_ThenWarmsStagesInRequestOrder()
+    public async Task WarmAsync_BootstrapsInProcessProvidersInProbeOrder_ThenWarmsStagesInRequestOrder()
     {
         ResidentWarmupReport report = await CreateService().WarmAsync(
             Request([RuntimeStage.Asr, RuntimeStage.Translation, RuntimeStage.Tts]),

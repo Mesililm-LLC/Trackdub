@@ -206,6 +206,27 @@ public sealed class ServeCommandTests : IDisposable
         Assert.Equal(Program.ExitPipelineFailure, exitCode);
     }
 
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("42")]
+    [InlineData("{\"tensors\":{}}")]
+    public async Task Serve_MalformedWarmupFileFailsFastWithoutThrowing(string content)
+    {
+        string warmup = Path.Join(directory, "warmup.json");
+        await File.WriteAllTextAsync(warmup, content, CancellationToken.None);
+        using var host = new FakeHost();
+        using var diagnostics = new StringWriter();
+
+        int exitCode = await ServeHandler.ServeAsync(
+            host, [new ServeModelArgument("m", "m.onnx")], provider: null, requireProvider: false,
+            new Dictionary<string, string>(), new Dictionary<string, string> { ["m"] = warmup }, autoWarmup: true,
+            new StringReader(""), new StringWriter(), diagnostics, CancellationToken.None);
+
+        Assert.Equal(Program.ExitPipelineFailure, exitCode);
+        Assert.Contains("Warmup run failed for 'm'", diagnostics.ToString(), StringComparison.Ordinal);
+        Assert.Equal(0, host.Runs);
+    }
+
     [Fact]
     public void ModelArguments_DefaultTheNameAndRejectDuplicatesAndMissingFiles()
     {
