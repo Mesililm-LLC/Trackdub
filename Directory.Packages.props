@@ -52,6 +52,7 @@
          catalog EPs). Windows TFM only; the portable TFM keeps the CPU/CUDA GenAI packages. -->
     <PackageVersion Include="Microsoft.ML.OnnxRuntimeGenAI.WinML" Version="0.17.1" />
     <PackageVersion Include="Microsoft.ML.Tokenizers" Version="3.0.0-preview.26502.1" />
+    <PackageVersion Include="System.Numerics.Tensors" Version="9.0.0" />
     <PackageVersion Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" />
     <PackageVersion Include="Microsoft.ML.OnnxRuntime.Managed" Version="$(OnnxRuntimeVersion)" />
     <PackageVersion Include="Microsoft.ML.OnnxRuntime.Gpu" Version="$(OnnxRuntimeVersion)" />
