@@ -61,8 +61,8 @@ internal sealed class ResidentInferenceHost : IResidentInferenceHost
         await loadGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            // Release the replaced model first: once unpinned it would otherwise stay pooled,
-            // holding device memory until LRU eviction reached it.
+            // Release the old residency pin before admitting the replacement. Otherwise the
+            // replacement can wait forever for memory held by the session it is replacing.
             if (entries.TryRemove(spec.Name, out ResidentEntry? replaced))
             {
                 replaced.Dispose();
@@ -84,7 +84,6 @@ internal sealed class ResidentInferenceHost : IResidentInferenceHost
         IReadOnlyList<ServeTensor> inputs,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(modelName);
         ArgumentNullException.ThrowIfNull(inputs);
         ResidentEntry entry = await GetRunnableAsync(modelName, cancellationToken).ConfigureAwait(false);
 
@@ -138,25 +137,14 @@ internal sealed class ResidentInferenceHost : IResidentInferenceHost
     public async Task<bool> UnloadAsync(string modelName)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
-
-        // Serialized with load and poisoned-reopen so neither can re-add the model after
-        // the caller was told it is unloaded.
-        await loadGate.WaitAsync().ConfigureAwait(false);
-        try
+        if (!entries.TryRemove(modelName, out ResidentEntry? entry))
         {
-            if (!entries.TryRemove(modelName, out ResidentEntry? entry))
-            {
-                return false;
-            }
+            return false;
+        }
 
-            entry.Dispose();
-            await EvictAsync(modelName).ConfigureAwait(false);
-            return true;
-        }
-        finally
-        {
-            loadGate.Release();
-        }
+        entry.Dispose();
+        await EvictAsync(modelName).ConfigureAwait(false);
+        return true;
     }
 
     public IReadOnlyList<ResidentModelInfo> Describe() =>
