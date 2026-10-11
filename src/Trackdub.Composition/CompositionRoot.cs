@@ -618,6 +618,11 @@ public static class CompositionRoot
                 sp.GetRequiredService<IRuntimePlanner>(),
                 sp.GetRequiredService<IExecutionProviderSmokeTester>(),
                 sp.GetService<IRuntimePlanningPreferences>()));
+        services.TryAddSingleton<IResidentWarmupService>(sp =>
+            new ResidentWarmupService(
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<IExecutionProviderDiscovery>(),
+                sp.GetRequiredService<IHardwareProfileProvider>()));
         // Wire the model cache directory explicitly: the bare-type registration would fall back
         // to the constructor default (no cache), making downloaded models invisible to alias
         // resolution (e.g. the kokoro voice catalog) even when the planner reports them ready.
