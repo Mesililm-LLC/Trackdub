@@ -61,12 +61,15 @@ internal sealed class ResidentInferenceHost : IResidentInferenceHost
         await loadGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            ResidentEntry entry = await OpenAsync(spec, cancellationToken).ConfigureAwait(false);
+            // Release the replaced model first: once unpinned it would otherwise stay pooled,
+            // holding device memory until LRU eviction reached it.
             if (entries.TryRemove(spec.Name, out ResidentEntry? replaced))
             {
                 replaced.Dispose();
+                await EvictAsync(spec.Name).ConfigureAwait(false);
             }
 
+            ResidentEntry entry = await OpenAsync(spec, cancellationToken).ConfigureAwait(false);
             entries[spec.Name] = entry;
             return entry.Describe();
         }
@@ -134,14 +137,25 @@ internal sealed class ResidentInferenceHost : IResidentInferenceHost
     public async Task<bool> UnloadAsync(string modelName)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
-        if (!entries.TryRemove(modelName, out ResidentEntry? entry))
-        {
-            return false;
-        }
 
-        entry.Dispose();
-        await EvictAsync(modelName).ConfigureAwait(false);
-        return true;
+        // Serialized with load and poisoned-reopen so neither can re-add the model after
+        // the caller was told it is unloaded.
+        await loadGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (!entries.TryRemove(modelName, out ResidentEntry? entry))
+            {
+                return false;
+            }
+
+            entry.Dispose();
+            await EvictAsync(modelName).ConfigureAwait(false);
+            return true;
+        }
+        finally
+        {
+            loadGate.Release();
+        }
     }
 
     public IReadOnlyList<ResidentModelInfo> Describe() =>
