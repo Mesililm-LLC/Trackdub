@@ -234,6 +234,53 @@ public sealed class OnnxExecutionProviderDiscoveryTests
         Assert.Contains("DNNL fake", dnnl.Detail, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task DiscoverAsync_reports_OpenVino_from_the_Linux_catalog_without_downloads(bool ready)
+    {
+        var catalog = new StubLinuxOpenVinoCatalog(ready);
+        var discovery = new OnnxExecutionProviderDiscovery(
+            new StubOpenVinoProvider(isAvailable: !ready),
+            new StubLinuxNativeGpuRuntimeProbe(nvidiaDriverLoaded: false, nativeTensorRtAvailable: false),
+            new StubNativeCudaTensorRtWindowsPolicy(allowed: false),
+            new StubMigraphxReadinessProbe(),
+            new StubDnnlReadinessProbe(false),
+            new StubTensorRtRtxReadinessProbe(),
+            new StubWinMlCatalogReadinessProbe(),
+            new StubWinMlCatalogReadinessProbe(),
+            new StubWinMlCatalogReadinessProbe(),
+            linuxOpenVinoCatalog: catalog);
+
+        IReadOnlyList<ExecutionProviderAvailability> availabilities = await discovery.DiscoverAsync(
+            new HardwareProfile("linux", "x64", HasGpu: false, GpuDescription: null),
+            CancellationToken.None);
+
+        ExecutionProviderAvailability openVino = Assert.Single(availabilities, a => a.Provider == ExecutionProviderKind.OpenVino);
+        Assert.Equal(ready, openVino.IsAvailable);
+        Assert.Equal("catalog detail", openVino.Detail);
+        Assert.Equal([false], catalog.EnsureCalls);
+    }
+
+    private sealed class StubLinuxOpenVinoCatalog(bool ready) : Trackdub.Inference.Onnx.ExecutionProviders.LinMl.ILinuxOpenVinoCatalog
+    {
+        public List<bool> EnsureCalls { get; } = [];
+
+        public Task<Trackdub.Inference.Onnx.ExecutionProviders.LinMl.LinuxOpenVinoCatalogResult> EnsureReadyAsync(
+            bool allowDownloads,
+            CancellationToken cancellationToken)
+        {
+            EnsureCalls.Add(allowDownloads);
+            return Task.FromResult(new Trackdub.Inference.Onnx.ExecutionProviders.LinMl.LinuxOpenVinoCatalogResult(ready, "catalog detail"));
+        }
+
+        public bool TryAppend(Microsoft.ML.OnnxRuntime.SessionOptions options, bool cpuOnly, out string? failureReason)
+        {
+            failureReason = null;
+            return false;
+        }
+    }
+
     private sealed class StubNativeCudaTensorRtWindowsPolicy(bool allowed) : INativeCudaTensorRtWindowsPolicy
     {
         public Task<bool> IsNativeProvidersAllowedOnWindowsAsync(CancellationToken cancellationToken = default) =>

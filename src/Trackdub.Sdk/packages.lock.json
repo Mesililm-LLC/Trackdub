@@ -43,6 +43,11 @@
         "resolved": "2.1.0",
         "contentHash": "Vooz1wbnnqWuS+u93tADXK5Owxo8vLJhSrZ9Ac+KpgDF3GJq9TybXXTF1TFcWILgEtRThc8AOBENEzB0TQH1JA=="
       },
+      "LinML.Contracts": {
+        "type": "Transitive",
+        "resolved": "0.1.0",
+        "contentHash": "MCzHYwwJVv376Hd7zjlZYu9sYAKt1/90JJjhjJ6J/eYlcYNfb7KmY7ZI27wGWLHz2poBRF0qwllknrmvVQE/Og=="
+      },
       "Lucene.Net": {
         "type": "Transitive",
         "resolved": "4.8.0-beta00018",
@@ -271,6 +276,7 @@
       "trackdub.inference.onnx": {
         "type": "Project",
         "dependencies": {
+          "LinML.Catalog": "[0.1.0, )",
           "MathNet.Numerics": "[5.0.0, )",
           "Microsoft.ML.OnnxRuntime": "[1.31.0, )",
           "Microsoft.ML.OnnxRuntime.Gpu": "[1.31.0, )",
@@ -332,6 +338,16 @@
         "requested": "[3.10.1, )",
         "resolved": "3.10.1",
         "contentHash": "6iSrYMk6RU8fyftdXrfR1TW3xpR/WhEmliORuWvAu2N05wECb8k2hykWiU53/1zqx616v/qUlDbJJyqv78MDkQ=="
+      },
+      "LinML.Catalog": {
+        "type": "CentralTransitive",
+        "requested": "[0.1.0, )",
+        "resolved": "0.1.0",
+        "contentHash": "jpRrJ7W/x/iBNz4LtHyxwyfM8QjIEs84+TOev2ZWkPYO2zf/NMC2ptPQpR4m3GpeX7L7N6T4zyW5zKho/XcRFw==",
+        "dependencies": {
+          "LinML.Contracts": "0.1.0",
+          "Microsoft.ML.OnnxRuntime.Managed": "1.31.0"
+        }
       },
       "Lucene.Net.Analysis.Common": {
         "type": "CentralTransitive",

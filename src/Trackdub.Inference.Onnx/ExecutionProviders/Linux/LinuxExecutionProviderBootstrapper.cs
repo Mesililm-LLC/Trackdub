@@ -2,6 +2,7 @@ using System.Runtime.Versioning;
 using Trackdub.Contracts.ApplicationContracts;
 using Trackdub.Domain;
 using Trackdub.Inference.Onnx.Dnnl;
+using Trackdub.Inference.Onnx.ExecutionProviders.LinMl;
 using Trackdub.Inference.Onnx.Runtime.Planning;
 using Trackdub.Inference.Onnx.TensorRtRtx;
 using Trackdub.Inference.Runtime.Planning;
@@ -10,12 +11,13 @@ namespace Trackdub.Inference.Onnx.ExecutionProviders.Linux;
 
 /// <summary>
 /// Linux-specific execution provider bootstrapper.
-/// Supports CPU execution and optional CUDA/TensorRT for NVIDIA GPUs.
+/// Supports CPU execution, optional CUDA/TensorRT for NVIDIA GPUs, and OpenVINO through the
+/// LinML catalog's plugin EP.
 /// </summary>
 [SupportedOSPlatform("linux")]
 public sealed class LinuxExecutionProviderBootstrapper : IExecutionProviderBootstrapper
 {
-    private readonly IOpenVinoAvailabilityProvider _openVino;
+    private readonly ILinuxOpenVinoCatalog _openVinoCatalog;
     private readonly ILinuxNativeGpuRuntimeProbe _linuxRuntimeProbe;
     private readonly ITensorRtRtxProviderBootstrap _tensorRtRtxPluginBootstrap;
     private readonly IDnnlReadinessProbe _dnnlReadinessProbe = new DnnlReadinessProbe();
@@ -36,12 +38,29 @@ public sealed class LinuxExecutionProviderBootstrapper : IExecutionProviderBoots
         IOpenVinoAvailabilityProvider openVino,
         ILinuxNativeGpuRuntimeProbe linuxRuntimeProbe,
         ITensorRtRtxProviderBootstrap tensorRtRtxPluginBootstrap)
+        : this(openVino, linuxRuntimeProbe, tensorRtRtxPluginBootstrap, DefaultOpenVinoCatalog)
     {
-        _openVino = openVino ?? throw new ArgumentNullException(nameof(openVino));
+    }
+
+    public LinuxExecutionProviderBootstrapper(
+        IOpenVinoAvailabilityProvider openVino,
+        ILinuxNativeGpuRuntimeProbe linuxRuntimeProbe,
+        ITensorRtRtxProviderBootstrap tensorRtRtxPluginBootstrap,
+        ILinuxOpenVinoCatalog openVinoCatalog)
+    {
+        ArgumentNullException.ThrowIfNull(openVino);
+        _openVinoCatalog = openVinoCatalog ?? throw new ArgumentNullException(nameof(openVinoCatalog));
         _linuxRuntimeProbe = linuxRuntimeProbe ?? throw new ArgumentNullException(nameof(linuxRuntimeProbe));
         _tensorRtRtxPluginBootstrap = tensorRtRtxPluginBootstrap
             ?? throw new ArgumentNullException(nameof(tensorRtRtxPluginBootstrap));
     }
+
+    private static ILinuxOpenVinoCatalog DefaultOpenVinoCatalog =>
+#if LINML
+        LinMlOpenVinoCatalog.Default;
+#else
+        UnavailableLinuxOpenVinoCatalog.Instance;
+#endif
 
     /// <summary>
     /// Builds a real-provider TRT-RTX bootstrap without Infrastructure or Application dependencies.
@@ -94,11 +113,7 @@ public sealed class LinuxExecutionProviderBootstrapper : IExecutionProviderBoots
                             FailureReason: "NVIDIA driver not loaded."),
 
             ExecutionProviderKind.OpenVino =>
-                _openVino.IsAvailable
-                    ? new(provider, provider, Succeeded: true, Detail: "OpenVINO runtime loaded.")
-                    : new(provider, ExecutionProviderKind.Cpu, Succeeded: false,
-                        Detail: "OpenVINO runtime not installed. Falling back to CPU.",
-                        FailureReason: "OpenVINO not available."),
+                await ResolveOpenVinoAsync(provider, allowDownloads, cancellationToken).ConfigureAwait(false),
 
             ExecutionProviderKind.Dnnl => await ResolveDnnlAsync(provider, cancellationToken).ConfigureAwait(false),
 
@@ -127,6 +142,24 @@ public sealed class LinuxExecutionProviderBootstrapper : IExecutionProviderBoots
         };
 
         return result;
+    }
+
+    // The session appends the OpenVINO plugin EP, so readiness is the catalog's. The standalone
+    // OpenVINO runtime (IOpenVinoAvailabilityProvider) loads libopenvino_c.so but registers no
+    // ORT execution provider, so it cannot back an ORT session.
+    private async Task<ExecutionProviderBootstrapResult> ResolveOpenVinoAsync(
+        ExecutionProviderKind provider,
+        bool allowDownloads,
+        CancellationToken cancellationToken)
+    {
+        LinuxOpenVinoCatalogResult catalog = await _openVinoCatalog
+            .EnsureReadyAsync(allowDownloads, cancellationToken)
+            .ConfigureAwait(false);
+        return catalog.IsReady
+            ? new(provider, provider, Succeeded: true, Detail: catalog.Detail)
+            : new(provider, ExecutionProviderKind.Cpu, Succeeded: false,
+                Detail: $"{catalog.Detail} Falling back to CPU.",
+                FailureReason: catalog.Detail);
     }
 
     private async Task<ExecutionProviderBootstrapResult> ResolveDnnlAsync(
