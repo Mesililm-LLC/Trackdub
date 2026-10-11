@@ -19,7 +19,7 @@ namespace Trackdub.Inference.Tests;
 public sealed class WhisperGenAiRealSpeechTests
 {
     /// <summary>
-    /// Six seconds of real English speech (16 kHz mono PCM16), extracted from the batch smoke
+    /// Six seconds of real Spanish speech (16 kHz mono PCM16), extracted from the batch smoke
     /// source media. Mean volume -16.5 dB, no silence gaps longer than 0.3 s at -30 dB, so the
     /// single region below is genuinely speech-bearing.
     /// </summary>
@@ -87,6 +87,34 @@ public sealed class WhisperGenAiRealSpeechTests
         Assert.Equal(
             first.Select(static segment => (segment.Index, segment.StartSeconds, segment.EndSeconds, segment.Text)),
             second.Select(static segment => (segment.Index, segment.StartSeconds, segment.EndSeconds, segment.Text)));
+    }
+
+    [RequiresBundledModelFact(
+        "whisper-tiny-genai/genai_config.json",
+        "whisper-tiny-genai/audio_processor_config.json",
+        "whisper-tiny-genai/encoder.onnx",
+        "whisper-tiny-genai/decoder.onnx",
+        "whisper-tiny-genai/encoder.onnx.data",
+        "whisper-tiny-genai/decoder.onnx.data")]
+    [Trait("Category", "Integration")]
+    public async Task WhisperGenAi_AutoLanguageContext_PreservesSeparateRegionIdentities()
+    {
+        SpeechRegion[] regions = [new(7, 0.0, 3.0), new(42, 3.0, 6.0)];
+        var engine = CreateEngine();
+
+        IReadOnlyList<RecognizedTranscriptSegment> segments = await engine.TranscribeAsync(
+            ResolveFixturePath(), regions, CancellationToken.None);
+
+        // Language detection may combine these windows; transcription must not combine them
+        // or replace their indices, which are used to assign speakers and update selected rows.
+        Assert.Equal(regions.Select(region => region.Index), segments.Select(segment => segment.Index));
+        for (int index = 0; index < regions.Length; index++)
+        {
+            Assert.Equal(regions[index].StartSeconds, segments[index].StartSeconds);
+            Assert.Equal(regions[index].EndSeconds, segments[index].EndSeconds);
+            Assert.Equal("es", segments[index].DetectedLanguage);
+            Assert.Contains(segments[index].Text, char.IsLetter);
+        }
     }
 
     private static WhisperGenAiAudioTranscriptionEngine CreateEngine() =>
