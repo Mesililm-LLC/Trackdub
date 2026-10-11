@@ -94,15 +94,17 @@ public sealed class ProjectLock : IDisposable, IAsyncDisposable
             if (stream is null)
             {
                 // The exclusive-open failure is authoritative: a file handle still owns the
-                // lock even if its owner record is missing, corrupt, or stale. Read the holder's
-                // PID for diagnostics, then retry once in case the holder released the handle
-                // while we were checking. Never unlink the path: another process could acquire
-                // a replacement between our stale check and delete, causing both runs to hold
-                // different files under the same lock name.
-                LockFileRead read = TryReadHoldingProcessId(ownerFilePath);
+                // lock even if its owner record is missing, corrupt, or stale. Retry once in
+                // case the holder released the handle meanwhile. Never unlink the path: another
+                // process could acquire a replacement between our stale check and delete,
+                // causing both runs to hold different files under the same lock name.
                 stream = TryOpenExclusive(lockFilePath);
                 if (stream is null)
                 {
+                    // Read the record only after the retry failed: a holder deletes its record
+                    // before releasing, so an earlier read could name a holder that has since
+                    // been replaced. Read now, it names the current holder or nobody yet.
+                    LockFileRead read = TryReadHoldingProcessId(ownerFilePath);
                     if (!read.ReadFailed && read.HoldingPid is { } holdingPid && IsProcessAlive(holdingPid))
                     {
                         throw new ProjectLockedException(projectDirectory, holdingPid);
