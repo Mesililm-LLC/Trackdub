@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.IO.MemoryMappedFiles;
 using Trackdub.Inference.Onnx.Audio;
+using Trackdub.TestDoubles;
 
 namespace Trackdub.Inference.Tests;
 
@@ -227,6 +228,41 @@ public sealed class MemoryMappedWaveAudioReaderTests
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    [Fact]
+    public async Task ReadHeaderAsync_reads_riff_data_chunk_larger_than_int_max()
+    {
+        const uint dataLength = 3_000_000_000u;
+        using SparseWaveStream stream = SparseWaveStream.CreatePcm16Stereo48k(rf64: false, dataChunkSize: dataLength, ds64DataLength: null, dataLength);
+
+        WavePcm16Layout layout = await WaveAudioReader.ReadHeaderAsync(stream, CancellationToken.None);
+
+        Assert.Equal(SparseWaveStream.RiffDataStart, layout.DataStart);
+        Assert.Equal(dataLength / 4, layout.SampleFrameCount);
+    }
+
+    [Fact]
+    public async Task ReadHeaderAsync_reads_rf64_data_length_from_ds64()
+    {
+        const long dataLength = 5_000_000_000L;
+        using SparseWaveStream stream = SparseWaveStream.CreatePcm16Stereo48k(rf64: true, dataChunkSize: uint.MaxValue, ds64DataLength: dataLength, dataLength);
+
+        WavePcm16Layout layout = await WaveAudioReader.ReadHeaderAsync(stream, CancellationToken.None);
+
+        Assert.Equal(SparseWaveStream.Rf64DataStart, layout.DataStart);
+        Assert.Equal(dataLength / 4, layout.SampleFrameCount);
+    }
+
+    [Fact]
+    public async Task ReadHeaderAsync_rejects_riff_data_chunk_size_placeholder()
+    {
+        using SparseWaveStream stream = SparseWaveStream.CreatePcm16Stereo48k(rf64: false, dataChunkSize: uint.MaxValue, ds64DataLength: null, dataLength: 5_000_000_000L);
+
+        InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => WaveAudioReader.ReadHeaderAsync(stream, CancellationToken.None));
+
+        Assert.Contains("0xFFFFFFFF placeholder", exception.Message, StringComparison.Ordinal);
     }
 
     private static string CreateTempDirectory()

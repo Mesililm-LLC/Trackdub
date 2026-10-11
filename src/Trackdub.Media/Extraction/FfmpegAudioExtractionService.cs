@@ -19,18 +19,44 @@ public sealed class FfmpegAudioExtractionService : IAudioExtractionService
         this.processRunner = processRunner;
         toolResolver = new FfmpegToolResolver(ffmpegPath);
     }
-    public Task<AudioExtractionResult> ExtractNormalizedAudioAsync(
+    public async Task<AudioExtractionResult> ExtractNormalizedAudioAsync(
         string sourcePath,
         string destinationPath,
         CancellationToken cancellationToken,
-        int? maxEncoderThreads = null) =>
-        ExtractInternalAsync(
+        int? maxEncoderThreads = null)
+    {
+        AudioExtractionResult result = await ExtractInternalAsync(
             sourcePath,
             destinationPath,
             sampleRate: 48000,
             channelCount: 2,
             cancellationToken,
-            maxEncoderThreads);
+            maxEncoderThreads).ConfigureAwait(false);
+
+        // Export mixes the whole normalized track in one float[] (WavePcm16.ReadSamplesAsync), so fail here,
+        // before hours of pipeline work, rather than with an OverflowException at export.
+        if (DescribeUnmixableLength(result) is string message)
+        {
+            File.Delete(result.OutputPath);
+            throw new InvalidOperationException(message);
+        }
+
+        return result;
+    }
+
+    internal static string? DescribeUnmixableLength(AudioExtractionResult result)
+    {
+        long maxFrames = Array.MaxLength / result.ChannelCount;
+        if (result.SampleFrames <= maxFrames)
+        {
+            return null;
+        }
+
+        return string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"Source audio is {result.DurationSeconds / 3600d:F2} h long; the longest supported source is " +
+            $"{maxFrames / (double)result.SampleRate / 3600d:F2} h ({result.SampleRate} Hz, {result.ChannelCount} channels).");
+    }
 
     public Task<AudioExtractionResult> ExtractStemSeparationAudioAsync(
         string sourcePath,

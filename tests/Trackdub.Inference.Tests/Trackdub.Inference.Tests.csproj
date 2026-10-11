@@ -58,6 +58,7 @@
   <ItemGroup>
     <Compile Include="..\Trackdub.TestDoubles\FakeDeviceEnumerator.cs" Link="TestDoubles\FakeDeviceEnumerator.cs" />
     <Compile Include="..\Trackdub.TestDoubles\RequiresBundledModelFactAttribute.cs" Link="TestDoubles\RequiresBundledModelFactAttribute.cs" />
+    <Compile Include="..\Trackdub.TestDoubles\SparseWaveStream.cs" Link="TestDoubles\SparseWaveStream.cs" />
   </ItemGroup>
 
   <!-- Windows tests use the same Windows ML / GenAI.WinML native pair as production. -->

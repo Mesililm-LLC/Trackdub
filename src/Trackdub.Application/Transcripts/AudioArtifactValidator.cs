@@ -25,12 +25,26 @@ public static class AudioArtifactValidator
             FileShare.Read,
             bufferSize: 4096,
             options: FileOptions.Asynchronous | FileOptions.SequentialScan);
+        return await ReadAndValidateAsync(stream, path, cancellationToken).ConfigureAwait(false);
+    }
 
+    internal static async Task<AudioFileInfo> ReadAndValidateAsync(
+        Stream stream,
+        string path,
+        CancellationToken cancellationToken)
+    {
+        byte[] buf8 = new byte[8];
         byte[] buf4 = new byte[4];
         byte[] buf2 = new byte[2];
 
-        await EnsureFourCcAsync(stream, buf4, "RIFF", cancellationToken).ConfigureAwait(false);
-        await ReadInt32Async(stream, buf4, cancellationToken).ConfigureAwait(false);
+        string riffMarker = await ReadFourCcAsync(stream, buf4, cancellationToken).ConfigureAwait(false);
+        bool isRf64 = string.Equals(riffMarker, "RF64", StringComparison.Ordinal);
+        if (!isRf64 && !string.Equals(riffMarker, "RIFF", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Expected WAV marker 'RIFF' or 'RF64' but found '{riffMarker}'.");
+        }
+
+        await ReadUInt32Async(stream, buf4, cancellationToken).ConfigureAwait(false);
         await EnsureFourCcAsync(stream, buf4, "WAVE", cancellationToken).ConfigureAwait(false);
 
         ushort audioFormat = 0;
@@ -38,22 +52,23 @@ public static class AudioArtifactValidator
         int sampleRate = 0;
         ushort blockAlign = 0;
         ushort bitsPerSample = 0;
-        int dataLength = 0;
+        ulong? ds64DataLength = null;
+        long dataLength = 0;
         bool fmtChunkSeen = false;
 
         while (stream.Position < stream.Length)
         {
             string chunkId = await ReadFourCcAsync(stream, buf4, cancellationToken).ConfigureAwait(false);
-            int chunkSize = await ReadInt32Async(stream, buf4, cancellationToken).ConfigureAwait(false);
-            if (chunkSize < 0)
-            {
-                throw new InvalidOperationException($"WAV chunk '{chunkId}' at offset {stream.Position} has negative size {chunkSize}.");
-            }
-
-            long nextChunk = stream.Position + chunkSize;
+            uint chunkSize = await ReadUInt32Async(stream, buf4, cancellationToken).ConfigureAwait(false);
+            long chunkStart = stream.Position;
+            long chunkLength = chunkSize;
 
             switch (chunkId)
             {
+                case "ds64" when isRf64 && chunkSize >= 16:
+                    await ReadUInt64Async(stream, buf8, cancellationToken).ConfigureAwait(false);
+                    ds64DataLength = await ReadUInt64Async(stream, buf8, cancellationToken).ConfigureAwait(false);
+                    break;
                 case "fmt ":
                     if (chunkSize < 16)
                     {
@@ -69,17 +84,17 @@ public static class AudioArtifactValidator
                     fmtChunkSeen = true;
                     break;
                 case "data":
-                    dataLength = chunkSize;
+                    dataLength = chunkLength = ResolveDataChunkLength(chunkSize, isRf64, ds64DataLength);
                     break;
             }
 
-            long paddedEnd = nextChunk + (chunkSize % 2);
-            if (paddedEnd < stream.Position || paddedEnd > stream.Length)
+            long remaining = stream.Length - chunkStart;
+            if (chunkLength > remaining || chunkLength + (chunkLength % 2) > remaining)
             {
-                throw new InvalidOperationException($"WAV chunk '{chunkId}' at offset {nextChunk} overflows file length {stream.Length}.");
+                throw new InvalidOperationException($"WAV chunk '{chunkId}' at offset {chunkStart} overflows file length {stream.Length}.");
             }
 
-            stream.Position = paddedEnd;
+            stream.Position = chunkStart + chunkLength + (chunkLength % 2);
         }
 
         if (!fmtChunkSeen)
@@ -131,8 +146,31 @@ public static class AudioArtifactValidator
         return new AudioFileInfo(sampleRate, channelCount, durationSeconds);
     }
 
+    private static long ResolveDataChunkLength(uint chunkSize, bool isRf64, ulong? ds64DataLength)
+    {
+        if (chunkSize != uint.MaxValue)
+        {
+            return chunkSize;
+        }
+
+        if (!isRf64)
+        {
+            // Odd, so never a whole number of PCM16 frames: it is the size placeholder a writer left unpatched.
+            throw new InvalidOperationException(
+                "WAV data chunk size is the unpatched 0xFFFFFFFF placeholder, so the audio length is unknown. " +
+                "The file was likely written past the 4 GiB RIFF limit without RF64 or its header was never finalized.");
+        }
+
+        if (ds64DataLength is not ulong length || length > long.MaxValue)
+        {
+            throw new InvalidOperationException("RF64 WAV data chunk defers its size to a ds64 chunk, but no valid ds64 chunk precedes it.");
+        }
+
+        return (long)length;
+    }
+
     private static async Task EnsureFourCcAsync(
-        FileStream stream,
+        Stream stream,
         byte[] buf,
         string expected,
         CancellationToken cancellationToken)
@@ -145,7 +183,7 @@ public static class AudioArtifactValidator
     }
 
     private static async Task<string> ReadFourCcAsync(
-        FileStream stream,
+        Stream stream,
         byte[] buf,
         CancellationToken cancellationToken)
     {
@@ -154,7 +192,7 @@ public static class AudioArtifactValidator
     }
 
     private static async Task<ushort> ReadUInt16Async(
-        FileStream stream,
+        Stream stream,
         byte[] buf,
         CancellationToken cancellationToken)
     {
@@ -163,7 +201,7 @@ public static class AudioArtifactValidator
     }
 
     private static async Task<int> ReadInt32Async(
-        FileStream stream,
+        Stream stream,
         byte[] buf,
         CancellationToken cancellationToken)
     {
@@ -171,8 +209,26 @@ public static class AudioArtifactValidator
         return BinaryPrimitives.ReadInt32LittleEndian(buf);
     }
 
+    private static async Task<uint> ReadUInt32Async(
+        Stream stream,
+        byte[] buf,
+        CancellationToken cancellationToken)
+    {
+        await ReadExactAsync(stream, buf.AsMemory(0, 4), cancellationToken).ConfigureAwait(false);
+        return BinaryPrimitives.ReadUInt32LittleEndian(buf);
+    }
+
+    private static async Task<ulong> ReadUInt64Async(
+        Stream stream,
+        byte[] buf,
+        CancellationToken cancellationToken)
+    {
+        await ReadExactAsync(stream, buf.AsMemory(0, 8), cancellationToken).ConfigureAwait(false);
+        return BinaryPrimitives.ReadUInt64LittleEndian(buf);
+    }
+
     private static async Task ReadExactAsync(
-        FileStream stream,
+        Stream stream,
         Memory<byte> buf,
         CancellationToken cancellationToken)
     {

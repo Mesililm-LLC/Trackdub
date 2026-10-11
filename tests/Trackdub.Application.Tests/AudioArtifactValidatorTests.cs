@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Text;
 using Trackdub.Application.Transcripts;
+using Trackdub.TestDoubles;
 
 namespace Trackdub.Application.Tests;
 
@@ -87,6 +88,42 @@ public sealed class AudioArtifactValidatorTests : IDisposable
         string path = WriteWav(wav);
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => AudioArtifactValidator.ReadAndValidateAsync(path, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task RiffDataChunkLargerThanIntMax_ReturnsDuration()
+    {
+        // ~4.3 h of 48 kHz stereo: the normalized track a 4 h source produces.
+        const uint dataLength = 3_000_000_000u;
+        using SparseWaveStream stream = SparseWaveStream.CreatePcm16Stereo48k(rf64: false, dataChunkSize: dataLength, ds64DataLength: null, dataLength);
+
+        AudioArtifactValidator.AudioFileInfo info = await AudioArtifactValidator.ReadAndValidateAsync(stream, "normalized.wav", TestContext.Current.CancellationToken);
+
+        Assert.Equal(48000, info.SampleRate);
+        Assert.Equal(2, info.ChannelCount);
+        Assert.Equal(15_625d, info.DurationSeconds);
+    }
+
+    [Fact]
+    public async Task Rf64DataLengthFromDs64_ReturnsDuration()
+    {
+        const long dataLength = 4_608_000_000L;
+        using SparseWaveStream stream = SparseWaveStream.CreatePcm16Stereo48k(rf64: true, dataChunkSize: uint.MaxValue, ds64DataLength: dataLength, dataLength);
+
+        AudioArtifactValidator.AudioFileInfo info = await AudioArtifactValidator.ReadAndValidateAsync(stream, "normalized.wav", TestContext.Current.CancellationToken);
+
+        Assert.Equal(24_000d, info.DurationSeconds);
+    }
+
+    [Fact]
+    public async Task RiffDataChunkSizePlaceholder_ThrowsWithCause()
+    {
+        using SparseWaveStream stream = SparseWaveStream.CreatePcm16Stereo48k(rf64: false, dataChunkSize: uint.MaxValue, ds64DataLength: null, dataLength: 5_000_000_000L);
+
+        InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => AudioArtifactValidator.ReadAndValidateAsync(stream, "normalized.wav", TestContext.Current.CancellationToken));
+
+        Assert.Contains("0xFFFFFFFF placeholder", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

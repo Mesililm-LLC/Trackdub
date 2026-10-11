@@ -45,6 +45,7 @@
   <ItemGroup>
     <Compile Include="..\Trackdub.TestDoubles\RequiresBundledModelFactAttribute.cs" Link="TestDoubles\RequiresBundledModelFactAttribute.cs" />
     <Compile Include="..\Trackdub.TestDoubles\FakeWavHelper.cs" Link="TestDoubles\FakeWavHelper.cs" />
+    <Compile Include="..\Trackdub.TestDoubles\SparseWaveStream.cs" Link="TestDoubles\SparseWaveStream.cs" />
     <Compile Include="..\Trackdub.TestDoubles\FakeMediaProbe.cs" Link="TestDoubles\FakeMediaProbe.cs" />
     <Compile Include="..\Trackdub.TestDoubles\FakePipelinePreFlightChecker.cs" Link="TestDoubles\FakePipelinePreFlightChecker.cs" />
   </ItemGroup>

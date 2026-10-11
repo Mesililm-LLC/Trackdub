@@ -34,6 +34,7 @@ internal static class WavePcm16
     private const ushort WaveFormatPcm = 1;
     private const ushort WaveFormatExtensible = 0xFFFE;
     private const uint Ds64MinimumSize = 16;
+    private const int ReadChunkBytes = 1024 * 1024;
     private static readonly byte[] PcmSubFormatGuid =
     [
         0x01, 0x00, 0x00, 0x00,
@@ -540,9 +541,12 @@ internal static class WavePcm16
 
         checked
         {
+            // Only the float[] has to fit in an array; the PCM bytes are streamed in chunks so a range whose
+            // byte count exceeds int.MaxValue (over ~3.1 h of 48 kHz stereo) still reads.
             int sampleCount = (int)(frameCount * info.ChannelCount);
-            int byteCount = (int)(frameCount * info.BlockAlign);
-            var bytes = new byte[byteCount];
+            var samples = new float[sampleCount];
+            int framesPerChunk = Math.Max(1, ReadChunkBytes / info.BlockAlign);
+            var bytes = new byte[(int)Math.Min(frameCount, framesPerChunk) * info.BlockAlign];
             await using var stream = new FileStream(
                 Path.GetFullPath(path),
                 FileMode.Open,
@@ -551,18 +555,21 @@ internal static class WavePcm16
                 bufferSize: 81920,
                 options: FileOptions.Asynchronous | FileOptions.SequentialScan);
             stream.Position = info.DataStartPosition + (startFrame * info.BlockAlign);
-            await ReadExactAsync(stream, bytes, cancellationToken).ConfigureAwait(false);
 
-            var samples = new float[sampleCount];
-            for (int frame = 0; frame < frameCount; frame++)
+            int sampleIndex = 0;
+            for (long frame = 0; frame < frameCount; frame += framesPerChunk)
             {
-                int frameOffset = frame * info.BlockAlign;
-                int sampleBase = frame * info.ChannelCount;
-                for (int channel = 0; channel < info.ChannelCount; channel++)
+                int chunkFrames = (int)Math.Min(framesPerChunk, frameCount - frame);
+                await ReadExactAsync(stream, bytes.AsMemory(0, chunkFrames * info.BlockAlign), cancellationToken).ConfigureAwait(false);
+                for (int chunkFrame = 0; chunkFrame < chunkFrames; chunkFrame++)
                 {
-                    int sampleOffset = frameOffset + (channel * sizeof(short));
-                    samples[sampleBase + channel] =
-                        BinaryPrimitives.ReadInt16LittleEndian(bytes.AsSpan(sampleOffset, sizeof(short))) / 32768f;
+                    int frameOffset = chunkFrame * info.BlockAlign;
+                    for (int channel = 0; channel < info.ChannelCount; channel++)
+                    {
+                        int sampleOffset = frameOffset + (channel * sizeof(short));
+                        samples[sampleIndex++] =
+                            BinaryPrimitives.ReadInt16LittleEndian(bytes.AsSpan(sampleOffset, sizeof(short))) / 32768f;
+                    }
                 }
             }
 

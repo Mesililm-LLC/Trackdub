@@ -1,3 +1,4 @@
+using Trackdub.Contracts;
 using Trackdub.Media.Extraction;
 using Trackdub.Media.Process;
 using Trackdub.Media.Waveforms;
@@ -70,6 +71,19 @@ public sealed class FfmpegAudioExtractionServiceTests
                 Directory.Delete(tempDirectory, recursive: true);
             }
         }
+    }
+
+    [Fact]
+    public void DescribeUnmixableLength_accepts_longest_mixable_track_and_rejects_one_frame_more()
+    {
+        long maxFrames = Array.MaxLength / 2;
+        var longest = new AudioExtractionResult("a.wav", maxFrames / 48000d, 48000, 2, maxFrames);
+        var tooLong = longest with { SampleFrames = maxFrames + 1, DurationSeconds = (maxFrames + 1) / 48000d };
+
+        Assert.Null(FfmpegAudioExtractionService.DescribeUnmixableLength(longest));
+        string? message = FfmpegAudioExtractionService.DescribeUnmixableLength(tooLong);
+        Assert.NotNull(message);
+        Assert.Contains("longest supported source is 6.21 h", message, StringComparison.Ordinal);
     }
 
     private sealed class WavWritingProcessRunner : IProcessRunner
