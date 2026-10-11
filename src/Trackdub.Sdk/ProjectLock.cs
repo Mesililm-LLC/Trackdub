@@ -10,12 +10,16 @@ namespace Trackdub.Sdk;
 /// The sidecar persists between runs and its diagnostic metadata is overwritten after acquisition;
 /// the open file handle, rather than the contents or age of the file, determines lock ownership.
 /// Do not manually remove the sidecar while a run may hold its handle.
+/// The holder also publishes its PID in a separate <c>.trackdub.lock.owner</c> record, because
+/// the lock file's own exclusive handle refuses every other open (Windows sharing modes, and an
+/// exclusive <c>flock</c> on Unix), so a contending process could never read the PID from it.
 /// Lock identity follows symlinks (and case on case-insensitive file systems) so alternate paths
 /// naming the same project still conflict.
 /// </summary>
 public sealed class ProjectLock : IDisposable, IAsyncDisposable
 {
     private const string LockFileName = ".trackdub.lock";
+    private const string OwnerFileName = ".trackdub.lock.owner";
 
     private static readonly object s_globalLock = new();
 
@@ -28,12 +32,14 @@ public sealed class ProjectLock : IDisposable, IAsyncDisposable
     private static readonly HashSet<string> s_heldPaths = new(StringComparer.Ordinal);
 
     private readonly string _registryKey;
+    private readonly string _ownerFilePath;
     private FileStream? _lockStream;
     private volatile bool _disposed;
 
-    private ProjectLock(string registryKey, FileStream lockStream)
+    private ProjectLock(string registryKey, string ownerFilePath, FileStream lockStream)
     {
         _registryKey = registryKey;
+        _ownerFilePath = ownerFilePath;
         _lockStream = lockStream;
     }
 
@@ -65,6 +71,7 @@ public sealed class ProjectLock : IDisposable, IAsyncDisposable
         string fullPath = Path.GetFullPath(projectDirectory);
         string canonicalPath = CanonicalizeDirectoryPath(fullPath);
         string lockFilePath = Path.Join(canonicalPath, LockFileName);
+        string ownerFilePath = Path.Join(canonicalPath, OwnerFileName);
 
         // Ensure the directory exists so we can create the lock file.
         Directory.CreateDirectory(canonicalPath);
@@ -87,15 +94,17 @@ public sealed class ProjectLock : IDisposable, IAsyncDisposable
             if (stream is null)
             {
                 // The exclusive-open failure is authoritative: a file handle still owns the
-                // lock even if its diagnostic contents are empty, corrupt, or stale. Read its
-                // PID for diagnostics, then retry once in case the holder released the handle
-                // while we were checking. Never unlink the path: another process could acquire
-                // a replacement between our stale check and delete, causing both runs to hold
-                // different files under the same lock name.
-                LockFileRead read = TryReadHoldingProcessId(lockFilePath);
+                // lock even if its owner record is missing, corrupt, or stale. Retry once in
+                // case the holder released the handle meanwhile. Never unlink the path: another
+                // process could acquire a replacement between our stale check and delete,
+                // causing both runs to hold different files under the same lock name.
                 stream = TryOpenExclusive(lockFilePath);
                 if (stream is null)
                 {
+                    // Read the record only after the retry failed: a holder deletes its record
+                    // before releasing, so an earlier read could name a holder that has since
+                    // been replaced. Read now, it names the current holder or nobody yet.
+                    LockFileRead read = TryReadHoldingProcessId(ownerFilePath);
                     if (!read.ReadFailed && read.HoldingPid is { } holdingPid && IsProcessAlive(holdingPid))
                     {
                         throw new ProjectLockedException(projectDirectory, holdingPid);
@@ -107,9 +116,10 @@ public sealed class ProjectLock : IDisposable, IAsyncDisposable
 
             // Write diagnostic info (PID + timestamp) to the lock file.
             WriteLockInfo(stream);
+            TryWriteOwnerRecord(ownerFilePath);
 
             s_heldPaths.Add(registryKey);
-            return new ProjectLock(registryKey, stream);
+            return new ProjectLock(registryKey, ownerFilePath, stream);
         }
     }
 
@@ -136,6 +146,18 @@ public sealed class ProjectLock : IDisposable, IAsyncDisposable
     {
         FileStream? stream = Interlocked.Exchange(ref _lockStream, null);
         if (stream is null) return;
+
+        // Delete the owner record while the handle still excludes every other holder, so this
+        // can only remove our own record, never one a later holder has just published.
+        try
+        {
+            File.Delete(_ownerFilePath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Diagnostic only. A leftover record names a PID that no longer holds the lock, and
+            // contenders report a PID only while the lock is held and that process is alive.
+        }
 
         // Remove from the intra-process registry before releasing the file handle,
         // so that a racing Acquire on the same path sees the slot as free only after
@@ -326,19 +348,18 @@ public sealed class ProjectLock : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// Attempts to read the PID from an existing lock file (best-effort, non-exclusive read).
+    /// Attempts to read the holder's PID from its owner record (best-effort, non-exclusive read).
     /// Distinguishes "the file could not be read at all" from "the file is readable but carries
     /// no PID" so diagnostics can report a holder only when the data supports one. Acquisition
     /// itself is decided by the exclusive file handle, never by stale or missing metadata.
     /// </summary>
-    private static LockFileRead TryReadHoldingProcessId(string lockFilePath)
+    private static LockFileRead TryReadHoldingProcessId(string ownerFilePath)
     {
         try
         {
-            // Try to read the file content without exclusive access.
-            // This may fail if the file is locked, which is fine.
+            // The owner record is never held open, so the holder does not block this read.
             using var reader = new FileStream(
-                lockFilePath,
+                ownerFilePath,
                 FileMode.Open,
                 FileAccess.Read,
                 FileShare.ReadWrite | FileShare.Delete,
@@ -349,7 +370,7 @@ public sealed class ProjectLock : IDisposable, IAsyncDisposable
 
             if (string.IsNullOrWhiteSpace(content))
             {
-                // A lock file without a PID has an unknown holder; acquisition still follows
+                // A record without a PID has an unknown holder; acquisition still follows
                 // the file handle, not its diagnostic contents.
                 return new LockFileRead(ReadFailed: false, HoldingPid: null);
             }
@@ -372,13 +393,13 @@ public sealed class ProjectLock : IDisposable, IAsyncDisposable
         }
         catch (FileNotFoundException)
         {
-            // The path disappeared while reading the diagnostic data. The exclusive-open retry
-            // below determines whether another holder acquired it or the path is free.
+            // No record: the holder has not published one yet, could not write it, or predates
+            // owner records. The exclusive-open retry below still decides availability.
             return new LockFileRead(ReadFailed: false, HoldingPid: null);
         }
         catch (DirectoryNotFoundException)
         {
-            // The lock file's directory is gone, so there is no live holder either.
+            // The project directory is gone, so there is no live holder either.
             return new LockFileRead(ReadFailed: false, HoldingPid: null);
         }
         catch
@@ -419,28 +440,56 @@ public sealed class ProjectLock : IDisposable, IAsyncDisposable
         stream.SetLength(0);
         stream.Position = 0;
 
-        var lockInfo = new LockFileContent
-        {
-            pid = Environment.ProcessId,
-            timestamp = DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture),
-            machineName = Environment.MachineName
-        };
-
-        JsonSerializer.Serialize(stream, lockInfo);
+        JsonSerializer.Serialize(stream, CreateLockInfo());
         stream.Flush();
     }
 
     /// <summary>
-    /// Result of reading a lock file's holder PID. <see cref="ReadFailed"/> is set when the file
+    /// Publishes this process's owner record next to the lock file, where a contending process
+    /// can read it. The record is written to a unique temporary file and moved into place, so a
+    /// reader never sees a partial record. Best-effort: a missing record only costs the PID in a
+    /// contender's message, so failing to write it must not fail the run that holds the lock.
+    /// </summary>
+    private static void TryWriteOwnerRecord(string ownerFilePath)
+    {
+        string tempPath = $"{ownerFilePath}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            File.WriteAllText(tempPath, JsonSerializer.Serialize(CreateLockInfo()));
+            File.Move(tempPath, ownerFilePath, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Diagnostic only: a missing record costs the PID in a contender's message, never the run.
+            try
+            {
+                File.Delete(tempPath);
+            }
+            catch (Exception cleanupEx) when (cleanupEx is IOException or UnauthorizedAccessException)
+            {
+                // Nothing more to do; the temporary file carries no lock state.
+            }
+        }
+    }
+
+    private static LockFileContent CreateLockInfo() => new()
+    {
+        pid = Environment.ProcessId,
+        timestamp = DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture),
+        machineName = Environment.MachineName
+    };
+
+    /// <summary>
+    /// Result of reading the owner record's holder PID. <see cref="ReadFailed"/> is set when the file
     /// could not be read at all (the holder is unknown); a readable file without a PID — such as
-    /// one left empty by a crash between open and write — reports <c>ReadFailed = false</c> with a
+    /// a record with no <c>pid</c> field — reports <c>ReadFailed = false</c> with a
     /// null PID. In either case, the exclusive file handle, not its contents, determines whether
     /// the lock is available.
     /// </summary>
     private readonly record struct LockFileRead(bool ReadFailed, int? HoldingPid);
 
     /// <summary>
-    /// JSON structure written to the lock file for diagnostics.
+    /// JSON structure written to the lock file and the owner record for diagnostics.
     /// </summary>
     private sealed record LockFileContent
     {
