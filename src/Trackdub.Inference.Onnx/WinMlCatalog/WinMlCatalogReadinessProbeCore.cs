@@ -1,4 +1,5 @@
 using Trackdub.Contracts.ApplicationContracts;
+using Trackdub.Inference.Onnx.ExecutionProviders.LinMl;
 #if WINDOWS
 using Trackdub.Inference.Onnx.OpenVino;
 using Trackdub.Inference.Onnx.Qnn;
@@ -63,6 +64,24 @@ public sealed class OpenVinoCatalogReadinessProbe : IOpenVinoCatalogReadinessPro
 #if WINDOWS
     private readonly WindowsMlOpenVinoCatalogService _catalog = new();
 #endif
+    private readonly ILinuxOpenVinoCatalog? _linuxCatalog;
+
+    public OpenVinoCatalogReadinessProbe()
+        : this(DefaultLinuxCatalog())
+    {
+    }
+
+    internal OpenVinoCatalogReadinessProbe(ILinuxOpenVinoCatalog? linuxCatalog)
+    {
+        _linuxCatalog = linuxCatalog;
+    }
+
+    private static ILinuxOpenVinoCatalog? DefaultLinuxCatalog() =>
+#if LINML
+        OperatingSystem.IsLinux() ? LinMlOpenVinoCatalog.Default : null;
+#else
+        null;
+#endif
 
     public Task<WinMlCatalogReadinessReport> ProbeAsync(
         bool allowProviderDownloads,
@@ -83,8 +102,59 @@ public sealed class OpenVinoCatalogReadinessProbe : IOpenVinoCatalogReadinessPro
         }
 #endif
 
-        return Task.FromResult(Unsupported());
+        return _linuxCatalog is not null
+            ? ProbeLinuxAsync(_linuxCatalog, allowProviderDownloads, cancellationToken)
+            : Task.FromResult(Unsupported());
     }
+
+    private static async Task<WinMlCatalogReadinessReport> ProbeLinuxAsync(
+        ILinuxOpenVinoCatalog catalog,
+        bool allowProviderDownloads,
+        CancellationToken cancellationToken)
+    {
+        LinuxOpenVinoCatalogResult result = await catalog
+            .EnsureReadyAsync(allowProviderDownloads, cancellationToken)
+            .ConfigureAwait(false);
+        return ToReport(result);
+    }
+
+    internal static WinMlCatalogReadinessReport ToReport(LinuxOpenVinoCatalogResult result) =>
+        result.Status switch
+        {
+            LinuxOpenVinoCatalogStatus.Ready => LinuxReport(WinMlCatalogReadinessBlocker.None, ready: true, result.Detail),
+            LinuxOpenVinoCatalogStatus.NotInstalled => LinuxReport(WinMlCatalogReadinessBlocker.EpNotPresent, ready: false, result.Detail),
+            // Download, verification or registration failed: the install action may be retried.
+            LinuxOpenVinoCatalogStatus.Failed => LinuxReport(WinMlCatalogReadinessBlocker.EpDownloadFailed, ready: false, result.Detail),
+            LinuxOpenVinoCatalogStatus.NoDevices => new(
+                OpenVinoCatalogProviderIds.LinMl,
+                WinMlCatalogPlatformRoute.LinMlCatalog,
+                WinMlCatalogReadinessBlocker.HardwareNotSupported,
+                IsHardwareEligible: false,
+                IsOrtProviderListed: false,
+                IsRegisteredWithOrt: false,
+                Detail: result.Detail),
+            _ => new(
+                OpenVinoCatalogProviderIds.LinMl,
+                WinMlCatalogPlatformRoute.None,
+                WinMlCatalogReadinessBlocker.PlatformUnsupported,
+                IsHardwareEligible: false,
+                IsOrtProviderListed: false,
+                IsRegisteredWithOrt: false,
+                Detail: result.Detail),
+        };
+
+    private static WinMlCatalogReadinessReport LinuxReport(
+        WinMlCatalogReadinessBlocker blocker,
+        bool ready,
+        string detail) =>
+        new(
+            OpenVinoCatalogProviderIds.LinMl,
+            WinMlCatalogPlatformRoute.LinMlCatalog,
+            blocker,
+            IsHardwareEligible: true,
+            IsOrtProviderListed: ready,
+            IsRegisteredWithOrt: ready,
+            Detail: detail);
 
     private static WinMlCatalogReadinessReport Unsupported() =>
         new(
@@ -94,7 +164,7 @@ public sealed class OpenVinoCatalogReadinessProbe : IOpenVinoCatalogReadinessPro
             IsHardwareEligible: false,
             IsOrtProviderListed: false,
             IsRegisteredWithOrt: false,
-            Detail: "OpenVINO catalog EP is supported on Windows only.");
+            Detail: "OpenVINO catalog EP is supported on Windows (Windows ML) and Linux (LinML) only.");
 }
 
 public sealed class QnnCatalogReadinessProbe : IQnnCatalogReadinessProbe
