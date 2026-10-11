@@ -31,28 +31,28 @@ public static class DeviceEnumeratorFactory
         return new WindowsDeviceEnumerator(
             openVinoAvailability,
             loggerFactory.CreateLogger<WindowsDeviceEnumerator>());
-#elif MACOS
-#pragma warning disable CA1416 // macOS-only type constructed under the MACOS compile constant
-        return new MacDeviceEnumerator(loggerFactory.CreateLogger<MacDeviceEnumerator>());
-#pragma warning restore CA1416
-#elif LINUX
-#pragma warning disable CA1416 // Linux-only type constructed under the LINUX compile constant
-        return CreateLinux(openVinoAvailability, loggerFactory, new PhysicalSysfsReader());
-#pragma warning restore CA1416
 #else
-        // Portable TFM with no platform define: mirror the composition root's CPU-only fallback so
-        // callers see the same (empty) adapter list the run itself would.
+        if (OperatingSystem.IsMacOSVersionAtLeast(10, 15))
+        {
+            return new MacDeviceEnumerator(loggerFactory.CreateLogger<MacDeviceEnumerator>());
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+            return CreateLinux(openVinoAvailability, loggerFactory, new PhysicalSysfsReader());
+        }
+
+        // Any other OS: mirror the composition root's CPU-only fallback so callers see the same
+        // (empty) adapter list the run itself would.
         return new CpuOnlyDeviceEnumerator();
 #endif
     }
 
-#if LINUX
     /// <summary>
     /// Linux enumerator over an explicit sysfs reader, so the composition root can hand in the
-    /// reader it registered. <c>ISysfsReader</c> is only compiled into Linux builds, hence the
-    /// guard instead of an optional parameter on <see cref="Create"/>.
+    /// reader it registered.
     /// </summary>
-#pragma warning disable CA1416 // Linux-only type constructed under the LINUX compile constant
+    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
     internal static IDeviceEnumerator CreateLinux(
         IOpenVinoAvailabilityProvider openVinoAvailability,
         ILoggerFactory loggerFactory,
@@ -61,6 +61,4 @@ public static class DeviceEnumeratorFactory
             openVinoAvailability,
             sysfsReader,
             loggerFactory.CreateLogger<LinuxDeviceEnumerator>());
-#pragma warning restore CA1416
-#endif
 }

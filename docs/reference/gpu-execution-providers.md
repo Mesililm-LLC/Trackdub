@@ -14,6 +14,10 @@ on Windows:
 | `net10.0-windows10.0.19041.0` | CPU, TensorRT RTX, **DirectML**, Windows ML catalog EPs (MIGraphX, OpenVINO catalog, QNN, VitisAI) |
 | Linux `net10.0` | CPU, TensorRT RTX, native CUDA/TensorRT (system ORT GPU build), **OpenVINO** (plugin EP via [LinML.Catalog](https://github.com/trackdubllc/LinML)) |
 
+The portable `net10.0` build compiles the Linux and macOS code paths on every build host and
+picks the bootstrapper, device enumerator and native routes with `OperatingSystem.IsLinux()` /
+`IsMacOS()` at run time, so the same artifact behaves the same whichever OS built it.
+
 `OnnxRuntimeBuildCapabilities` encodes this per target framework. Provider
 discovery consults it, so `trackdub providers list` on the portable build reports
 DirectML and the Windows ML catalog EPs as unavailable instead of listing them
