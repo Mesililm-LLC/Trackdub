@@ -164,6 +164,7 @@ internal static class Program
         rootCommand.Add(ModelsCommand.Create());
         rootCommand.Add(ProvidersCommand.Create());
         rootCommand.Add(CacheCommand.Create());
+        rootCommand.Add(ServeCommand.Create());
         rootCommand.Add(UiCommand.Create(isSetupInteractive));
         rootCommand.Add(CompleteCommand.Create(rootCommand));
         rootCommand.Add(CompletionCommand.Create());

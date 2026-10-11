@@ -211,6 +211,26 @@ internal static class CliParseHelpers
             requireExecutionProvider);
     }
 
+    /// <summary>
+    /// The execution-provider pin the global options resolve to (after --prefer-gpu/--require-gpu),
+    /// for commands that pick a provider per model instead of through the planner. Call after
+    /// <see cref="TryBuildFactory(ParseResult, out int)"/>, which reports invalid values.
+    /// </summary>
+    internal static bool TryResolveExecutionProviderPin(
+        ParseResult parseResult,
+        out ExecutionProviderKind? provider,
+        out bool requireExecutionProvider)
+    {
+        string? executionProvider = GetGlobalOptionValue<string?>(parseResult, "execution-provider");
+        requireExecutionProvider = GetGlobalOptionValue<bool>(parseResult, "require-execution-provider");
+        (executionProvider, requireExecutionProvider, int? gpuError) = CliGpuPreference.Apply(
+            parseResult,
+            executionProvider,
+            requireExecutionProvider);
+        provider = null;
+        return gpuError is null && TryParseExecutionProvider(executionProvider, out provider, out _);
+    }
+
     private static void ReportGpuPreferenceConflict()
     {
         CliErrorReporter.ReportValidationError(
