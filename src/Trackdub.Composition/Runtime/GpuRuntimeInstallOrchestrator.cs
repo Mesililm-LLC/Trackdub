@@ -38,7 +38,8 @@ public sealed class GpuRuntimeInstallOrchestrator(
     {
         ArgumentNullException.ThrowIfNull(progress);
 
-        if (!OperatingSystem.IsWindows())
+        if (!OperatingSystem.IsWindows() &&
+            !(OperatingSystem.IsLinux() && runtimeKind == StarterPackGpuRuntimeKind.IntelOpenVino))
         {
             return new GpuRuntimeInstallResult(
                 Succeeded: false,
