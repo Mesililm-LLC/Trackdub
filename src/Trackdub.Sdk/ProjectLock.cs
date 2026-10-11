@@ -460,6 +460,7 @@ public sealed class ProjectLock : IDisposable, IAsyncDisposable
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            // Diagnostic only: a missing record costs the PID in a contender's message, never the run.
             try
             {
                 File.Delete(tempPath);
