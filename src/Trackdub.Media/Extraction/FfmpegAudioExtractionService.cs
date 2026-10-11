@@ -19,18 +19,44 @@ public sealed class FfmpegAudioExtractionService : IAudioExtractionService
         this.processRunner = processRunner;
         toolResolver = new FfmpegToolResolver(ffmpegPath);
     }
-    public Task<AudioExtractionResult> ExtractNormalizedAudioAsync(
+    public async Task<AudioExtractionResult> ExtractNormalizedAudioAsync(
         string sourcePath,
         string destinationPath,
         CancellationToken cancellationToken,
-        int? maxEncoderThreads = null) =>
-        ExtractInternalAsync(
+        int? maxEncoderThreads = null)
+    {
+        AudioExtractionResult result = await ExtractInternalAsync(
             sourcePath,
             destinationPath,
             sampleRate: 48000,
             channelCount: 2,
             cancellationToken,
-            maxEncoderThreads);
+            maxEncoderThreads).ConfigureAwait(false);
+
+        // Export mixes the whole normalized track in one float[] (WavePcm16.ReadSamplesAsync), so fail here,
+        // before hours of pipeline work, rather than with an OverflowException at export.
+        if (DescribeUnmixableLength(result) is string message)
+        {
+            File.Delete(result.OutputPath);
+            throw new InvalidOperationException(message);
+        }
+
+        return result;
+    }
+
+    internal static string? DescribeUnmixableLength(AudioExtractionResult result)
+    {
+        long maxFrames = Array.MaxLength / result.ChannelCount;
+        if (result.SampleFrames <= maxFrames)
+        {
+            return null;
+        }
+
+        return string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"Source audio is {result.DurationSeconds / 3600d:F2} h long; the longest supported source is " +
+            $"{maxFrames / (double)result.SampleRate / 3600d:F2} h ({result.SampleRate} Hz, {result.ChannelCount} channels).");
+    }
 
     public Task<AudioExtractionResult> ExtractStemSeparationAudioAsync(
         string sourcePath,
@@ -72,6 +98,9 @@ public sealed class FfmpegAudioExtractionService : IAudioExtractionService
             "-ac", channelCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
             "-ar", sampleRate.ToString(System.Globalization.CultureInfo.InvariantCulture),
             "-c:a", "pcm_s16le",
+            // ffmpeg's default (-rf64 never) leaves the 0xFFFFFFFF size placeholder in WAVs past 4 GiB
+            // (~6.2 h at 48 kHz stereo) and still exits 0; auto upgrades those to RF64, which WavePcm16 reads.
+            "-rf64", "auto",
         ];
         if (maxEncoderThreads is int threadBudget && threadBudget > 0)
         {

@@ -33,6 +33,8 @@ internal static class WavePcm16
 {
     private const ushort WaveFormatPcm = 1;
     private const ushort WaveFormatExtensible = 0xFFFE;
+    private const uint Ds64MinimumSize = 16;
+    private const int ReadChunkBytes = 1024 * 1024;
     private static readonly byte[] PcmSubFormatGuid =
     [
         0x01, 0x00, 0x00, 0x00,
@@ -53,12 +55,19 @@ internal static class WavePcm16
             FileShare.Read,
             bufferSize: 4096,
             options: FileOptions.Asynchronous | FileOptions.SequentialScan);
+        return await ReadInfoAsync(stream, cancellationToken).ConfigureAwait(false);
+    }
 
+    internal static async Task<WavePcm16Info> ReadInfoAsync(
+        Stream stream,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] buffer8 = new byte[8];
         byte[] buffer4 = new byte[4];
         byte[] buffer2 = new byte[2];
 
-        EnsureFourCc(await ReadFourCcAsync(stream, buffer4, cancellationToken).ConfigureAwait(false), "RIFF");
-        _ = await ReadInt32Async(stream, buffer4, cancellationToken).ConfigureAwait(false);
+        bool isRf64 = IsRf64(await ReadFourCcAsync(stream, buffer4, cancellationToken).ConfigureAwait(false));
+        _ = await ReadUInt32Async(stream, buffer4, cancellationToken).ConfigureAwait(false);
         EnsureFourCc(await ReadFourCcAsync(stream, buffer4, cancellationToken).ConfigureAwait(false), "WAVE");
 
         ushort audioFormat = 0;
@@ -68,17 +77,24 @@ internal static class WavePcm16
         ushort bitsPerSample = 0;
         uint? channelMask = null;
         bool isExtensiblePcmSubFormat = false;
+        ulong? ds64DataLength = null;
         long dataStart = 0;
-        int dataLength = 0;
+        long dataLength = 0;
 
         while (stream.Position < stream.Length)
         {
             string chunkId = await ReadFourCcAsync(stream, buffer4, cancellationToken).ConfigureAwait(false);
-            int chunkSize = await ReadInt32Async(stream, buffer4, cancellationToken).ConfigureAwait(false);
-            long nextChunk = stream.Position + chunkSize;
+            uint chunkSize = await ReadUInt32Async(stream, buffer4, cancellationToken).ConfigureAwait(false);
+            long chunkStart = stream.Position;
+            long chunkLength = chunkSize;
 
             switch (chunkId)
             {
+                case "ds64" when isRf64 && chunkSize >= Ds64MinimumSize:
+                    _ = await ReadUInt64Async(stream, buffer8, cancellationToken).ConfigureAwait(false);
+                    ds64DataLength = await ReadUInt64Async(stream, buffer8, cancellationToken).ConfigureAwait(false);
+                    break;
+
                 case "fmt ":
                     audioFormat = await ReadUInt16Async(stream, buffer2, cancellationToken).ConfigureAwait(false);
                     channelCount = await ReadUInt16Async(stream, buffer2, cancellationToken).ConfigureAwait(false);
@@ -102,18 +118,12 @@ internal static class WavePcm16
                     break;
 
                 case "data":
-                    dataStart = stream.Position;
-                    dataLength = chunkSize;
+                    dataStart = chunkStart;
+                    dataLength = chunkLength = ResolveDataChunkLength(chunkSize, isRf64, ds64DataLength);
                     break;
             }
 
-            long paddedChunkEnd = nextChunk + (chunkSize % 2);
-            if (paddedChunkEnd > stream.Length)
-            {
-                throw new InvalidOperationException("WAV chunk padding exceeded the file length.");
-            }
-
-            stream.Position = paddedChunkEnd;
+            stream.Position = GetPaddedChunkEnd(chunkStart, chunkLength, stream.Length);
         }
 
         return CreateInfo(audioFormat, channelCount, sampleRate, blockAlign, bitsPerSample, dataStart, dataLength, channelMask, isExtensiblePcmSubFormat);
@@ -122,10 +132,15 @@ internal static class WavePcm16
     public static WavePcm16Info ReadInfo(string path)
     {
         using var stream = File.OpenRead(path);
-        using var reader = new BinaryReader(stream);
+        return ReadInfo(stream);
+    }
 
-        EnsureFourCc(reader.ReadChars(4), "RIFF");
-        _ = reader.ReadInt32();
+    internal static WavePcm16Info ReadInfo(Stream stream)
+    {
+        using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
+
+        bool isRf64 = IsRf64(new string(reader.ReadChars(4)));
+        _ = reader.ReadUInt32();
         EnsureFourCc(reader.ReadChars(4), "WAVE");
 
         ushort audioFormat = 0;
@@ -135,17 +150,24 @@ internal static class WavePcm16
         ushort bitsPerSample = 0;
         uint? channelMask = null;
         bool isExtensiblePcmSubFormat = false;
+        ulong? ds64DataLength = null;
         long dataStart = 0;
-        int dataLength = 0;
+        long dataLength = 0;
 
         while (stream.Position < stream.Length)
         {
             string chunkId = new(reader.ReadChars(4));
-            int chunkSize = reader.ReadInt32();
-            long nextChunk = stream.Position + chunkSize;
+            uint chunkSize = reader.ReadUInt32();
+            long chunkStart = stream.Position;
+            long chunkLength = chunkSize;
 
             switch (chunkId)
             {
+                case "ds64" when isRf64 && chunkSize >= Ds64MinimumSize:
+                    _ = reader.ReadUInt64();
+                    ds64DataLength = reader.ReadUInt64();
+                    break;
+
                 case "fmt ":
                     audioFormat = reader.ReadUInt16();
                     channelCount = reader.ReadUInt16();
@@ -168,18 +190,12 @@ internal static class WavePcm16
                     break;
 
                 case "data":
-                    dataStart = stream.Position;
-                    dataLength = chunkSize;
+                    dataStart = chunkStart;
+                    dataLength = chunkLength = ResolveDataChunkLength(chunkSize, isRf64, ds64DataLength);
                     break;
             }
 
-            long paddedChunkEnd = nextChunk + (chunkSize % 2);
-            if (paddedChunkEnd > stream.Length)
-            {
-                throw new InvalidOperationException("WAV chunk padding exceeded the file length.");
-            }
-
-            stream.Position = paddedChunkEnd;
+            stream.Position = GetPaddedChunkEnd(chunkStart, chunkLength, stream.Length);
         }
 
         return CreateInfo(audioFormat, channelCount, sampleRate, blockAlign, bitsPerSample, dataStart, dataLength, channelMask, isExtensiblePcmSubFormat);
@@ -525,9 +541,12 @@ internal static class WavePcm16
 
         checked
         {
+            // Only the float[] has to fit in an array; the PCM bytes are streamed in chunks so a range whose
+            // byte count exceeds int.MaxValue (over ~3.1 h of 48 kHz stereo) still reads.
             int sampleCount = (int)(frameCount * info.ChannelCount);
-            int byteCount = (int)(frameCount * info.BlockAlign);
-            var bytes = new byte[byteCount];
+            var samples = new float[sampleCount];
+            int framesPerChunk = Math.Max(1, ReadChunkBytes / info.BlockAlign);
+            var bytes = new byte[(int)Math.Min(frameCount, framesPerChunk) * info.BlockAlign];
             await using var stream = new FileStream(
                 Path.GetFullPath(path),
                 FileMode.Open,
@@ -536,18 +555,21 @@ internal static class WavePcm16
                 bufferSize: 81920,
                 options: FileOptions.Asynchronous | FileOptions.SequentialScan);
             stream.Position = info.DataStartPosition + (startFrame * info.BlockAlign);
-            await ReadExactAsync(stream, bytes, cancellationToken).ConfigureAwait(false);
 
-            var samples = new float[sampleCount];
-            for (int frame = 0; frame < frameCount; frame++)
+            int sampleIndex = 0;
+            for (long frame = 0; frame < frameCount; frame += framesPerChunk)
             {
-                int frameOffset = frame * info.BlockAlign;
-                int sampleBase = frame * info.ChannelCount;
-                for (int channel = 0; channel < info.ChannelCount; channel++)
+                int chunkFrames = (int)Math.Min(framesPerChunk, frameCount - frame);
+                await ReadExactAsync(stream, bytes.AsMemory(0, chunkFrames * info.BlockAlign), cancellationToken).ConfigureAwait(false);
+                for (int chunkFrame = 0; chunkFrame < chunkFrames; chunkFrame++)
                 {
-                    int sampleOffset = frameOffset + (channel * sizeof(short));
-                    samples[sampleBase + channel] =
-                        BinaryPrimitives.ReadInt16LittleEndian(bytes.AsSpan(sampleOffset, sizeof(short))) / 32768f;
+                    int frameOffset = chunkFrame * info.BlockAlign;
+                    for (int channel = 0; channel < info.ChannelCount; channel++)
+                    {
+                        int sampleOffset = frameOffset + (channel * sizeof(short));
+                        samples[sampleIndex++] =
+                            BinaryPrimitives.ReadInt16LittleEndian(bytes.AsSpan(sampleOffset, sizeof(short))) / 32768f;
+                    }
                 }
             }
 
@@ -622,6 +644,58 @@ internal static class WavePcm16
         EnsureFourCc(new string(actual), expected);
     }
 
+    private static bool IsRf64(string riffMarker)
+    {
+        if (string.Equals(riffMarker, "RF64", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        EnsureFourCc(riffMarker, "RIFF");
+        return false;
+    }
+
+    private static long ResolveDataChunkLength(uint chunkSize, bool isRf64, ulong? ds64DataLength)
+    {
+        if (chunkSize != uint.MaxValue)
+        {
+            return chunkSize;
+        }
+
+        if (!isRf64)
+        {
+            // A PCM16 data chunk holds whole frames of an even block size, so an odd 0xFFFFFFFF can only be
+            // the placeholder a writer leaves unpatched: ffmpeg does this when the data outgrows 32-bit RIFF
+            // without `-rf64 auto`, and streamed/pipe output never patches it at all.
+            throw new InvalidOperationException(
+                "WAV data chunk size is the unpatched 0xFFFFFFFF placeholder, so the audio length is unknown. " +
+                "The file was likely written past the 4 GiB RIFF limit without RF64 (ffmpeg '-rf64 auto') or its header was never finalized.");
+        }
+
+        if (ds64DataLength is not ulong length)
+        {
+            throw new InvalidOperationException("RF64 WAV data chunk defers its size to a ds64 chunk, but no ds64 chunk precedes it.");
+        }
+
+        if (length > long.MaxValue)
+        {
+            throw new InvalidOperationException($"RF64 WAV ds64 data size {length} is out of range.");
+        }
+
+        return (long)length;
+    }
+
+    private static long GetPaddedChunkEnd(long chunkStart, long chunkLength, long streamLength)
+    {
+        long remaining = streamLength - chunkStart;
+        if (chunkLength > remaining || chunkLength + (chunkLength % 2) > remaining)
+        {
+            throw new InvalidOperationException("WAV chunk padding exceeded the file length.");
+        }
+
+        return chunkStart + chunkLength + (chunkLength % 2);
+    }
+
     private static WavePcm16Info CreateInfo(
         ushort audioFormat,
         ushort channelCount,
@@ -629,7 +703,7 @@ internal static class WavePcm16
         ushort blockAlign,
         ushort bitsPerSample,
         long dataStart,
-        int dataLength,
+        long dataLength,
         uint? channelMask,
         bool isExtensiblePcmSubFormat)
     {
@@ -658,7 +732,7 @@ internal static class WavePcm16
     }
 
     private static async Task<string> ReadFourCcAsync(
-        FileStream stream,
+        Stream stream,
         byte[] buffer,
         CancellationToken cancellationToken)
     {
@@ -667,7 +741,7 @@ internal static class WavePcm16
     }
 
     private static async Task<ushort> ReadUInt16Async(
-        FileStream stream,
+        Stream stream,
         byte[] buffer,
         CancellationToken cancellationToken)
     {
@@ -676,7 +750,7 @@ internal static class WavePcm16
     }
 
     private static async Task<int> ReadInt32Async(
-        FileStream stream,
+        Stream stream,
         byte[] buffer,
         CancellationToken cancellationToken)
     {
@@ -684,8 +758,17 @@ internal static class WavePcm16
         return BinaryPrimitives.ReadInt32LittleEndian(buffer);
     }
 
+    private static async Task<ulong> ReadUInt64Async(
+        Stream stream,
+        byte[] buffer,
+        CancellationToken cancellationToken)
+    {
+        await ReadExactAsync(stream, buffer.AsMemory(0, 8), cancellationToken).ConfigureAwait(false);
+        return BinaryPrimitives.ReadUInt64LittleEndian(buffer);
+    }
+
     private static async Task<uint> ReadUInt32Async(
-        FileStream stream,
+        Stream stream,
         byte[] buffer,
         CancellationToken cancellationToken)
     {
@@ -694,7 +777,7 @@ internal static class WavePcm16
     }
 
     private static async Task ReadExactAsync(
-        FileStream stream,
+        Stream stream,
         Memory<byte> buffer,
         CancellationToken cancellationToken)
     {
