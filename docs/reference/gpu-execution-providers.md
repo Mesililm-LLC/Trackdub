@@ -27,8 +27,12 @@ required target; the request then falls through to the next provider.
 the Windows ML catalog's OpenVINO EP. Session bootstrap calls
 `EnsureReadyAsync` (downloads allowed, bounded at 5 minutes; 15 seconds when only
 registering), and the session appends the first NPU, GPU or CPU device the plugin
-exposes. Discovery never downloads: it reports OpenVINO available once the plugin
-is installed under LinML's install root. The standalone OpenVINO runtime component
+exposes (only the CPU device in OpenVINO CPU-proxy mode). Discovery never downloads:
+it registers an installed plugin and reports OpenVINO available only when it exposes
+a usable device. While any OpenVINO device is excluded for a run, the planner treats
+OpenVINO as unavailable, because the catalog append cannot be pinned to a device
+index. There is no in-app install action on Linux yet; the plugin must already be
+under LinML's install root. The standalone OpenVINO runtime component
 (`libopenvino_c.so`) registers no ORT execution provider and no longer decides
 OpenVINO readiness on Linux.
 
