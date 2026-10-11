@@ -124,6 +124,25 @@ public sealed class CompositionRootTests : IDisposable
         Assert.IsType<Trackdub.Inference.Onnx.Runtime.LinuxDeviceEnumerator>(
             provider.GetRequiredService<Trackdub.Inference.Runtime.Planning.IDeviceEnumerator>());
     }
+
+    /// <summary>
+    /// macOS counterpart of the Linux run-time selection test.
+    /// </summary>
+    [Fact]
+    public void AddTrackdub_portable_build_selects_macos_services_at_run_time()
+    {
+        if (!OperatingSystem.IsMacOSVersionAtLeast(10, 15))
+        {
+            return;
+        }
+
+        using ServiceProvider provider = BuildProvider(_ => { });
+
+        Assert.IsType<Trackdub.Inference.Onnx.ExecutionProviders.Mac.MacExecutionProviderBootstrapper>(
+            provider.GetRequiredService<IExecutionProviderBootstrapper>());
+        Assert.IsType<Trackdub.Inference.Onnx.Runtime.MacDeviceEnumerator>(
+            provider.GetRequiredService<Trackdub.Inference.Runtime.Planning.IDeviceEnumerator>());
+    }
 #endif
 
 #if WINDOWS
