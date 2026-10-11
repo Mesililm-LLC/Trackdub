@@ -65,15 +65,17 @@ public sealed class OpenVinoCatalogReadinessProbe : IOpenVinoCatalogReadinessPro
     private readonly WindowsMlOpenVinoCatalogService _catalog = new();
 #endif
     private readonly ILinuxOpenVinoCatalog? _linuxCatalog;
+    private readonly Func<bool> _isLinuxIntelHardware;
 
     public OpenVinoCatalogReadinessProbe()
-        : this(DefaultLinuxCatalog())
+        : this(DefaultLinuxCatalog(), LinuxIntelHardwareGate.IsEligible)
     {
     }
 
-    internal OpenVinoCatalogReadinessProbe(ILinuxOpenVinoCatalog? linuxCatalog)
+    internal OpenVinoCatalogReadinessProbe(ILinuxOpenVinoCatalog? linuxCatalog, Func<bool>? isLinuxIntelHardware = null)
     {
         _linuxCatalog = linuxCatalog;
+        _isLinuxIntelHardware = isLinuxIntelHardware ?? (static () => true);
     }
 
     private static ILinuxOpenVinoCatalog? DefaultLinuxCatalog() =>
@@ -103,28 +105,45 @@ public sealed class OpenVinoCatalogReadinessProbe : IOpenVinoCatalogReadinessPro
 #endif
 
         return _linuxCatalog is not null
-            ? ProbeLinuxAsync(_linuxCatalog, allowProviderDownloads, cancellationToken)
+            ? ProbeLinuxAsync(_linuxCatalog, _isLinuxIntelHardware, allowProviderDownloads, cancellationToken)
             : Task.FromResult(Unsupported());
     }
 
     private static async Task<WinMlCatalogReadinessReport> ProbeLinuxAsync(
         ILinuxOpenVinoCatalog catalog,
+        Func<bool> isIntelHardware,
         bool allowProviderDownloads,
         CancellationToken cancellationToken)
     {
+        if (!isIntelHardware())
+        {
+            return new(
+                OpenVinoCatalogProviderIds.LinMl,
+                WinMlCatalogPlatformRoute.LinMlCatalog,
+                WinMlCatalogReadinessBlocker.HardwareNotSupported,
+                IsHardwareEligible: false,
+                IsOrtProviderListed: false,
+                IsRegisteredWithOrt: false,
+                Detail: "No Intel CPU, GPU or NPU found; the OpenVINO plugin EP is not offered.");
+        }
+
         LinuxOpenVinoCatalogResult result = await catalog
             .EnsureReadyAsync(allowProviderDownloads, cancellationToken)
             .ConfigureAwait(false);
-        return ToReport(result);
+        return ToReport(result, allowProviderDownloads);
     }
 
-    internal static WinMlCatalogReadinessReport ToReport(LinuxOpenVinoCatalogResult result) =>
+    internal static WinMlCatalogReadinessReport ToReport(LinuxOpenVinoCatalogResult result, bool allowProviderDownloads) =>
         result.Status switch
         {
             LinuxOpenVinoCatalogStatus.Ready => LinuxReport(WinMlCatalogReadinessBlocker.None, ready: true, result.Detail),
             LinuxOpenVinoCatalogStatus.NotInstalled => LinuxReport(WinMlCatalogReadinessBlocker.EpNotPresent, ready: false, result.Detail),
-            // Download, verification or registration failed: the install action may be retried.
-            LinuxOpenVinoCatalogStatus.Failed => LinuxReport(WinMlCatalogReadinessBlocker.EpDownloadFailed, ready: false, result.Detail),
+            // With downloads allowed the failure may be the download: the install may be retried.
+            // Without, an installed plugin failed to register, and reinstalling would not help.
+            LinuxOpenVinoCatalogStatus.Failed => LinuxReport(
+                allowProviderDownloads ? WinMlCatalogReadinessBlocker.EpDownloadFailed : WinMlCatalogReadinessBlocker.EpRegisterFailed,
+                ready: false,
+                result.Detail),
             LinuxOpenVinoCatalogStatus.NoDevices => new(
                 OpenVinoCatalogProviderIds.LinMl,
                 WinMlCatalogPlatformRoute.LinMlCatalog,

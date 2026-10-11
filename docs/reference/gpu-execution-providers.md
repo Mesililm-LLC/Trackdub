@@ -37,8 +37,10 @@ Installing on Linux uses the same path as the Windows ML catalog EPs:
 `OpenVinoCatalogReadinessProbe` reports the `LinMlCatalog` route, the runtime
 readiness service offers the install while the plugin is missing or its download
 failed, `StarterPackGpuSetupAdvisor` proposes `IntelOpenVino` on Intel hardware, and
-`OpenVinoCatalogEpInstaller` downloads, verifies and registers the pinned plugin
-through LinML. The caller obtains Intel license consent first, as on Windows.
+`GpuRuntimeInstallOrchestrator` dispatches it to `OpenVinoCatalogEpInstaller`, which
+downloads, verifies and registers the pinned plugin through LinML. On Linux these
+offer and accept only `IntelOpenVino`, and only on hardware with an Intel CPU or an
+Intel display/NPU PCI device; other runtime kinds stay Windows-only. The caller obtains Intel license consent first, as on Windows.
 Opt-in check: `TRACKDUB_LINML_OPENVINO_INSTALL_E2E=1 dotnet test
 tests/Trackdub.Composition.Tests -f net10.0 --filter Installer_end_to_end`. The standalone OpenVINO runtime component
 (`libopenvino_c.so`) registers no ORT execution provider and no longer decides

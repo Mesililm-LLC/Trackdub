@@ -1,6 +1,12 @@
+using Trackdub.Application.Runtime;
 using Trackdub.Composition.Runtime;
+using Trackdub.Composition.StarterPacks;
 using Trackdub.Contracts;
 using Trackdub.Contracts.ApplicationContracts;
+using Trackdub.Contracts.StarterPacks;
+using Trackdub.Domain;
+using Trackdub.Domain.StageRuns;
+using Trackdub.Inference.Runtime.Planning;
 
 namespace Trackdub.Composition.Tests.Runtime;
 
@@ -88,6 +94,74 @@ public sealed class LinuxOpenVinoInstallPathTests
         Assert.Equal("download failed: 404", result.FailureDetail);
     }
 #endif
+
+    [Theory]
+    [InlineData("Intel(R) Arc(TM) A770 Graphics", StarterPackGpuRuntimeKind.IntelOpenVino, true)]
+    [InlineData("NVIDIA GeForce RTX 5070", StarterPackGpuRuntimeKind.None, false)]
+    public async Task Advisor_offers_only_OpenVino_on_Linux(
+        string gpu,
+        StarterPackGpuRuntimeKind expectedKind,
+        bool expectedCanInstall)
+    {
+        var advisor = new StarterPackGpuSetupAdvisor(
+            new FixedHardware(new HardwareProfile("linux", "x64", HasGpu: true, GpuDescription: gpu)),
+            openVinoReadiness: new OpenVinoCatalogRuntimeReadinessService(
+                new StubProbe(LinuxReport(WinMlCatalogReadinessBlocker.EpNotPresent, ready: false))));
+
+        StarterPackGpuSetupHint? hint = await advisor.ResolveAsync(new StarterPackCompatibilityReport(
+            "premium",
+            "default",
+            "balanced_gpu",
+            [new StageCompatibilityEntry(
+                StageNames.Vad, "vad", "default", "directml", "default", "cpu",
+                FallbackApplied: true, FallbackReason: "ep_unavailable", Runnable: true)],
+            AllStagesRunnable: true,
+            AnyFallbackApplied: true));
+
+        Assert.NotNull(hint);
+        Assert.Equal(expectedKind, hint!.RuntimeKind);
+        Assert.Equal(expectedCanInstall, hint.CanInstall);
+    }
+
+    [Fact]
+    public async Task Orchestrator_dispatches_OpenVino_on_Linux_and_rejects_other_kinds()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var installer = new RecordingOpenVinoInstaller();
+        var orchestrator = new GpuRuntimeInstallOrchestrator(openVinoInstaller: installer);
+
+        GpuRuntimeInstallResult openVino = await orchestrator.InstallAsync(
+            StarterPackGpuRuntimeKind.IntelOpenVino, new Progress<string>());
+        GpuRuntimeInstallResult trtRtx = await orchestrator.InstallAsync(
+            StarterPackGpuRuntimeKind.NvidiaTensorRtRtx, new Progress<string>());
+
+        Assert.True(openVino.Succeeded);
+        Assert.Equal(1, installer.Calls);
+        Assert.False(trtRtx.Succeeded);
+    }
+
+    private sealed class FixedHardware(HardwareProfile profile) : IHardwareProfileProvider
+    {
+        public Task<HardwareProfile> GetCurrentAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(profile);
+    }
+
+    private sealed class RecordingOpenVinoInstaller : IOpenVinoCatalogEpInstaller
+    {
+        public int Calls { get; private set; }
+
+        public Task<WinMlCatalogEpInstallResult> EnsureInstalledAsync(
+            IProgress<string> progress,
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            return Task.FromResult(new WinMlCatalogEpInstallResult(Succeeded: true));
+        }
+    }
 
     private static WinMlCatalogReadinessReport LinuxReport(
         WinMlCatalogReadinessBlocker blocker,
