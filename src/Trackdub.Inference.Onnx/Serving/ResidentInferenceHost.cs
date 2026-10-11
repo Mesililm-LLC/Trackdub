@@ -84,6 +84,7 @@ internal sealed class ResidentInferenceHost : IResidentInferenceHost
         IReadOnlyList<ServeTensor> inputs,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(modelName);
         ArgumentNullException.ThrowIfNull(inputs);
         ResidentEntry entry = await GetRunnableAsync(modelName, cancellationToken).ConfigureAwait(false);
 

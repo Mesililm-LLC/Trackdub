@@ -239,6 +239,11 @@ public sealed class ResidentInferenceHostTests : IDisposable
     }
 
     [Fact]
+    public void SynthesizeZeroInputs_ShapeTooLargeForOneArrayReturnsNull() =>
+        Assert.Null(ServeTensorConverter.SynthesizeZeroInputs(
+            [new ServeTensorSpec("huge", ServeTensorTypes.Float32, [1L << 20, 1L << 20, 1L << 30])]));
+
+    [Fact]
     public void SynthesizeZeroInputs_UnsupportedTypeReturnsNull() =>
         Assert.Null(ServeTensorConverter.SynthesizeZeroInputs([new ServeTensorSpec("text", "string", [1])]));
 

@@ -98,7 +98,18 @@ internal static class ServeTensorConverter
             }
 
             long[] shape = input.Shape.Select(static dimension => dimension < 0 ? 1L : dimension).ToArray();
-            long count = shape.Aggregate(1L, static (product, dimension) => checked(product * dimension));
+            long count = 1;
+            foreach (long dimension in shape)
+            {
+                // A shape too large for one array cannot be synthesized; skip warmup, don't throw.
+                if (dimension > 0 && count > Array.MaxLength / dimension)
+                {
+                    return null;
+                }
+
+                count *= dimension;
+            }
+
             tensors.Add(new ServeTensor(input.Name, input.DType, shape, Array.CreateInstance(elementType, count)));
         }
 
