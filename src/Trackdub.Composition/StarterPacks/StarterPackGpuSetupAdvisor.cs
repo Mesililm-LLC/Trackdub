@@ -45,7 +45,10 @@ public sealed class StarterPackGpuSetupAdvisor(
             .GetCurrentAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        if (!hardware.OperatingSystem.Equals("windows", StringComparison.OrdinalIgnoreCase))
+        StarterPackGpuRuntimeKind runtimeKind = ResolveRecommendedRuntimeKind(hardware, gpuEpFallbackStages);
+        bool isWindows = hardware.OperatingSystem.Equals("windows", StringComparison.OrdinalIgnoreCase);
+        bool isLinux = hardware.OperatingSystem.Equals("linux", StringComparison.OrdinalIgnoreCase);
+        if (!isWindows && !(isLinux && runtimeKind == StarterPackGpuRuntimeKind.IntelOpenVino))
         {
             return new StarterPackGpuSetupHint(
                 StarterPackGpuRuntimeKind.None,
@@ -54,7 +57,6 @@ public sealed class StarterPackGpuSetupAdvisor(
                 GpuFallbackStageCount: gpuEpFallbackStages.Count);
         }
 
-        StarterPackGpuRuntimeKind runtimeKind = ResolveRecommendedRuntimeKind(hardware, gpuEpFallbackStages);
         bool canInstall = await CanInstallRuntimeKindAsync(runtimeKind, cancellationToken).ConfigureAwait(false);
 
         return new StarterPackGpuSetupHint(
