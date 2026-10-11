@@ -126,6 +126,34 @@ public sealed class BatchProcessorTests : IDisposable
         Assert.Equal(existing, Assert.Single(recording.Options).SourceMediaPath);
     }
 
+    [Fact]
+    public async Task ExecuteAsync_BatchProgress_ReportsBoundariesForLockedFileBeforeEngine()
+    {
+        var recording = new RecordingEngine();
+        var processor = new BatchProcessor(recording);
+        string locked = WriteMedia("locked-before-engine.mp4");
+        string existing = WriteMedia("existing-after-locked-before-engine.mp4");
+        using ProjectLock holder = ProjectLock.Acquire(ProjectDirectoryOf(locked));
+        var events = new List<BatchFileProgressEvent>();
+        var batchProgress = new Progress<BatchFileProgressEvent>(events.Add);
+
+        BatchReport report = await processor.ExecuteAsync(
+            [locked, existing],
+            CreateTemplateOptions(),
+            new BatchOptions { ContinueOnError = true },
+            progress: null,
+            ct: CancellationToken.None,
+            batchProgress: batchProgress);
+
+        Assert.Equal(BatchFileStatus.Failed, report.Files[0].Status);
+        Assert.Equal(BatchFileStatus.Success, report.Files[1].Status);
+        Assert.Contains(events, e => e.FileIndex == 0 && e.Kind == BatchFileProgressKind.Started);
+        Assert.Contains(events, e => e.FileIndex == 0 && e.Kind == BatchFileProgressKind.Failed);
+        Assert.Contains(events, e => e.FileIndex == 1 && e.Kind == BatchFileProgressKind.Started);
+        Assert.Contains(events, e => e.FileIndex == 1 && e.Kind == BatchFileProgressKind.Succeeded);
+        Assert.Equal(existing, Assert.Single(recording.Options).SourceMediaPath);
+    }
+
     // ─── Continue-on-error: all files not found ─────────────────────────────────
 
     [Fact]
