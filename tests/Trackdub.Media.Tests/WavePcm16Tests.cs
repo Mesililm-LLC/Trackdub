@@ -97,6 +97,65 @@ public sealed class WavePcm16Tests : IDisposable
         Assert.Equal(channelMask, samples.ChannelMask);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReadInfo_reads_riff_data_chunk_larger_than_int_max(bool synchronous)
+    {
+        // ~4.3 h of 48 kHz stereo PCM16: the chunk size has the sign bit set when read as int32.
+        const uint dataLength = 3_000_000_000u;
+        using SparseWaveStream stream = CreateLargeWaveStream(rf64: false, dataChunkSize: dataLength, ds64DataLength: null, dataLength);
+
+        WavePcm16Info info = await ReadInfoAsync(stream, synchronous);
+
+        Assert.Equal(48000, info.SampleRate);
+        Assert.Equal(2, info.ChannelCount);
+        Assert.Equal(44, info.DataStartPosition);
+        Assert.Equal(dataLength, info.DataLengthBytes);
+        Assert.Equal(dataLength / 4, info.SampleFrames);
+        Assert.Equal(15_625d, info.DurationSeconds);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReadInfo_reads_rf64_data_length_beyond_uint_max_from_ds64(bool synchronous)
+    {
+        const long dataLength = 5_000_000_000L;
+        using SparseWaveStream stream = CreateLargeWaveStream(rf64: true, dataChunkSize: uint.MaxValue, ds64DataLength: dataLength, dataLength);
+
+        WavePcm16Info info = await ReadInfoAsync(stream, synchronous);
+
+        Assert.Equal(80, info.DataStartPosition);
+        Assert.Equal(dataLength, info.DataLengthBytes);
+        Assert.Equal(dataLength / 4, info.SampleFrames);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReadInfo_rejects_riff_data_chunk_size_placeholder(bool synchronous)
+    {
+        using SparseWaveStream stream = CreateLargeWaveStream(rf64: false, dataChunkSize: uint.MaxValue, ds64DataLength: null, dataLength: 5_000_000_000L);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => ReadInfoAsync(stream, synchronous));
+
+        Assert.Contains("0xFFFFFFFF placeholder", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("-rf64 auto", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReadInfo_rejects_rf64_data_chunk_without_ds64(bool synchronous)
+    {
+        using SparseWaveStream stream = CreateLargeWaveStream(rf64: true, dataChunkSize: uint.MaxValue, ds64DataLength: null, dataLength: 5_000_000_000L);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => ReadInfoAsync(stream, synchronous));
+
+        Assert.Contains("ds64", exception.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task WriteSamplesAsync_default_hard_clamps_overflowing_input_without_scaling()
     {
@@ -516,5 +575,112 @@ public sealed class WavePcm16Tests : IDisposable
         }
 
         File.WriteAllBytes(path, header.Concat(data).ToArray());
+    }
+
+    private static async Task<WavePcm16Info> ReadInfoAsync(Stream stream, bool synchronous) =>
+        synchronous
+            ? WavePcm16.ReadInfo(stream)
+            : await WavePcm16.ReadInfoAsync(stream, TestContext.Current.CancellationToken);
+
+    // 48 kHz stereo PCM16 header, `dataLength` bytes of (virtual) silence, then a trailing LIST chunk so
+    // the parser has to seek past the oversized data chunk and land on a valid chunk header.
+    private static SparseWaveStream CreateLargeWaveStream(
+        bool rf64,
+        uint dataChunkSize,
+        long? ds64DataLength,
+        long dataLength)
+    {
+        using var header = new MemoryStream();
+        using (var writer = new BinaryWriter(header, Encoding.ASCII, leaveOpen: true))
+        {
+            writer.Write(rf64 ? "RF64"u8 : "RIFF"u8);
+            writer.Write(uint.MaxValue);
+            writer.Write("WAVE"u8);
+            if (ds64DataLength is long ds64Length)
+            {
+                writer.Write("ds64"u8);
+                writer.Write(28u);
+                writer.Write(0UL);
+                writer.Write((ulong)ds64Length);
+                writer.Write(0UL);
+                writer.Write(0u);
+            }
+
+            writer.Write("fmt "u8);
+            writer.Write(16u);
+            writer.Write((ushort)1);
+            writer.Write((ushort)2);
+            writer.Write(48000);
+            writer.Write(48000 * 4);
+            writer.Write((ushort)4);
+            writer.Write((ushort)16);
+            writer.Write("data"u8);
+            writer.Write(dataChunkSize);
+        }
+
+        byte[] prefix = header.ToArray();
+        byte[] trailer = [.. "LIST"u8, 4, 0, 0, 0, .. "INFO"u8];
+        return new SparseWaveStream(prefix, prefix.Length + dataLength, trailer);
+    }
+
+    private sealed class SparseWaveStream(byte[] prefix, long trailerOffset, byte[] trailer) : Stream
+    {
+        private long position;
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => true;
+
+        public override bool CanWrite => false;
+
+        public override long Length => trailerOffset + trailer.Length;
+
+        public override long Position
+        {
+            get => position;
+            set
+            {
+                // Mirror FileStream so a negative seek fails the way it did in the field.
+                ArgumentOutOfRangeException.ThrowIfNegative(value);
+                position = value;
+            }
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+
+        public override int Read(Span<byte> buffer)
+        {
+            int count = (int)Math.Min(buffer.Length, Math.Max(0, Length - position));
+            for (int i = 0; i < count; i++, position++)
+            {
+                buffer[i] = position < prefix.Length
+                    ? prefix[position]
+                    : position >= trailerOffset ? trailer[position - trailerOffset] : (byte)0;
+            }
+
+            return count;
+        }
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(Read(buffer.Span));
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            Task.FromResult(Read(buffer, offset, count));
+
+        public override long Seek(long offset, SeekOrigin origin) =>
+            Position = origin switch
+            {
+                SeekOrigin.Begin => offset,
+                SeekOrigin.Current => position + offset,
+                _ => Length + offset,
+            };
+
+        public override void Flush()
+        {
+        }
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }

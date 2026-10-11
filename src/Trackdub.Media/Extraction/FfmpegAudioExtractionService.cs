@@ -72,6 +72,9 @@ public sealed class FfmpegAudioExtractionService : IAudioExtractionService
             "-ac", channelCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
             "-ar", sampleRate.ToString(System.Globalization.CultureInfo.InvariantCulture),
             "-c:a", "pcm_s16le",
+            // ffmpeg's default (-rf64 never) leaves the 0xFFFFFFFF size placeholder in WAVs past 4 GiB
+            // (~6.2 h at 48 kHz stereo) and still exits 0; auto upgrades those to RF64, which WavePcm16 reads.
+            "-rf64", "auto",
         ];
         if (maxEncoderThreads is int threadBudget && threadBudget > 0)
         {
