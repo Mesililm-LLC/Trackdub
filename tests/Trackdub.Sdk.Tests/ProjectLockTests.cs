@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Trackdub.Sdk.Tests;
 
 /// <summary>
@@ -193,6 +195,69 @@ public sealed class ProjectLockTests : IDisposable
         Assert.Equal("/some/path", ex.ProjectDirectory);
         Assert.Equal(12345, ex.HoldingProcessId);
         Assert.Contains("12345", ex.Message);
+    }
+
+    [Fact]
+    public void Acquire_LockHeldExclusivelyByAnotherProcess_ReportsTheHolderPid()
+    {
+        // Arrange — reproduce what a run in another process leaves on disk: the lock file open
+        // with FileShare.None, exactly as Acquire opens it, and that run's owner record. No
+        // registry entry exists for this directory, so a PID can only come from the record.
+        string dir = CreateTempDirectory();
+        string lockPath = Path.Join(dir, ".trackdub.lock");
+        using FileStream holder = new(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        File.WriteAllText(
+            Path.Join(dir, ".trackdub.lock.owner"),
+            $$"""{"pid":{{Environment.ProcessId}},"timestamp":"2026-10-11T00:00:00Z","machineName":"HOLDER"}""");
+
+        // The premises: a real holder refuses the exclusive open and the shared read of the
+        // lock file alike, so the lock file itself can never carry the PID to a contender.
+        Assert.False(CanOpenExclusively(lockPath));
+        Assert.False(CanReadShared(lockPath));
+
+        // Act
+        var ex = Assert.Throws<ProjectLockedException>(() => ProjectLock.Acquire(dir));
+
+        // Assert
+        Assert.Equal(Environment.ProcessId, ex.HoldingProcessId);
+        Assert.True(File.Exists(lockPath));
+    }
+
+    [Fact]
+    public void Acquire_OversizedOwnerRecord_FailsClosedWithoutAPid()
+    {
+        // Arrange — a real holder plus an owner record far larger than any record Acquire writes.
+        string dir = CreateTempDirectory();
+        string lockPath = Path.Join(dir, ".trackdub.lock");
+        using FileStream holder = new(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        File.WriteAllText(
+            Path.Join(dir, ".trackdub.lock.owner"),
+            $$"""{"pid":{{Environment.ProcessId}},"pad":"{{new string('x', 10_000)}}"}""");
+
+        // Act
+        var ex = Assert.Throws<ProjectLockedException>(() => ProjectLock.Acquire(dir));
+
+        // Assert — the record is ignored rather than read without bound.
+        Assert.Null(ex.HoldingProcessId);
+    }
+
+    [Fact]
+    public void Acquire_WritesOwnerRecordWhileHeld_AndRemovesItOnRelease()
+    {
+        // Arrange
+        string dir = CreateTempDirectory();
+        string ownerPath = Path.Join(dir, ".trackdub.lock.owner");
+
+        // Act & Assert — the record names this process while the lock is held...
+        using (ProjectLock.Acquire(dir))
+        {
+            using JsonDocument record = JsonDocument.Parse(File.ReadAllText(ownerPath));
+            Assert.Equal(Environment.ProcessId, record.RootElement.GetProperty("pid").GetInt32());
+        }
+
+        // ...and is gone once it is released, so a later holder's contender never reads it.
+        Assert.False(File.Exists(ownerPath));
+        Assert.Empty(Directory.EnumerateFiles(dir, ".trackdub.lock.owner*"));
     }
 
     [UnixOnlyFact]

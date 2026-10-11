@@ -67,6 +67,7 @@
     <Compile Include="..\Trackdub.TestDoubles\FakeFileSystemProbe.cs" Link="TestDoubles\FakeFileSystemProbe.cs" />
     <Compile Include="..\Trackdub.TestDoubles\FakeSpeechRegionDetector.cs" Link="TestDoubles\FakeSpeechRegionDetector.cs" />
     <Compile Include="..\Trackdub.TestDoubles\FakeWavHelper.cs" Link="TestDoubles\FakeWavHelper.cs" />
+    <Compile Include="..\Trackdub.TestDoubles\SparseWaveStream.cs" Link="TestDoubles\SparseWaveStream.cs" />
     <Compile Include="..\Trackdub.TestDoubles\FakeMediaAssetRepository.cs" Link="TestDoubles\FakeMediaAssetRepository.cs" />
     <Compile Include="..\Trackdub.TestDoubles\FakeTranscriptRepository.cs" Link="TestDoubles\FakeTranscriptRepository.cs" />
     <Compile Include="..\Trackdub.TestDoubles\FakeTranslationRepository.cs" Link="TestDoubles\FakeTranslationRepository.cs" />

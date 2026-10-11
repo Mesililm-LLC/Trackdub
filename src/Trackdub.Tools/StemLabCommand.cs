@@ -972,13 +972,14 @@ internal static class StemLabWaveAnalyzer
             sourceRms <= 0.0 ? 0.0 : errorRms / sourceRms);
     }
 
-    private static WavePcm16Header ReadHeader(Stream stream, string path)
+    internal static WavePcm16Header ReadHeader(Stream stream, string path)
     {
         using var reader = new BinaryReader(stream, System.Text.Encoding.ASCII, leaveOpen: true);
         string riff = new(reader.ReadChars(4));
         _ = reader.ReadUInt32();
         string wave = new(reader.ReadChars(4));
-        if (!riff.Equals("RIFF", StringComparison.Ordinal) || !wave.Equals("WAVE", StringComparison.Ordinal))
+        bool isRf64 = riff.Equals("RF64", StringComparison.Ordinal);
+        if ((!isRf64 && !riff.Equals("RIFF", StringComparison.Ordinal)) || !wave.Equals("WAVE", StringComparison.Ordinal))
         {
             throw new InvalidOperationException($"File '{path}' is not a RIFF/WAVE file.");
         }
@@ -989,14 +990,21 @@ internal static class StemLabWaveAnalyzer
         short? audioFormat = null;
         long? dataOffset = null;
         long? dataByteLength = null;
+        ulong? ds64DataLength = null;
 
         while (stream.Position + 8 <= stream.Length)
         {
             string chunkId = new(reader.ReadChars(4));
             uint chunkSize = reader.ReadUInt32();
             long chunkDataOffset = stream.Position;
+            long chunkLength = chunkSize;
 
-            if (chunkId.Equals("fmt ", StringComparison.Ordinal))
+            if (isRf64 && chunkId.Equals("ds64", StringComparison.Ordinal) && chunkSize >= 16)
+            {
+                _ = reader.ReadUInt64();
+                ds64DataLength = reader.ReadUInt64();
+            }
+            else if (chunkId.Equals("fmt ", StringComparison.Ordinal))
             {
                 audioFormat = reader.ReadInt16();
                 channelCount = reader.ReadInt16();
@@ -1007,11 +1015,29 @@ internal static class StemLabWaveAnalyzer
             }
             else if (chunkId.Equals("data", StringComparison.Ordinal))
             {
+                // RF64 writers (ffmpeg -rf64 auto) put 0xFFFFFFFF here and the real size in ds64; in plain RIFF it
+                // is the placeholder a writer left unpatched, so the length is unknown.
+                if (!isRf64 && chunkSize == uint.MaxValue)
+                {
+                    throw new InvalidOperationException(
+                        $"File '{path}' has an unpatched 0xFFFFFFFF data chunk size placeholder; the audio length is unknown.");
+                }
+
+                if (isRf64 && chunkSize == uint.MaxValue)
+                {
+                    if (ds64DataLength is not ulong length || length > long.MaxValue)
+                    {
+                        throw new InvalidOperationException($"File '{path}' is RF64 but has no valid ds64 data size.");
+                    }
+
+                    chunkLength = (long)length;
+                }
+
                 dataOffset = chunkDataOffset;
-                dataByteLength = chunkSize;
+                dataByteLength = chunkLength;
             }
 
-            stream.Position = chunkDataOffset + chunkSize + (chunkSize % 2);
+            stream.Position = chunkDataOffset + chunkLength + (chunkLength % 2);
             if (channelCount.HasValue && sampleRate.HasValue && bitsPerSample.HasValue && audioFormat.HasValue && dataOffset.HasValue && dataByteLength.HasValue)
             {
                 break;
@@ -1052,7 +1078,7 @@ internal static class StemLabWaveAnalyzer
     private static double ToDbfs(double value) =>
         value <= 0.0 ? -120.0 : 20.0 * Math.Log10(value);
 
-    private sealed record WavePcm16Header(
+    internal sealed record WavePcm16Header(
         int SampleRate,
         int ChannelCount,
         long SampleFrames,
