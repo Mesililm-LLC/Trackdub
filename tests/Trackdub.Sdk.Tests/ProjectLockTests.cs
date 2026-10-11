@@ -224,6 +224,24 @@ public sealed class ProjectLockTests : IDisposable
     }
 
     [Fact]
+    public void Acquire_OversizedOwnerRecord_FailsClosedWithoutAPid()
+    {
+        // Arrange — a real holder plus an owner record far larger than any record Acquire writes.
+        string dir = CreateTempDirectory();
+        string lockPath = Path.Join(dir, ".trackdub.lock");
+        using FileStream holder = new(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        File.WriteAllText(
+            Path.Join(dir, ".trackdub.lock.owner"),
+            $$"""{"pid":{{Environment.ProcessId}},"pad":"{{new string('x', 10_000)}}"}""");
+
+        // Act
+        var ex = Assert.Throws<ProjectLockedException>(() => ProjectLock.Acquire(dir));
+
+        // Assert — the record is ignored rather than read without bound.
+        Assert.Null(ex.HoldingProcessId);
+    }
+
+    [Fact]
     public void Acquire_WritesOwnerRecordWhileHeld_AndRemovesItOnRelease()
     {
         // Arrange
