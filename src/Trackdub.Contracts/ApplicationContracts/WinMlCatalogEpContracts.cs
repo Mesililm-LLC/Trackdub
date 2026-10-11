@@ -3,6 +3,9 @@ namespace Trackdub.Contracts.ApplicationContracts;
 public static class OpenVinoCatalogProviderIds
 {
     public const string WinMl = "openvino-catalog-winml";
+
+    /// <summary>Linux: the OpenVINO plugin EP pinned by the LinML catalog.</summary>
+    public const string LinMl = "openvino-catalog-linml";
 }
 
 public static class QnnProviderIds
@@ -35,7 +38,10 @@ public enum WinMlCatalogReadinessBlocker
 public enum WinMlCatalogPlatformRoute
 {
     None = 0,
-    WinMlCatalog
+    WinMlCatalog,
+
+    /// <summary>Linux plugin EP installed and registered by the LinML catalog.</summary>
+    LinMlCatalog
 }
 
 public sealed record WinMlCatalogReadinessReport(

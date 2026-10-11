@@ -1,5 +1,9 @@
 using Trackdub.Application.Runtime;
 using Trackdub.Domain;
+#if !WINDOWS
+using Trackdub.Contracts.ApplicationContracts;
+using Trackdub.Inference.Onnx.WinMlCatalog;
+#endif
 
 namespace Trackdub.Composition.Runtime;
 
@@ -18,10 +22,39 @@ internal sealed class OpenVinoCatalogEpInstaller : IOpenVinoCatalogEpInstaller
             cancellationToken).ConfigureAwait(false);
     }
 #else
-    public Task<WinMlCatalogEpInstallResult> EnsureInstalledAsync(
+    private readonly IOpenVinoCatalogReadinessProbe _linuxProbe;
+
+    public OpenVinoCatalogEpInstaller()
+        : this(new OpenVinoCatalogReadinessProbe())
+    {
+    }
+
+    internal OpenVinoCatalogEpInstaller(IOpenVinoCatalogReadinessProbe linuxProbe)
+    {
+        _linuxProbe = linuxProbe;
+    }
+
+    // Linux: the LinML catalog downloads, verifies and registers the pinned OpenVINO plugin EP.
+    // License consent is obtained by the caller before installing, as on Windows.
+    public async Task<WinMlCatalogEpInstallResult> EnsureInstalledAsync(
         IProgress<string> progress,
-        CancellationToken cancellationToken = default) =>
-        WinMlCatalogEpInstallerCore.Unsupported(progress, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(progress);
+        if (!OperatingSystem.IsLinux())
+        {
+            return await WinMlCatalogEpInstallerCore.Unsupported(progress, cancellationToken).ConfigureAwait(false);
+        }
+
+        progress.Report("Downloading and registering the OpenVINO plugin (LinML catalog)…");
+        WinMlCatalogReadinessReport report = await _linuxProbe
+            .ProbeAsync(allowProviderDownloads: true, cancellationToken)
+            .ConfigureAwait(false);
+        progress.Report(report.Detail);
+        return report.IsReady
+            ? new WinMlCatalogEpInstallResult(Succeeded: true)
+            : new WinMlCatalogEpInstallResult(Succeeded: false, FailureDetail: report.Detail);
+    }
 #endif
 }
 

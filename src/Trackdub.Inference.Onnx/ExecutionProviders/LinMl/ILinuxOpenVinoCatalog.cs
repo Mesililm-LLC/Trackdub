@@ -2,8 +2,29 @@ using Microsoft.ML.OnnxRuntime;
 
 namespace Trackdub.Inference.Onnx.ExecutionProviders.LinMl;
 
+public enum LinuxOpenVinoCatalogStatus
+{
+    /// <summary>Registered with ONNX Runtime and exposing at least one device.</summary>
+    Ready,
+
+    /// <summary>The plugin is not installed and downloads were not allowed.</summary>
+    NotInstalled,
+
+    /// <summary>Installed and registered, but the plugin exposes no device on this machine.</summary>
+    NoDevices,
+
+    /// <summary>Cannot work here: wrong OS/architecture, ORT too old, or no catalog support.</summary>
+    Unsupported,
+
+    /// <summary>Download, verification or registration failed, or preparation timed out.</summary>
+    Failed,
+}
+
 /// <summary>Outcome of preparing the OpenVINO plugin EP through the Linux catalog.</summary>
-public sealed record LinuxOpenVinoCatalogResult(bool IsReady, string Detail);
+public sealed record LinuxOpenVinoCatalogResult(LinuxOpenVinoCatalogStatus Status, string Detail)
+{
+    public bool IsReady => Status is LinuxOpenVinoCatalogStatus.Ready;
+}
 
 /// <summary>
 /// Linux counterpart to the Windows ML catalog's OpenVINO EP: install, register and append the
@@ -29,7 +50,7 @@ internal sealed class UnavailableLinuxOpenVinoCatalog : ILinuxOpenVinoCatalog
     private const string Reason = "The LinML catalog is not available in this build.";
 
     public Task<LinuxOpenVinoCatalogResult> EnsureReadyAsync(bool allowDownloads, CancellationToken cancellationToken) =>
-        Task.FromResult(new LinuxOpenVinoCatalogResult(false, Reason));
+        Task.FromResult(new LinuxOpenVinoCatalogResult(LinuxOpenVinoCatalogStatus.Unsupported, Reason));
 
     public bool TryAppend(SessionOptions options, bool cpuOnly, out string? failureReason)
     {

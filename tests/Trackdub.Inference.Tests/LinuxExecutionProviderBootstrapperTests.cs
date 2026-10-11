@@ -305,7 +305,9 @@ public sealed class LinuxExecutionProviderBootstrapperTests
         public Task<LinuxOpenVinoCatalogResult> EnsureReadyAsync(bool allowDownloads, CancellationToken cancellationToken)
         {
             EnsureCalls.Add(allowDownloads);
-            return Task.FromResult(new LinuxOpenVinoCatalogResult(isReady, isReady ? "stub: ready" : "stub: not ready"));
+            return Task.FromResult(new LinuxOpenVinoCatalogResult(
+                isReady ? LinuxOpenVinoCatalogStatus.Ready : LinuxOpenVinoCatalogStatus.NotInstalled,
+                isReady ? "stub: ready" : "stub: not ready"));
         }
 
         public bool TryAppend(Microsoft.ML.OnnxRuntime.SessionOptions options, bool cpuOnly, out string? failureReason)
