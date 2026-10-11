@@ -28,6 +28,7 @@
   <ItemGroup>
     <Compile Include="..\Trackdub.TestDoubles\FakeArtifactStore.cs" Link="TestDoubles\FakeArtifactStore.cs" />
     <Compile Include="..\Trackdub.TestDoubles\FakePlaybackBackend.cs" Link="TestDoubles\FakePlaybackBackend.cs" />
+    <Compile Include="..\Trackdub.TestDoubles\SparseWaveStream.cs" Link="TestDoubles\SparseWaveStream.cs" />
   </ItemGroup>
 
 </Project>

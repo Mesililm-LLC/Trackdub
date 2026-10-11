@@ -163,6 +163,12 @@ public sealed class WhisperGenAiAudioTranscriptionEngine : IAudioTranscriptionEn
                 .AcquireAsync(modelKey.Provider, cancellationToken).ConfigureAwait(false);
             Model model = modelLease.Model;
             using MultiModalProcessor processor = new(model);
+            // Short VAD fragments are unreliable language probes. Match the legacy Whisper
+            // engine: vote on merged context, but keep the caller's transcription regions and
+            // indices intact for speaker assignment and selective retranscription.
+            string? transcriptionLanguage = NormalizeLanguageCode(request.SourceLanguage)
+                ?? DetectTranscriptLanguage(model, processor, targetAudio, effectiveRegions,
+                    durationSeconds, languageTokensById, cancellationToken);
             // targetAudio is already loaded above.
             foreach (SpeechRegion region in effectiveRegions.OrderBy(static region => region.Index))
             {
@@ -174,7 +180,7 @@ public sealed class WhisperGenAiAudioTranscriptionEngine : IAudioTranscriptionEn
                     targetAudio,
                     region,
                     durationSeconds,
-                    request.SourceLanguage,
+                    transcriptionLanguage,
                     languageTokensById,
                     cancellationToken);
 
@@ -445,6 +451,36 @@ public sealed class WhisperGenAiAudioTranscriptionEngine : IAudioTranscriptionEn
         targetAudio.ReadMonoSamples(startSample, samples);
         cancellationToken.ThrowIfCancellationRequested();
         return WaveAudioWriter.EncodeMonoPcm16(samples, TargetSampleRate);
+    }
+
+    private static string? DetectTranscriptLanguage(
+        Model model,
+        MultiModalProcessor processor,
+        IAudioSamples targetAudio,
+        IReadOnlyList<SpeechRegion> regions,
+        double durationSeconds,
+        IReadOnlyDictionary<int, string> languageTokensById,
+        CancellationToken cancellationToken)
+    {
+        var languages = new List<string>();
+        foreach (SpeechRegion region in WhisperOnnxAudioTranscriptionEngine.BuildTranscriptionRegions(regions, durationSeconds))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            double endSeconds = Math.Min(region.EndSeconds, region.StartSeconds + MaxClipDurationSeconds);
+            if (endSeconds - region.StartSeconds < 0.1)
+            {
+                continue;
+            }
+
+            byte[] clipBytes = EncodeClip(targetAudio, region.StartSeconds, endSeconds, cancellationToken);
+            string? language = DetectClipLanguage(model, processor, clipBytes, languageTokensById, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(language))
+            {
+                languages.Add(language);
+            }
+        }
+
+        return ResolveDetectedLanguage(languages);
     }
 
     private static string? DetectClipLanguage(

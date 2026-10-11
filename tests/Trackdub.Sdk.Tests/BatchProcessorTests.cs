@@ -97,6 +97,117 @@ public sealed class BatchProcessorTests : IDisposable
         Assert.NotNull(report.Files[0].Reason);
     }
 
+    // ─── Per-file boundaries: pre-engine failures must still advance the queue ────────────
+
+    [Fact]
+    public async Task ExecuteAsync_BatchProgress_ReportsBoundariesForFileThatFailsBeforeEngine()
+    {
+        var recording = new RecordingEngine();
+        var processor = new BatchProcessor(recording);
+        string missing = Path.Join(_tempDir, "missing-before-engine.mp4");
+        string existing = WriteMedia("existing-before-engine.mp4");
+        var events = new List<BatchFileProgressEvent>();
+        var batchProgress = new SynchronousProgress<BatchFileProgressEvent>(events);
+
+        BatchReport report = await processor.ExecuteAsync(
+            [missing, existing],
+            CreateTemplateOptions(),
+            new BatchOptions { ContinueOnError = true },
+            progress: null,
+            ct: CancellationToken.None,
+            batchProgress: batchProgress);
+
+        Assert.Equal(BatchFileStatus.Failed, report.Files[0].Status);
+        Assert.Equal(BatchFileStatus.Success, report.Files[1].Status);
+        Assert.Contains(events, e => e.FileIndex == 0 && e.Kind == BatchFileProgressKind.Started);
+        Assert.Contains(events, e => e.FileIndex == 0
+            && e.Kind == BatchFileProgressKind.Failed
+            && !string.IsNullOrEmpty(e.Reason)
+            && e.Reason.Contains("not found", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(events, e => e.FileIndex == 1 && e.Kind == BatchFileProgressKind.Started);
+        Assert.Contains(events, e => e.FileIndex == 1 && e.Kind == BatchFileProgressKind.Succeeded);
+        Assert.Equal(existing, Assert.Single(recording.Options).SourceMediaPath);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_BatchProgress_ReportsBoundariesForFileLockedByAnotherRun()
+    {
+        var recording = new RecordingEngine();
+        var processor = new BatchProcessor(recording);
+        string locked = WriteMedia("locked-boundary.mp4");
+        string free = WriteMedia("free-boundary.mp4");
+        using ProjectLock holder = ProjectLock.Acquire(ProjectDirectoryOf(locked));
+        var events = new List<BatchFileProgressEvent>();
+
+        BatchReport report = await processor.ExecuteAsync(
+            [locked, free],
+            CreateTemplateOptions(),
+            new BatchOptions { ContinueOnError = true },
+            progress: null,
+            CancellationToken.None,
+            batchProgress: new SynchronousProgress<BatchFileProgressEvent>(events));
+
+        Assert.Equal(BatchFileStatus.Failed, report.Files[0].Status);
+        Assert.Equal(BatchFileStatus.Success, report.Files[1].Status);
+        Assert.Contains(events, e => e.FileIndex == 0 && e.Kind == BatchFileProgressKind.Started);
+        Assert.Contains(events, e => e.FileIndex == 0
+            && e.Kind == BatchFileProgressKind.Failed
+            && e.Reason == report.Files[0].Reason);
+        Assert.Contains(events, e => e.FileIndex == 1 && e.Kind == BatchFileProgressKind.Started);
+        Assert.Contains(events, e => e.FileIndex == 1 && e.Kind == BatchFileProgressKind.Succeeded);
+        Assert.Equal(free, Assert.Single(recording.Options).SourceMediaPath);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_BatchProgress_InvalidOutputRoot_ReportsFailureWithBoundaries()
+    {
+        var recording = new RecordingEngine();
+        var processor = new BatchProcessor(recording);
+        string media = WriteMedia("invalid-output-root.mp4");
+        var events = new List<BatchFileProgressEvent>();
+
+        BatchReport report = await processor.ExecuteAsync(
+            [media],
+            CreateTemplateOptions(),
+            new BatchOptions { OutputRoot = " ", ContinueOnError = false },
+            progress: null,
+            CancellationToken.None,
+            batchProgress: new SynchronousProgress<BatchFileProgressEvent>(events));
+
+        Assert.Equal(BatchFileStatus.Failed, report.Files[0].Status);
+        Assert.Equal(1, report.FailedCount);
+        Assert.Empty(recording.Options);
+        Assert.Contains(events, e => e.FileIndex == 0 && e.Kind == BatchFileProgressKind.Started);
+        Assert.Contains(events, e => e.FileIndex == 0
+            && e.Kind == BatchFileProgressKind.Failed
+            && e.Reason == report.Files[0].Reason);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_BatchProgress_FailFast_ReportsSkippedRemainingFiles()
+    {
+        var processor = new BatchProcessor(new RecordingEngine());
+        string missing = Path.Join(_tempDir, "missing-fail-fast.mp4");
+        string remaining = WriteMedia("remaining-fail-fast.mp4");
+        var events = new List<BatchFileProgressEvent>();
+
+        BatchReport report = await processor.ExecuteAsync(
+            [missing, remaining],
+            CreateTemplateOptions(),
+            new BatchOptions { ContinueOnError = false },
+            progress: null,
+            CancellationToken.None,
+            batchProgress: new SynchronousProgress<BatchFileProgressEvent>(events));
+
+        Assert.Equal(BatchFileStatus.Skipped, report.Files[1].Status);
+        Assert.Contains(events, e => e.FileIndex == 0
+            && e.Kind == BatchFileProgressKind.Failed
+            && e.Reason == report.Files[0].Reason);
+        Assert.Contains(events, e => e.FileIndex == 1
+            && e.Kind == BatchFileProgressKind.Skipped
+            && e.Reason == report.Files[1].Reason);
+    }
+
     // ─── Continue-on-error: all files not found ─────────────────────────────────
 
     [Fact]
@@ -556,6 +667,11 @@ public sealed class BatchProcessorTests : IDisposable
     /// Engine double that records the options it was handed and reports success, so tests can
     /// assert the host-supplied instance is the one the batch loop drives.
     /// </summary>
+    private sealed class SynchronousProgress<T>(List<T> sink) : IProgress<T>
+    {
+        public void Report(T value) => sink.Add(value);
+    }
+
     private sealed class RecordingEngine : IDubbingPipelineEngine
     {
         public List<DubbingSessionOptions> Options { get; } = [];

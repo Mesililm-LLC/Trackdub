@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Trackdub.Contracts;
 using Trackdub.Domain;
+using Trackdub.Inference.Onnx.Madlad;
 using Trackdub.Inference.Onnx.Runtime.Planning;
 using Trackdub.Inference.Runtime.Planning;
 using Trackdub.Inference.Runtime.TensorRtRtx;
@@ -85,6 +86,11 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
         {
             return (new EpContextWarmItem(sourcePath, "skipped", null, 0, 0,
                 "Excluded family or already an EP-context artifact."), false, false);
+        }
+
+        if (MadladTrtProfiles.GetAotExclusionReason(sourcePath) is { } exclusionReason)
+        {
+            return (new EpContextWarmItem(sourcePath, "skipped", null, 0, 0, exclusionReason), false, false);
         }
 
         string epContextPath = EpContextArtifact.GetEpContextPath(sourcePath);

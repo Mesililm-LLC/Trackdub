@@ -50,6 +50,7 @@
   <ItemGroup>
     <PackageReference Include="MathNet.Numerics" />
     <PackageReference Include="Microsoft.ML.Tokenizers" />
+    <PackageReference Include="System.Numerics.Tensors" />
   </ItemGroup>
 
   <!-- DNNL flavor still needs managed ORT/WinML/GenAI compile references, but the runtime

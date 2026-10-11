@@ -31,11 +31,6 @@
         "resolved": "9.8.0",
         "contentHash": "0++t+lPqX5amr7Kgh+ZFm1C5hhzMmFc5Dhoc6siNZ4sPXxy0pLTFRk+4vHn0hZf7Xe8Y9OoqL2cL4oTdjt8STQ=="
       },
-      "System.Numerics.Tensors": {
-        "type": "Transitive",
-        "resolved": "9.0.0",
-        "contentHash": "hyJB4UlpAi19Xr9AXzu2NuagKC4lPfHObNMEAA0HmqFz2rX7wKgzeYzO/jM/eBHDhnUGFFEjk5cOoJaxqg5J4A=="
-      },
       "trackdub.contracts": {
         "type": "Project",
         "dependencies": {
@@ -60,6 +55,7 @@
           "Microsoft.ML.OnnxRuntimeGenAI.WinML": "[0.17.1, )",
           "Microsoft.ML.Tokenizers": "[3.0.0-preview.26502.1, )",
           "Microsoft.Windows.AI.MachineLearning": "[2.4.89, )",
+          "System.Numerics.Tensors": "[9.0.0, )",
           "Trackdub.Contracts": "[1.0.0, )",
           "Trackdub.Domain": "[1.0.0, )",
           "Trackdub.Inference": "[1.0.0, )"
@@ -119,6 +115,12 @@
         "dependencies": {
           "System.Numerics.Tensors": "9.0.0"
         }
+      },
+      "System.Numerics.Tensors": {
+        "type": "CentralTransitive",
+        "requested": "[9.0.0, )",
+        "resolved": "9.0.0",
+        "contentHash": "hyJB4UlpAi19Xr9AXzu2NuagKC4lPfHObNMEAA0HmqFz2rX7wKgzeYzO/jM/eBHDhnUGFFEjk5cOoJaxqg5J4A=="
       }
     }
   }

@@ -1,6 +1,7 @@
 using Microsoft.ML.OnnxRuntime;
 using Trackdub.Contracts.ApplicationContracts;
 using Trackdub.Domain;
+using Trackdub.Inference.Onnx.Madlad;
 using Trackdub.Inference.Onnx.TensorRtRtx;
 using Trackdub.Inference.Runtime.TensorRtRtx;
 #if WINDOWS
@@ -49,6 +50,11 @@ public sealed class EpContextCompiler
         if (!File.Exists(sourceModelPath))
         {
             return new CompileResult(false, null, 0, $"Source model not found: {sourceModelPath}");
+        }
+
+        if (MadladTrtProfiles.GetAotExclusionReason(sourceModelPath) is { } exclusionReason)
+        {
+            return new CompileResult(false, null, 0, exclusionReason);
         }
 
         // TensorRT RTX is a standalone ORT EP ABI plugin. Unless registered before the first OrtEnv

@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Linq;
 using System.Text;
 using Trackdub.Media.Waveforms;
+using Trackdub.TestDoubles;
 
 namespace Trackdub.Media.Tests;
 
@@ -95,6 +96,94 @@ public sealed class WavePcm16Tests : IDisposable
 
         Assert.Equal(channelMask, info.ChannelMask);
         Assert.Equal(channelMask, samples.ChannelMask);
+    }
+
+    [Fact]
+    public async Task ReadSamplesAsync_reads_range_spanning_multiple_read_chunks()
+    {
+        string path = Path.Join(tempDirectory, "multi-chunk.wav");
+        const int sampleRate = 48000;
+        const int frameCount = 300_000;
+        float[] input = new float[frameCount * 2];
+        for (int i = 0; i < input.Length; i++)
+        {
+            input[i] = ((i % 2001) - 1000) / 1000f;
+        }
+
+        await WavePcm16.WriteSamplesAsync(path, input, sampleRate, channelCount: 2, TestContext.Current.CancellationToken);
+
+        const int startFrame = 1_000;
+        WavePcm16Samples samples = await WavePcm16.ReadSamplesAsync(
+            path,
+            startSeconds: startFrame / (double)sampleRate,
+            durationSeconds: (frameCount - startFrame) / (double)sampleRate,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal((frameCount - startFrame) * 2, samples.Samples.Length);
+        for (int i = 0; i < samples.Samples.Length; i++)
+        {
+            float expected = (short)Math.Round(input[(startFrame * 2) + i] * short.MaxValue) / 32768f;
+            Assert.Equal(expected, samples.Samples[i]);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReadInfo_reads_riff_data_chunk_larger_than_int_max(bool synchronous)
+    {
+        // ~4.3 h of 48 kHz stereo PCM16: the chunk size has the sign bit set when read as int32.
+        const uint dataLength = 3_000_000_000u;
+        using SparseWaveStream stream = SparseWaveStream.CreatePcm16Stereo48k(rf64: false, dataChunkSize: dataLength, ds64DataLength: null, dataLength);
+
+        WavePcm16Info info = await ReadInfoAsync(stream, synchronous);
+
+        Assert.Equal(48000, info.SampleRate);
+        Assert.Equal(2, info.ChannelCount);
+        Assert.Equal(SparseWaveStream.RiffDataStart, info.DataStartPosition);
+        Assert.Equal(dataLength, info.DataLengthBytes);
+        Assert.Equal(dataLength / 4, info.SampleFrames);
+        Assert.Equal(15_625d, info.DurationSeconds);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReadInfo_reads_rf64_data_length_beyond_uint_max_from_ds64(bool synchronous)
+    {
+        const long dataLength = 5_000_000_000L;
+        using SparseWaveStream stream = SparseWaveStream.CreatePcm16Stereo48k(rf64: true, dataChunkSize: uint.MaxValue, ds64DataLength: dataLength, dataLength);
+
+        WavePcm16Info info = await ReadInfoAsync(stream, synchronous);
+
+        Assert.Equal(SparseWaveStream.Rf64DataStart, info.DataStartPosition);
+        Assert.Equal(dataLength, info.DataLengthBytes);
+        Assert.Equal(dataLength / 4, info.SampleFrames);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReadInfo_rejects_riff_data_chunk_size_placeholder(bool synchronous)
+    {
+        using SparseWaveStream stream = SparseWaveStream.CreatePcm16Stereo48k(rf64: false, dataChunkSize: uint.MaxValue, ds64DataLength: null, dataLength: 5_000_000_000L);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => ReadInfoAsync(stream, synchronous));
+
+        Assert.Contains("0xFFFFFFFF placeholder", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("-rf64 auto", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReadInfo_rejects_rf64_data_chunk_without_ds64(bool synchronous)
+    {
+        using SparseWaveStream stream = SparseWaveStream.CreatePcm16Stereo48k(rf64: true, dataChunkSize: uint.MaxValue, ds64DataLength: null, dataLength: 5_000_000_000L);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => ReadInfoAsync(stream, synchronous));
+
+        Assert.Contains("ds64", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -517,4 +606,9 @@ public sealed class WavePcm16Tests : IDisposable
 
         File.WriteAllBytes(path, header.Concat(data).ToArray());
     }
+
+    private static async Task<WavePcm16Info> ReadInfoAsync(Stream stream, bool synchronous) =>
+        synchronous
+            ? WavePcm16.ReadInfo(stream)
+            : await WavePcm16.ReadInfoAsync(stream, TestContext.Current.CancellationToken);
 }

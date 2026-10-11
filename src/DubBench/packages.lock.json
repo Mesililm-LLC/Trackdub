@@ -383,11 +383,6 @@
           "SQLitePCLRaw.core": "3.0.3"
         }
       },
-      "System.Numerics.Tensors": {
-        "type": "Transitive",
-        "resolved": "9.0.0",
-        "contentHash": "hyJB4UlpAi19Xr9AXzu2NuagKC4lPfHObNMEAA0HmqFz2rX7wKgzeYzO/jM/eBHDhnUGFFEjk5cOoJaxqg5J4A=="
-      },
       "Tmds.DBus.Protocol": {
         "type": "Transitive",
         "resolved": "0.94.1",
@@ -457,6 +452,7 @@
           "Microsoft.ML.OnnxRuntimeGenAI": "[0.17.1, )",
           "Microsoft.ML.OnnxRuntimeGenAI.Cuda": "[0.17.1, )",
           "Microsoft.ML.Tokenizers": "[3.0.0-preview.26502.1, )",
+          "System.Numerics.Tensors": "[9.0.0, )",
           "Trackdub.Contracts": "[1.0.0, )",
           "Trackdub.Domain": "[1.0.0, )",
           "Trackdub.Inference": "[1.0.0, )"
@@ -716,6 +712,12 @@
           "SQLitePCLRaw.config.e_sqlite3": "3.0.3",
           "SourceGear.sqlite3": "3.50.4.5"
         }
+      },
+      "System.Numerics.Tensors": {
+        "type": "CentralTransitive",
+        "requested": "[9.0.0, )",
+        "resolved": "9.0.0",
+        "contentHash": "hyJB4UlpAi19Xr9AXzu2NuagKC4lPfHObNMEAA0HmqFz2rX7wKgzeYzO/jM/eBHDhnUGFFEjk5cOoJaxqg5J4A=="
       }
     },
     "net10.0-windows10.0.19041": {
@@ -1080,11 +1082,6 @@
           "SQLitePCLRaw.core": "3.0.3"
         }
       },
-      "System.Numerics.Tensors": {
-        "type": "Transitive",
-        "resolved": "9.0.0",
-        "contentHash": "hyJB4UlpAi19Xr9AXzu2NuagKC4lPfHObNMEAA0HmqFz2rX7wKgzeYzO/jM/eBHDhnUGFFEjk5cOoJaxqg5J4A=="
-      },
       "Tmds.DBus.Protocol": {
         "type": "Transitive",
         "resolved": "0.94.1",
@@ -1150,6 +1147,7 @@
           "Microsoft.ML.OnnxRuntimeGenAI.WinML": "[0.17.1, )",
           "Microsoft.ML.Tokenizers": "[3.0.0-preview.26502.1, )",
           "Microsoft.Windows.AI.MachineLearning": "[2.4.89, )",
+          "System.Numerics.Tensors": "[9.0.0, )",
           "Trackdub.Contracts": "[1.0.0, )",
           "Trackdub.Domain": "[1.0.0, )",
           "Trackdub.Inference": "[1.0.0, )"
@@ -1364,6 +1362,12 @@
           "SQLitePCLRaw.config.e_sqlite3": "3.0.3",
           "SourceGear.sqlite3": "3.50.4.5"
         }
+      },
+      "System.Numerics.Tensors": {
+        "type": "CentralTransitive",
+        "requested": "[9.0.0, )",
+        "resolved": "9.0.0",
+        "contentHash": "hyJB4UlpAi19Xr9AXzu2NuagKC4lPfHObNMEAA0HmqFz2rX7wKgzeYzO/jM/eBHDhnUGFFEjk5cOoJaxqg5J4A=="
       }
     }
   }

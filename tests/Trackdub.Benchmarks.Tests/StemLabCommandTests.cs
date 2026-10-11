@@ -1,3 +1,4 @@
+using Trackdub.TestDoubles;
 using Trackdub.Tools;
 
 namespace Trackdub.Benchmarks.Tests;
@@ -161,5 +162,54 @@ public sealed class StemLabCommandTests
                 diagnostics);
             return Task.FromResult(result);
         }
+    }
+}
+
+public sealed class StemLabWaveAnalyzerHeaderTests
+{
+    [Fact]
+    public void ReadHeader_reads_rf64_data_length_from_ds64()
+    {
+        const long dataLength = 5_000_000_000L;
+        using SparseWaveStream stream = SparseWaveStream.CreatePcm16Stereo48k(rf64: true, dataChunkSize: uint.MaxValue, ds64DataLength: dataLength, dataLength);
+
+        StemLabWaveAnalyzer.WavePcm16Header header = StemLabWaveAnalyzer.ReadHeader(stream, "stem-source.wav");
+
+        Assert.Equal(SparseWaveStream.Rf64DataStart, header.DataOffset);
+        Assert.Equal(dataLength, header.DataByteLength);
+        Assert.Equal(dataLength / 4, header.SampleFrames);
+    }
+
+    [Fact]
+    public void ReadHeader_reads_riff_data_chunk_larger_than_int_max()
+    {
+        const uint dataLength = 3_000_000_000u;
+        using SparseWaveStream stream = SparseWaveStream.CreatePcm16Stereo48k(rf64: false, dataChunkSize: dataLength, ds64DataLength: null, dataLength);
+
+        StemLabWaveAnalyzer.WavePcm16Header header = StemLabWaveAnalyzer.ReadHeader(stream, "stem-source.wav");
+
+        Assert.Equal(dataLength, header.DataByteLength);
+    }
+
+    [Fact]
+    public void ReadHeader_rejects_riff_data_chunk_size_placeholder()
+    {
+        using SparseWaveStream stream = SparseWaveStream.CreatePcm16Stereo48k(rf64: false, dataChunkSize: uint.MaxValue, ds64DataLength: null, dataLength: 5_000_000_000L);
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+            () => StemLabWaveAnalyzer.ReadHeader(stream, "stem-source.wav"));
+
+        Assert.Contains("0xFFFFFFFF", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ReadHeader_rejects_rf64_without_ds64()
+    {
+        using SparseWaveStream stream = SparseWaveStream.CreatePcm16Stereo48k(rf64: true, dataChunkSize: uint.MaxValue, ds64DataLength: null, dataLength: 5_000_000_000L);
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+            () => StemLabWaveAnalyzer.ReadHeader(stream, "stem-source.wav"));
+
+        Assert.Contains("ds64", exception.Message, StringComparison.Ordinal);
     }
 }
