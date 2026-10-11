@@ -1,3 +1,4 @@
+using Trackdub.Application.Dubbing;
 using Trackdub.Application.Transcripts;
 using Trackdub.Domain;
 
@@ -15,15 +16,15 @@ public sealed record ResidentWarmupRequest(
     bool RequiresVoiceClone = false,
     bool BootstrapProviders = true)
 {
-    /// <summary>Early pipeline stages first, so the stages that run first warm first.</summary>
+    /// <summary>
+    /// The runtime stages of the default pipeline, in the order it runs them, so the stages that
+    /// run first warm first.
+    /// </summary>
     public static IReadOnlyList<RuntimeStage> DefaultStages { get; } =
-    [
-        RuntimeStage.Vad,
-        RuntimeStage.Asr,
-        RuntimeStage.Separation,
-        RuntimeStage.Translation,
-        RuntimeStage.Tts,
-    ];
+        DubbingPipelineStages.DefaultStageOrder
+            .Select(DubbingPipelineEngine.MapStageNameToRuntimeStage)
+            .OfType<RuntimeStage>()
+            .ToList();
 }
 
 public sealed record ResidentProviderBootstrapOutcome(ExecutionProviderKind Provider, bool Ready, string? Detail);

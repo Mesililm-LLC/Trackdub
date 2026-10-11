@@ -104,6 +104,12 @@ public class ResidentWarmupServiceTests
     }
 
     [Fact]
+    public void DefaultStages_FollowTheDefaultPipelineOrder() =>
+        Assert.Equal(
+            [RuntimeStage.Vad, RuntimeStage.Diarization, RuntimeStage.Asr, RuntimeStage.Translation, RuntimeStage.Separation, RuntimeStage.Tts],
+            ResidentWarmupRequest.DefaultStages);
+
+    [Fact]
     public void CompositionRoot_RegistersTheService()
     {
         var services = new ServiceCollection();
