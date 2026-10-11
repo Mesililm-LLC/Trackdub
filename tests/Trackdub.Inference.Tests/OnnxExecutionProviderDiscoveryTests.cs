@@ -271,7 +271,11 @@ public sealed class OnnxExecutionProviderDiscoveryTests
             CancellationToken cancellationToken)
         {
             EnsureCalls.Add(allowDownloads);
-            return Task.FromResult(new Trackdub.Inference.Onnx.ExecutionProviders.LinMl.LinuxOpenVinoCatalogResult(ready, "catalog detail"));
+            return Task.FromResult(new Trackdub.Inference.Onnx.ExecutionProviders.LinMl.LinuxOpenVinoCatalogResult(
+                ready
+                    ? Trackdub.Inference.Onnx.ExecutionProviders.LinMl.LinuxOpenVinoCatalogStatus.Ready
+                    : Trackdub.Inference.Onnx.ExecutionProviders.LinMl.LinuxOpenVinoCatalogStatus.NotInstalled,
+                "catalog detail"));
         }
 
         public bool TryAppend(Microsoft.ML.OnnxRuntime.SessionOptions options, bool cpuOnly, out string? failureReason)
