@@ -21,17 +21,25 @@ internal static class LinuxIntelHardwareGate
             return false;
         }
 
-        foreach (string device in Directory.EnumerateDirectories(pciDevicesRoot))
+        // Enumeration is lazy, so an unreadable sysfs can also fail mid-loop.
+        try
         {
-            string? vendor = SafeReadAllText(Path.Join(device, "vendor"))?.Trim();
-            string? pciClass = SafeReadAllText(Path.Join(device, "class"))?.Trim();
-            if (string.Equals(vendor, IntelPciVendor, StringComparison.OrdinalIgnoreCase)
-                && pciClass is not null
-                && (pciClass.StartsWith("0x03", StringComparison.OrdinalIgnoreCase)
-                    || pciClass.StartsWith("0x12", StringComparison.OrdinalIgnoreCase)))
+            foreach (string device in Directory.EnumerateDirectories(pciDevicesRoot))
             {
-                return true;
+                string? vendor = SafeReadAllText(Path.Join(device, "vendor"))?.Trim();
+                string? pciClass = SafeReadAllText(Path.Join(device, "class"))?.Trim();
+                if (string.Equals(vendor, IntelPciVendor, StringComparison.OrdinalIgnoreCase)
+                    && pciClass is not null
+                    && (pciClass.StartsWith("0x03", StringComparison.OrdinalIgnoreCase)
+                        || pciClass.StartsWith("0x12", StringComparison.OrdinalIgnoreCase)))
+                {
+                    return true;
+                }
             }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
         }
 
         return false;

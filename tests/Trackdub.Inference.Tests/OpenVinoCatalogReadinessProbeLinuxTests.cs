@@ -103,7 +103,8 @@ public sealed class OpenVinoCatalogReadinessProbeLinuxTests
     public void Intel_display_or_accelerator_pci_device_is_detected(string vendor, string pciClass, bool expected)
     {
         string root = Path.Join(Path.GetTempPath(), $"trackdub-pci-{Guid.NewGuid():N}");
-        string device = Path.Join(root, "0000:00:02.0");
+        // Real sysfs names contain colons, which Windows paths reject; the gate does not read the name.
+        string device = Path.Join(root, "0000-00-02.0");
         Directory.CreateDirectory(device);
         try
         {
