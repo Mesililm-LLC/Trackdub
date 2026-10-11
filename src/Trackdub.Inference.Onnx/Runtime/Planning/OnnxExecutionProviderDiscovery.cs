@@ -14,6 +14,7 @@ namespace Trackdub.Inference.Onnx.Runtime.Planning;
 public sealed class OnnxExecutionProviderDiscovery : IExecutionProviderDiscovery
 {
     private readonly IOpenVinoAvailabilityProvider _openVino;
+    private readonly ExecutionProviders.LinMl.ILinuxOpenVinoCatalog? _linuxOpenVinoCatalog;
     private readonly ILinuxNativeGpuRuntimeProbe _linuxRuntimeProbe;
     private readonly INativeCudaTensorRtWindowsPolicy _nativeCudaTensorRtWindowsPolicy;
     private readonly IMigraphxReadinessProbe _migraphxReadinessProbe;
@@ -84,9 +85,11 @@ public sealed class OnnxExecutionProviderDiscovery : IExecutionProviderDiscovery
         IVitisAiCatalogReadinessProbe vitisAiCatalogReadinessProbe,
         Func<CancellationToken, Task<bool>>? isTensorRtRtxEnabled = null,
         Func<string?>? directMlUnavailableReason = null,
-        IInferenceWorkerClient? workerClient = null)
+        IInferenceWorkerClient? workerClient = null,
+        ExecutionProviders.LinMl.ILinuxOpenVinoCatalog? linuxOpenVinoCatalog = null)
     {
         _openVino = openVino ?? throw new ArgumentNullException(nameof(openVino));
+        _linuxOpenVinoCatalog = linuxOpenVinoCatalog ?? DefaultLinuxOpenVinoCatalog();
         _linuxRuntimeProbe = linuxRuntimeProbe ?? throw new ArgumentNullException(nameof(linuxRuntimeProbe));
         _nativeCudaTensorRtWindowsPolicy = nativeCudaTensorRtWindowsPolicy
             ?? throw new ArgumentNullException(nameof(nativeCudaTensorRtWindowsPolicy));
@@ -103,6 +106,13 @@ public sealed class OnnxExecutionProviderDiscovery : IExecutionProviderDiscovery
         _directMlUnavailableReason = directMlUnavailableReason ?? DirectMlRuntimeProbe.GetUnavailableReason;
         _workerClient = workerClient;
     }
+
+    private static ExecutionProviders.LinMl.ILinuxOpenVinoCatalog? DefaultLinuxOpenVinoCatalog() =>
+#if LINML
+        OperatingSystem.IsLinux() ? ExecutionProviders.LinMl.LinMlOpenVinoCatalog.Default : null;
+#else
+        null;
+#endif
 
     public async Task<IReadOnlyList<ExecutionProviderAvailability>> DiscoverAsync(
         HardwareProfile hardwareProfile,
@@ -228,19 +238,16 @@ public sealed class OnnxExecutionProviderDiscovery : IExecutionProviderDiscovery
             ? new(ExecutionProviderKind.Dnnl, true, dnnlReport.Detail)
             : new(ExecutionProviderKind.Dnnl, false, dnnlReport.Detail));
 
-#if LINML
-        if (OperatingSystem.IsLinux())
+        if (_linuxOpenVinoCatalog is not null)
         {
             // OpenVINO on Linux — sessions append the LinML catalog's plugin EP. Discovery never
             // downloads: it registers an installed plugin and reports ready only with a usable device.
-            ExecutionProviders.LinMl.LinuxOpenVinoCatalogResult openVinoCatalog =
-                await ExecutionProviders.LinMl.LinMlOpenVinoCatalog.Default
-                    .EnsureReadyAsync(allowDownloads: false, cancellationToken)
-                    .ConfigureAwait(false);
+            ExecutionProviders.LinMl.LinuxOpenVinoCatalogResult openVinoCatalog = await _linuxOpenVinoCatalog
+                .EnsureReadyAsync(allowDownloads: false, cancellationToken)
+                .ConfigureAwait(false);
             availabilities.Add(new(ExecutionProviderKind.OpenVino, openVinoCatalog.IsReady, openVinoCatalog.Detail));
         }
         else
-#endif
         {
             // OpenVINO — via runtime availability check
             availabilities.Add(_openVino.IsAvailable

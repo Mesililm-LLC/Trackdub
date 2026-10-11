@@ -79,8 +79,19 @@ public sealed class LinMlOpenVinoCatalog : ILinuxOpenVinoCatalog
             return false;
         }
 
-        ProviderAppendResult appended = options.AppendFromCatalog(provider, PreferredDeviceTypes(cpuOnly));
-        failureReason = appended.FailureReason;
-        return appended.Appended;
+        // AppendFromCatalog maps append failures to a result, but reads the plugin's devices first;
+        // catch the same native failures as WinMlCatalogSessionOptionsExtensions so the CPU
+        // fallback still applies.
+        try
+        {
+            ProviderAppendResult appended = options.AppendFromCatalog(provider, PreferredDeviceTypes(cpuOnly));
+            failureReason = appended.FailureReason;
+            return appended.Appended;
+        }
+        catch (Exception ex) when (ex is OnnxRuntimeException or InvalidOperationException or DllNotFoundException or EntryPointNotFoundException)
+        {
+            failureReason = ex.Message;
+            return false;
+        }
     }
 }
