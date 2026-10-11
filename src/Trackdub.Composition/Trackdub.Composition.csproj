@@ -175,10 +175,12 @@
     </ItemGroup>
   </Target>
 
-  <!-- Copy OnnxRuntime.Gpu native Linux assets to output (mirrors DirectML pattern for Windows) -->
+  <!-- Copy OnnxRuntime.Gpu native Linux assets to output (mirrors DirectML pattern for Windows).
+       Keyed on the target, not the build host, so a portable or linux-x64 artifact gets the CUDA
+       natives whichever OS built it; the package only ships linux-x64 GPU natives. -->
   <Target Name="CopyOrtGpuAssetsToOutput"
           AfterTargets="CopyFilesToOutputDirectory"
-          Condition="$([MSBuild]::IsOSPlatform('Linux')) And '$(TrackdubOrtRuntimeFlavor)' != 'Dnnl' And '$(PkgMicrosoft_ML_OnnxRuntime_Gpu)' != ''">
+          Condition="'$(TargetFramework)' == 'net10.0' And ('$(RuntimeIdentifier)' == '' Or '$(RuntimeIdentifier)' == 'linux-x64') And '$(TrackdubOrtRuntimeFlavor)' != 'Dnnl' And '$(PkgMicrosoft_ML_OnnxRuntime_Gpu)' != ''">
     <ItemGroup>
       <_OrtGpuAssets Include="$(PkgMicrosoft_ML_OnnxRuntime_Gpu)\runtimes\linux-x64\native\libonnxruntime.so" TargetPath="libonnxruntime.so" />
       <_OrtGpuAssets Include="$(PkgMicrosoft_ML_OnnxRuntime_Gpu)\runtimes\linux-x64\native\libonnxruntime_providers_cuda.so" TargetPath="libonnxruntime_providers_cuda.so" />
