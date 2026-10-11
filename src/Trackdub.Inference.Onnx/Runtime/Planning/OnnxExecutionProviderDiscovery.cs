@@ -229,17 +229,22 @@ public sealed class OnnxExecutionProviderDiscovery : IExecutionProviderDiscovery
             : new(ExecutionProviderKind.Dnnl, false, dnnlReport.Detail));
 
 #if LINML
-        // OpenVINO on Linux — sessions append the LinML catalog's plugin EP. Discovery never
-        // downloads; an installed plugin is registered during session bootstrap.
-        availabilities.Add(ExecutionProviders.Linux.LinMlOpenVinoCatalog.Default.IsInstalled
-            ? new(ExecutionProviderKind.OpenVino, true, "OpenVINO plugin EP installed (LinML catalog).")
-            : new(ExecutionProviderKind.OpenVino, false, "OpenVINO plugin EP not installed (LinML catalog)."));
-#else
-        // OpenVINO — via runtime availability check
-        availabilities.Add(_openVino.IsAvailable
-            ? new(ExecutionProviderKind.OpenVino, true, "OpenVINO runtime loaded.")
-            : new(ExecutionProviderKind.OpenVino, false, "OpenVINO not installed."));
+        if (OperatingSystem.IsLinux())
+        {
+            // OpenVINO on Linux — sessions append the LinML catalog's plugin EP. Discovery never
+            // downloads; an installed plugin is registered during session bootstrap.
+            availabilities.Add(ExecutionProviders.LinMl.LinMlOpenVinoCatalog.Default.IsInstalled
+                ? new(ExecutionProviderKind.OpenVino, true, "OpenVINO plugin EP installed (LinML catalog).")
+                : new(ExecutionProviderKind.OpenVino, false, "OpenVINO plugin EP not installed (LinML catalog)."));
+        }
+        else
 #endif
+        {
+            // OpenVINO — via runtime availability check
+            availabilities.Add(_openVino.IsAvailable
+                ? new(ExecutionProviderKind.OpenVino, true, "OpenVINO runtime loaded.")
+                : new(ExecutionProviderKind.OpenVino, false, "OpenVINO not installed."));
+        }
 
         availabilities.Add(await ResolveWinMlCatalogEpAvailabilityAsync(
             ExecutionProviderKind.OpenVinoCatalog,

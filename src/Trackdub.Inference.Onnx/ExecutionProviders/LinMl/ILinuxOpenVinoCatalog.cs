@@ -1,6 +1,6 @@
 using Microsoft.ML.OnnxRuntime;
 
-namespace Trackdub.Inference.Onnx.ExecutionProviders.Linux;
+namespace Trackdub.Inference.Onnx.ExecutionProviders.LinMl;
 
 /// <summary>Outcome of preparing the OpenVINO plugin EP through the Linux catalog.</summary>
 public sealed record LinuxOpenVinoCatalogResult(bool IsReady, string Detail);
@@ -20,7 +20,7 @@ public interface ILinuxOpenVinoCatalog
 }
 
 /// <summary>
-/// Used where LinML.Catalog is not referenced (the Windows TFM compiled on a Linux host).
+/// Used where LinML.Catalog is not referenced (the Windows TFM).
 /// </summary>
 internal sealed class UnavailableLinuxOpenVinoCatalog : ILinuxOpenVinoCatalog
 {

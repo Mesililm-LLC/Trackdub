@@ -3,7 +3,7 @@ using LinML.Catalog;
 using LinML.Contracts;
 using Microsoft.ML.OnnxRuntime;
 
-namespace Trackdub.Inference.Onnx.ExecutionProviders.Linux;
+namespace Trackdub.Inference.Onnx.ExecutionProviders.LinMl;
 
 /// <summary><see cref="ILinuxOpenVinoCatalog"/> backed by <see cref="ExecutionProviderCatalog"/>.</summary>
 [SupportedOSPlatform("linux")]

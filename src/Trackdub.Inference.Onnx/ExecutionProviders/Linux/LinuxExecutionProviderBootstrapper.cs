@@ -2,6 +2,7 @@ using System.Runtime.Versioning;
 using Trackdub.Contracts.ApplicationContracts;
 using Trackdub.Domain;
 using Trackdub.Inference.Onnx.Dnnl;
+using Trackdub.Inference.Onnx.ExecutionProviders.LinMl;
 using Trackdub.Inference.Onnx.Runtime.Planning;
 using Trackdub.Inference.Onnx.TensorRtRtx;
 using Trackdub.Inference.Runtime.Planning;

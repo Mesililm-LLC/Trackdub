@@ -1538,7 +1538,7 @@ internal static class OnnxExecutionSessionFactory
             ExecutionProviderKind.TensorRt => CreateTensorRtSelection(options),
 #endif
 #if LINML
-            ExecutionProviderKind.OpenVino => CreateLinuxOpenVinoSelection(options),
+            ExecutionProviderKind.OpenVino when OperatingSystem.IsLinux() => CreateLinuxOpenVinoSelection(options),
 #endif
             _ => null,
         };
@@ -1620,9 +1620,10 @@ internal static class OnnxExecutionSessionFactory
 #endif
 
 #if LINML
+    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
     private static SessionOptionsSelection CreateLinuxOpenVinoSelection(SessionOptions options)
     {
-        if (!ExecutionProviders.Linux.LinMlOpenVinoCatalog.Default.TryAppend(options, out string? failureReason))
+        if (!ExecutionProviders.LinMl.LinMlOpenVinoCatalog.Default.TryAppend(options, out string? failureReason))
         {
             return new SessionOptionsSelection(
                 options,

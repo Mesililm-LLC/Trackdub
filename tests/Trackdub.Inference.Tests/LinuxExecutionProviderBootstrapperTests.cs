@@ -2,6 +2,7 @@ using System.Runtime.Versioning;
 using Trackdub.Contracts.ApplicationContracts;
 using Trackdub.Domain;
 using Trackdub.Inference.Onnx.ExecutionProviders;
+using Trackdub.Inference.Onnx.ExecutionProviders.LinMl;
 using Trackdub.Inference.Onnx.ExecutionProviders.Linux;
 using Trackdub.Inference.Onnx.Runtime.Planning;
 using Trackdub.Inference.Runtime.Planning;

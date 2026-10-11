@@ -10,8 +10,9 @@
     <NoWarn>$(NoWarn);CA1416</NoWarn>
   </PropertyGroup>
 
-  <!-- LINML: LinML.Catalog is referenced (portable TFM) and Linux sources are compiled (Linux host). -->
-  <PropertyGroup Condition="'$(TargetFramework)' != 'net10.0-windows10.0.19041.0' And $([MSBuild]::IsOSPlatform('Linux'))">
+  <!-- LINML: LinML.Catalog is referenced (portable TFM, any build host). Call sites gate on
+       OperatingSystem.IsLinux() at run time, so the portable artifact behaves the same wherever it is built. -->
+  <PropertyGroup Condition="'$(TargetFramework)' != 'net10.0-windows10.0.19041.0'">
     <DefineConstants>$(DefineConstants);LINML</DefineConstants>
   </PropertyGroup>
 
@@ -144,7 +145,7 @@
   <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041.0'">
     <Compile Remove="WindowsMl\WindowsMlExecutionProviderBootstrapper.Deferred.cs" />
     <!-- LinML.Catalog is portable-TFM only; Windows uses the Windows ML catalog. -->
-    <Compile Remove="ExecutionProviders\Linux\LinMlOpenVinoCatalog.cs" />
+    <Compile Remove="ExecutionProviders\LinMl\LinMlOpenVinoCatalog.cs" />
   </ItemGroup>
 
   <Import Project="../../build/Trackdub.NativePair.targets" />

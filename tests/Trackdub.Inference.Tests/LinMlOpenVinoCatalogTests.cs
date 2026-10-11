@@ -2,7 +2,7 @@ using System.Runtime.Versioning;
 using LinML.Catalog;
 using LinML.Contracts;
 using Microsoft.ML.OnnxRuntime;
-using Trackdub.Inference.Onnx.ExecutionProviders.Linux;
+using Trackdub.Inference.Onnx.ExecutionProviders.LinMl;
 
 namespace Trackdub.Inference.Tests;
 
