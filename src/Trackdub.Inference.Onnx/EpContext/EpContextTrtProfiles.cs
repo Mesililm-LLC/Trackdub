@@ -1,4 +1,5 @@
 using Microsoft.ML.OnnxRuntime;
+using Trackdub.Inference.Onnx.Madlad;
 using Trackdub.Inference.Onnx.NemotronAsr;
 using Trackdub.Inference.Onnx.SortFormer;
 
@@ -13,6 +14,11 @@ internal static class EpContextTrtProfiles
 {
     public static IReadOnlyDictionary<string, string>? Resolve(string sourceModelPath)
     {
+        if (MadladTrtProfiles.Resolve(sourceModelPath) is { } madladProfile)
+        {
+            return madladProfile;
+        }
+
         IReadOnlyCollection<string> inputNames;
         try
         {

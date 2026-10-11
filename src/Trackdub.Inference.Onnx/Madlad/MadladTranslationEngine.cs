@@ -221,9 +221,7 @@ public sealed class MadladTranslationEngine(IRuntimePlanner runtimePlanner,
         string decoderModelPath,
         CancellationToken cancellationToken)
     {
-        IReadOnlyDictionary<string, string>? trtOptions = plan.ExecutionProvider is ExecutionProviderKind.TensorRTRtx
-            ? TensorRtRtxStaticShapeOptions
-            : null;
+        bool tensorRtRtx = plan.ExecutionProvider is ExecutionProviderKind.TensorRTRtx;
         return await OnnxExecutionSessionFactory
             .CreatePooledOpusAsync(
                 "madlad",
@@ -231,16 +229,10 @@ public sealed class MadladTranslationEngine(IRuntimePlanner runtimePlanner,
                 decoderModelPath,
                 plan.ExecutionProvider!.Value,
                 cancellationToken,
-                additionalTrtEncoderOptions: trtOptions,
-                additionalTrtDecoderOptions: trtOptions)
+                additionalTrtEncoderOptions: tensorRtRtx ? MadladTrtProfiles.Encoder : null,
+                additionalTrtDecoderOptions: tensorRtRtx ? MadladTrtProfiles.Decoder : null)
             .ConfigureAwait(false);
     }
-
-    // Static-shape decoding feeds TensorRT RTX the same few padded shapes, so it can replay one CUDA
-    // graph per shape; capture halves the decoder step time. The fixed-shape integration test pins the
-    // output across buckets.
-    private static readonly IReadOnlyDictionary<string, string> TensorRtRtxStaticShapeOptions =
-        new Dictionary<string, string>(StringComparer.Ordinal) { ["enable_cuda_graph"] = "1" };
 
     private static bool IsAdmissionBudgetFailure(Exception ex) =>
         ex is InvalidOperationException &&
@@ -319,6 +311,7 @@ public sealed class MadladTranslationEngine(IRuntimePlanner runtimePlanner,
         bool staticShapes = sessionLease.SelectedProviderKind is ExecutionProviderKind.TensorRTRtx;
         if (staticShapes)
         {
+            MadladTrtProfiles.ValidateLengths(inputIds.Length, maxSteps ?? Math.Max(8, tokenizer.MaxGenerationLength));
             int paddedLength = Seq2SeqGreedyDecoder.BucketLength(inputIds.Length);
             long[] paddedIds = new long[paddedLength];
             inputIds.CopyTo(paddedIds);
