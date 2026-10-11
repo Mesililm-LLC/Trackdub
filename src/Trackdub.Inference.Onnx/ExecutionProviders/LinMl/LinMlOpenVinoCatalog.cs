@@ -32,9 +32,6 @@ public sealed class LinMlOpenVinoCatalog : ILinuxOpenVinoCatalog
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
     }
 
-    public bool IsInstalled =>
-        _catalog.Find(ProviderId.OpenVino)?.ReadyState is ProviderReadyState.Ready or ProviderReadyState.NotReady;
-
     public async Task<LinuxOpenVinoCatalogResult> EnsureReadyAsync(
         bool allowDownloads,
         CancellationToken cancellationToken)

@@ -232,10 +232,12 @@ public sealed class OnnxExecutionProviderDiscovery : IExecutionProviderDiscovery
         if (OperatingSystem.IsLinux())
         {
             // OpenVINO on Linux — sessions append the LinML catalog's plugin EP. Discovery never
-            // downloads; an installed plugin is registered during session bootstrap.
-            availabilities.Add(ExecutionProviders.LinMl.LinMlOpenVinoCatalog.Default.IsInstalled
-                ? new(ExecutionProviderKind.OpenVino, true, "OpenVINO plugin EP installed (LinML catalog).")
-                : new(ExecutionProviderKind.OpenVino, false, "OpenVINO plugin EP not installed (LinML catalog)."));
+            // downloads: it registers an installed plugin and reports ready only with a usable device.
+            ExecutionProviders.LinMl.LinuxOpenVinoCatalogResult openVinoCatalog =
+                await ExecutionProviders.LinMl.LinMlOpenVinoCatalog.Default
+                    .EnsureReadyAsync(allowDownloads: false, cancellationToken)
+                    .ConfigureAwait(false);
+            availabilities.Add(new(ExecutionProviderKind.OpenVino, openVinoCatalog.IsReady, openVinoCatalog.Detail));
         }
         else
 #endif

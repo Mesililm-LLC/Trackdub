@@ -11,9 +11,6 @@ public sealed record LinuxOpenVinoCatalogResult(bool IsReady, string Detail);
 /// </summary>
 public interface ILinuxOpenVinoCatalog
 {
-    /// <summary>Whether the plugin is installed on disk (registration may still be pending).</summary>
-    bool IsInstalled { get; }
-
     Task<LinuxOpenVinoCatalogResult> EnsureReadyAsync(bool allowDownloads, CancellationToken cancellationToken);
 
     /// <param name="cpuOnly">
@@ -30,8 +27,6 @@ internal sealed class UnavailableLinuxOpenVinoCatalog : ILinuxOpenVinoCatalog
     public static UnavailableLinuxOpenVinoCatalog Instance { get; } = new();
 
     private const string Reason = "The LinML catalog is not available in this build.";
-
-    public bool IsInstalled => false;
 
     public Task<LinuxOpenVinoCatalogResult> EnsureReadyAsync(bool allowDownloads, CancellationToken cancellationToken) =>
         Task.FromResult(new LinuxOpenVinoCatalogResult(false, Reason));

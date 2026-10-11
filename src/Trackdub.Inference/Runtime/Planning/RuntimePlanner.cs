@@ -397,7 +397,7 @@ public sealed class RuntimePlanner : IRuntimePlanner
             ]
         };
 
-    private static IReadOnlyList<ExecutionProviderAvailability> ApplyDeviceExclusions(
+    internal static IReadOnlyList<ExecutionProviderAvailability> ApplyDeviceExclusions(
         IReadOnlyList<ExecutionProviderAvailability> availabilities,
         IReadOnlyList<DeviceEntry> devices,
         DeviceExclusionSet exclusions)
@@ -435,6 +435,20 @@ public sealed class RuntimePlanner : IRuntimePlanner
         {
             bool hasEligibleDevice = devicesByProvider.TryGetValue(availability.Provider, out var providerDevices)
                 && providerDevices.Any(device => !excludedIndices.Contains(device.DeviceIndex));
+
+            // The Linux OpenVINO catalog append chooses a device by type (NPU, GPU, CPU), not by
+            // the planner's device index, so it could still land on an excluded device. Suppress
+            // the route while any OpenVINO device is excluded.
+            if (hasEligibleDevice
+                && availability.Provider is ExecutionProviderKind.OpenVino
+                && providerDevices!.Any(device => excludedIndices.Contains(device.DeviceIndex)))
+            {
+                filtered.Add(new ExecutionProviderAvailability(
+                    availability.Provider,
+                    false,
+                    "OpenVino cannot be pinned to a device; unavailable while one of its devices is excluded for this run."));
+                continue;
+            }
 
             if (hasEligibleDevice)
             {

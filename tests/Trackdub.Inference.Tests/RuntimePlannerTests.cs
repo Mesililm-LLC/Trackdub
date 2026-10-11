@@ -357,6 +357,27 @@ public sealed class RuntimePlannerTests
     }
 
     [Fact]
+    public void ApplyDeviceExclusions_suppresses_OpenVino_while_any_of_its_devices_is_excluded()
+    {
+        var exclusions = new DeviceExclusionSet();
+        exclusions.MarkMemoryExhausted(2);
+        DeviceEntry[] devices =
+        [
+            new(DeviceKind.Npu, 2, "NPU", "Intel", 0, 0, [ExecutionProviderKind.OpenVino]),
+            new(DeviceKind.IntegratedGpu, 1, "iGPU", "Intel", 0, 0, [ExecutionProviderKind.OpenVino]),
+            new(DeviceKind.Cpu, 0, "CPU", "Intel", 0, 0, [ExecutionProviderKind.Cpu]),
+        ];
+
+        IReadOnlyList<ExecutionProviderAvailability> filtered = RuntimePlanner.ApplyDeviceExclusions(
+            [new(ExecutionProviderKind.OpenVino, true), new(ExecutionProviderKind.Cpu, true)],
+            devices,
+            exclusions);
+
+        Assert.False(filtered.Single(a => a.Provider == ExecutionProviderKind.OpenVino).IsAvailable);
+        Assert.True(filtered.Single(a => a.Provider == ExecutionProviderKind.Cpu).IsAvailable);
+    }
+
+    [Fact]
     public async Task PlanAsync_UsesDnnl_WhenCpuDeviceAdvertisesIt()
     {
         using var workspace = new RuntimePlannerTestWorkspace();

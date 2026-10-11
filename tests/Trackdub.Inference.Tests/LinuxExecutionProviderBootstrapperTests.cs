@@ -302,8 +302,6 @@ public sealed class LinuxExecutionProviderBootstrapperTests
     {
         public List<bool> EnsureCalls { get; } = [];
 
-        public bool IsInstalled => isReady;
-
         public Task<LinuxOpenVinoCatalogResult> EnsureReadyAsync(bool allowDownloads, CancellationToken cancellationToken)
         {
             EnsureCalls.Add(allowDownloads);

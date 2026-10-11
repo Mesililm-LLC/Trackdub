@@ -51,7 +51,6 @@ public sealed class LinMlOpenVinoCatalogTests
         LinuxOpenVinoCatalogResult result = await catalog.EnsureReadyAsync(allowDownloads: true, default);
 
         Assert.False(result.IsReady);
-        Assert.False(catalog.IsInstalled);
     }
 
     [Fact]
@@ -63,18 +62,6 @@ public sealed class LinMlOpenVinoCatalogTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             new LinMlOpenVinoCatalog(new FakeCatalog(provider)).EnsureReadyAsync(allowDownloads: false, cts.Token));
-    }
-
-    [Theory]
-    [InlineData(ProviderReadyState.Ready, true)]
-    [InlineData(ProviderReadyState.NotReady, true)]
-    [InlineData(ProviderReadyState.NotPresent, false)]
-    [InlineData(ProviderReadyState.Unsupported, false)]
-    public void IsInstalled_follows_ready_state(ProviderReadyState state, bool expected)
-    {
-        var provider = new FakeProvider(_ => Task.FromResult(Result(ProviderEnsureStatus.Ready))) { ReadyState = state };
-
-        Assert.Equal(expected, new LinMlOpenVinoCatalog(new FakeCatalog(provider)).IsInstalled);
     }
 
     [Fact]
