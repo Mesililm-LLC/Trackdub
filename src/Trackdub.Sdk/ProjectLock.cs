@@ -366,7 +366,17 @@ public sealed class ProjectLock : IDisposable, IAsyncDisposable
                 bufferSize: 256);
 
             using var sr = new StreamReader(reader);
-            string content = sr.ReadToEnd();
+            // Anyone who can write the project directory can replace the record, and this read
+            // runs under the process-wide acquisition lock, so cap it: a real record is ~100 chars.
+            const int MaxOwnerRecordChars = 4096;
+            char[] buffer = new char[MaxOwnerRecordChars + 1];
+            int length = sr.ReadBlock(buffer, 0, buffer.Length);
+            if (length > MaxOwnerRecordChars)
+            {
+                return new LockFileRead(ReadFailed: false, HoldingPid: null);
+            }
+
+            string content = new(buffer, 0, length);
 
             if (string.IsNullOrWhiteSpace(content))
             {
