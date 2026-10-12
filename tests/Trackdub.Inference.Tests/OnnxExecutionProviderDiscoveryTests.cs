@@ -27,6 +27,21 @@ public sealed class OnnxExecutionProviderDiscoveryTests
     }
 
     [Fact]
+    public async Task DiscoverAsync_LinuxWithLoadedNvidiaDriverButNoNvidiaPciDevice_TreatsTheGpuAsNvidia()
+    {
+        // WSL2 passthrough: the hardware profile lists a Microsoft virtual adapter, not the NVIDIA GPU.
+        var discovery = new OnnxExecutionProviderDiscovery(
+            new StubOpenVinoProvider(false),
+            new StubLinuxNativeGpuRuntimeProbe(nvidiaDriverLoaded: true, nativeTensorRtAvailable: false));
+
+        IReadOnlyList<ExecutionProviderAvailability> availabilities = await discovery.DiscoverAsync(
+            new HardwareProfile("linux", "x64", HasGpu: true, GpuDescription: "Microsoft Corporation Device 008e"),
+            CancellationToken.None);
+
+        Assert.True(availabilities.Single(a => a.Provider == ExecutionProviderKind.Cuda).IsAvailable);
+    }
+
+    [Fact]
     public async Task DiscoverAsync_LinuxWithNvidiaDriverAndTensorRt_ReportsTensorRtAvailable()
     {
         var discovery = new OnnxExecutionProviderDiscovery(

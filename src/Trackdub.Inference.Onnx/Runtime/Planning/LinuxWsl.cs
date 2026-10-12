@@ -26,6 +26,8 @@ internal static class LinuxWsl
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            // Detection is best-effort: an unreadable /proc entry means "not WSL", and the caller
+            // then takes the ordinary Linux path, which reports its own failure if the GPU is unusable.
             return false;
         }
     }

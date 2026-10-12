@@ -24,6 +24,7 @@ internal sealed class LinMlTensorRtRtxBootstrap : ITensorRtRtxProviderBootstrap
     private readonly Func<(bool Eligible, TensorRtRtxReadinessBlocker Blocker, string Detail)> _hardwareGate;
     private readonly Func<string?, bool> _isOverrideUsable;
     private readonly LinMlWsl2TensorRtRtxPlugin _wsl2Plugin;
+    private readonly Func<bool> _isPluginRegistered;
 
     public LinMlTensorRtRtxBootstrap(
         IExecutionProviderCatalog catalog,
@@ -32,7 +33,8 @@ internal sealed class LinMlTensorRtRtxBootstrap : ITensorRtRtxProviderBootstrap
         Func<CancellationToken, ValueTask<bool>> isLicenseAccepted,
         Func<(bool Eligible, TensorRtRtxReadinessBlocker Blocker, string Detail)> hardwareGate,
         Func<string?, bool> isOverrideUsable,
-        LinMlWsl2TensorRtRtxPlugin wsl2Plugin)
+        LinMlWsl2TensorRtRtxPlugin wsl2Plugin,
+        Func<bool> isPluginRegistered)
     {
         _plugin = new LinMlPluginCatalog(
             catalog ?? throw new ArgumentNullException(nameof(catalog)),
@@ -44,6 +46,7 @@ internal sealed class LinMlTensorRtRtxBootstrap : ITensorRtRtxProviderBootstrap
         _hardwareGate = hardwareGate ?? throw new ArgumentNullException(nameof(hardwareGate));
         _isOverrideUsable = isOverrideUsable ?? throw new ArgumentNullException(nameof(isOverrideUsable));
         _wsl2Plugin = wsl2Plugin ?? throw new ArgumentNullException(nameof(wsl2Plugin));
+        _isPluginRegistered = isPluginRegistered ?? throw new ArgumentNullException(nameof(isPluginRegistered));
     }
 
     public static LinMlTensorRtRtxBootstrap Create(
@@ -59,7 +62,8 @@ internal sealed class LinMlTensorRtRtxBootstrap : ITensorRtRtxProviderBootstrap
             isLicenseAccepted,
             LinuxNvidiaHardwareGate.Evaluate,
             static explicitDirectory => TensorRtRtxPluginLocator.Resolve(explicitDirectory).Succeeded,
-            LinMlWsl2TensorRtRtxPlugin.CreateDefault());
+            LinMlWsl2TensorRtRtxPlugin.CreateDefault(),
+            TensorRtRtxOrtProbe.IsPluginProviderListed);
     }
 
     public async Task<TensorRtRtxBootstrapResult> EnsureRegisteredAsync(
@@ -74,6 +78,17 @@ internal sealed class LinMlTensorRtRtxBootstrap : ITensorRtRtxProviderBootstrap
         if (!eligible)
         {
             return Failure(hardwareBlocker, hardwareDetail);
+        }
+
+        // Another bootstrap in this process (for example the DI-wired one using the studio setting)
+        // may already have registered the plugin; ORT keeps one registration per EP name.
+        if (_isPluginRegistered())
+        {
+            return new TensorRtRtxBootstrapResult(
+                Succeeded: true,
+                TensorRtRtxProviderIds.PluginEpAbi,
+                Blocker: null,
+                "TensorRT RTX EP ABI plugin is already registered in this process.");
         }
 
         string? explicitDirectory = await _explicitPluginDirectory(cancellationToken).ConfigureAwait(false);
@@ -98,6 +113,13 @@ internal sealed class LinMlTensorRtRtxBootstrap : ITensorRtRtxProviderBootstrap
         if (wsl2.Status is LinMlWsl2PluginStatus.Failed)
         {
             return Failure(TensorRtRtxReadinessBlocker.EpRegisterFailed, wsl2.Detail);
+        }
+
+        // The patched build links the stock plugin's libraries. With downloads allowed the catalog installs
+        // them below (and registers the stock plugin, so the patched build takes over after a restart).
+        if (wsl2.Status is LinMlWsl2PluginStatus.StockMissing && !allowProviderDownloads)
+        {
+            return Failure(TensorRtRtxReadinessBlocker.EpNotPresent, $"{wsl2.Detail} {wsl2.Hint}");
         }
 
         // The catalog downloads from PyPI without any license step, so the NVIDIA license gate

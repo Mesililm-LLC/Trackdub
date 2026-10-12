@@ -144,7 +144,9 @@ public sealed class OnnxExecutionProviderDiscovery : IExecutionProviderDiscovery
         bool isWindows = hardwareProfile.OperatingSystem.Equals("windows", StringComparison.OrdinalIgnoreCase);
         bool isMacOs = hardwareProfile.OperatingSystem.Equals("macos", StringComparison.OrdinalIgnoreCase);
         bool isLinux = hardwareProfile.OperatingSystem.Equals("linux", StringComparison.OrdinalIgnoreCase);
-        bool isNvidiaGpu = hardwareProfile.GpuDescription?.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase) ?? false;
+        // WSL2 has no NVIDIA PCI device in the hardware profile, but a loaded driver (GPU passthrough) is an NVIDIA GPU.
+        bool isNvidiaGpu = (hardwareProfile.GpuDescription?.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase) ?? false)
+            || (isLinux && _linuxRuntimeProbe.IsNvidiaDriverLoaded());
         bool isAmdGpu = MigraphxProviderOrdering.ShouldPreferMigraphxOnAmdGpu(hardwareProfile);
         bool tensorRtRtxEnabled = await _isTensorRtRtxEnabled(cancellationToken).ConfigureAwait(false);
 

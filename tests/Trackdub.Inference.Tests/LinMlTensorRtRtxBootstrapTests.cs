@@ -134,6 +134,60 @@ public sealed class LinMlTensorRtRtxBootstrapTests
     }
 
     [Fact]
+    public async Task A_plugin_already_registered_in_the_process_is_reported_ready_without_touching_anything()
+    {
+        var provider = new FakeProvider(ProviderEnsureStatus.Downloaded);
+        var directory = new RecordingBootstrap();
+        LinMlTensorRtRtxBootstrap bootstrap = Make(
+            provider,
+            licenseAccepted: true,
+            overrideUsable: true,
+            directoryBootstrap: directory,
+            alreadyRegistered: true);
+
+        TensorRtRtxBootstrapResult result = await bootstrap.EnsureRegisteredAsync(allowProviderDownloads: true);
+
+        Assert.True(result.Succeeded);
+        Assert.Contains("already registered", result.Detail, StringComparison.Ordinal);
+        Assert.Equal(0, provider.EnsureCalls);
+        Assert.Empty(directory.AllowDownloadsCalls);
+    }
+
+    [Fact]
+    public async Task A_vendored_WSL2_build_without_stock_libraries_reports_missing_when_downloads_are_off()
+    {
+        var provider = new FakeProvider(ProviderEnsureStatus.Ready);
+        LinMlTensorRtRtxBootstrap bootstrap = Make(
+            provider,
+            licenseAccepted: true,
+            wsl2Plugin: LinMlWsl2TensorRtRtxPluginTests.Wsl(devices: 0, stockDirectoryPresent: false));
+
+        TensorRtRtxBootstrapResult result = await bootstrap.EnsureRegisteredAsync(allowProviderDownloads: false);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(TensorRtRtxReadinessBlocker.EpNotPresent, result.Blocker);
+        Assert.Contains("Restart", result.Detail, StringComparison.Ordinal);
+        Assert.Equal(0, provider.EnsureCalls);
+    }
+
+    [Fact]
+    public async Task A_vendored_WSL2_build_without_stock_libraries_installs_the_stock_plugin_when_downloads_are_allowed()
+    {
+        var provider = new FakeProvider(ProviderEnsureStatus.NoDevices);
+        LinMlTensorRtRtxBootstrap bootstrap = Make(
+            provider,
+            licenseAccepted: true,
+            wsl2Plugin: LinMlWsl2TensorRtRtxPluginTests.Wsl(devices: 0, stockDirectoryPresent: false));
+
+        TensorRtRtxBootstrapResult result = await bootstrap.EnsureRegisteredAsync(allowProviderDownloads: true);
+
+        Assert.Equal(1, provider.EnsureCalls);
+        Assert.True(provider.LastOptions?.AllowDownloads);
+        Assert.False(result.Succeeded);
+        Assert.Contains("Restart", result.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task A_registered_WSL2_build_is_used_without_touching_the_catalog()
     {
         var provider = new FakeProvider(ProviderEnsureStatus.Downloaded);
@@ -155,7 +209,7 @@ public sealed class LinMlTensorRtRtxBootstrapTests
         var provider = new FakeProvider(ProviderEnsureStatus.Ready);
         LinMlTensorRtRtxBootstrap bootstrap = Make(
             provider,
-            wsl2Plugin: LinMlWsl2TensorRtRtxPluginTests.Wsl(devices: 0, stockDirectoryPresent: false));
+            wsl2Plugin: LinMlWsl2TensorRtRtxPluginTests.WslRegistrationFails());
 
         TensorRtRtxBootstrapResult result = await bootstrap.EnsureRegisteredAsync(allowProviderDownloads: false);
 
@@ -199,7 +253,8 @@ public sealed class LinMlTensorRtRtxBootstrapTests
         bool licenseAccepted = false,
         bool overrideUsable = false,
         ITensorRtRtxProviderBootstrap? directoryBootstrap = null,
-        LinMlWsl2TensorRtRtxPlugin? wsl2Plugin = null) =>
+        LinMlWsl2TensorRtRtxPlugin? wsl2Plugin = null,
+        bool alreadyRegistered = false) =>
         new(
             new FakeCatalog(provider),
             directoryBootstrap ?? new RecordingBootstrap(),
@@ -209,7 +264,8 @@ public sealed class LinMlTensorRtRtxBootstrapTests
                 ? (true, TensorRtRtxReadinessBlocker.None, "driver")
                 : (false, TensorRtRtxReadinessBlocker.GpuVendorMismatch, "No loaded NVIDIA driver detected for TensorRT RTX."),
             _ => overrideUsable,
-            wsl2Plugin ?? LinMlWsl2TensorRtRtxPluginTests.NotWsl());
+            wsl2Plugin ?? LinMlWsl2TensorRtRtxPluginTests.NotWsl(),
+            () => alreadyRegistered);
 
     private sealed class RecordingBootstrap : ITensorRtRtxProviderBootstrap
     {

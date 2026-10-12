@@ -15,6 +15,9 @@ public enum LinMlWsl2PluginStatus
     /// <summary>The WSL2 build is registered and exposes at least one device.</summary>
     Registered,
 
+    /// <summary>The WSL2 build is vendored but the stock plugin's runtime libraries it links are not.</summary>
+    StockMissing,
+
     /// <summary>The WSL2 build is vendored but could not be used.</summary>
     Failed,
 }
@@ -37,7 +40,14 @@ internal sealed class LinMlWsl2TensorRtRtxPlugin
         "On WSL2 the stock TensorRT-RTX plugin exposes no device. Vendor LinML's WSL2 build with "
         + "`bash scripts/fetch-ep-plugins.sh trt-rtx-wsl2` (LinML release ep-trt-rtx-wsl2-0.4.0-wsl2p1), then restart.";
 
+    internal const string StockMissingHint =
+        "Restart after the stock TensorRT-RTX plugin is installed so LinML's WSL2 build registers first.";
+
     private const string RegistrationName = TensorRtRtxProviderConstants.PluginOrtExecutionProviderName;
+
+    // Registration is process-wide and ORT accepts one registration per EP name, so the
+    // check-then-register sequence must not interleave across concurrent bootstraps.
+    private static readonly object RegistrationGate = new();
 
     // Dependency handles stay loaded for the life of the process, as ORT may resolve the plugin lazily.
     private static readonly List<IntPtr> LoadedDependencies = [];
@@ -78,12 +88,12 @@ internal sealed class LinMlWsl2TensorRtRtxPlugin
             static () => PluginLibraryRegistry.GetDevices(RegistrationName).Count,
             LoadStockDependencies);
 
-    internal string PatchedLibraryPath => Path.Combine(
+    internal string PatchedLibraryPath => Path.Join(
         _installRoot, "ep-plugins", "trt-rtx-wsl2", "linml_trt_rtx_ep", TensorRtRtxProviderConstants.PluginLibraryFileNameLinux);
 
     // The catalog's stock plugin directory: the patched build links its TensorRT-RTX and CUDA
     // libraries by SONAME and ships none of them.
-    internal string StockDirectory => Path.Combine(
+    internal string StockDirectory => Path.Join(
         _installRoot, "ep-plugins", "trt-rtx", "onnxruntime_ep_nv_tensorrt_rtx");
 
     public LinMlWsl2PluginResult TryRegister()
@@ -99,41 +109,50 @@ internal sealed class LinMlWsl2TensorRtRtxPlugin
             return new(LinMlWsl2PluginStatus.NotApplicable, "LinML's WSL2 TensorRT-RTX build is not vendored.", InstallHint);
         }
 
-        if (_deviceCount() > 0)
+        lock (RegistrationGate)
         {
-            return new(LinMlWsl2PluginStatus.Registered, $"TensorRT-RTX WSL2 plugin already registered ({patched}).");
-        }
+            if (_deviceCount() > 0)
+            {
+                return new(LinMlWsl2PluginStatus.Registered, $"TensorRT-RTX WSL2 plugin already registered ({patched}).");
+            }
 
-        if (!_directoryExists(StockDirectory))
-        {
-            return new(
-                LinMlWsl2PluginStatus.Failed,
-                $"LinML's WSL2 TensorRT-RTX build needs the stock plugin's runtime libraries, which are not vendored at "
-                + $"{StockDirectory}. Install the TensorRT-RTX plugin once, then restart so the WSL2 build registers first.");
-        }
+            if (!_directoryExists(StockDirectory))
+            {
+                return new(
+                    LinMlWsl2PluginStatus.StockMissing,
+                    $"LinML's WSL2 TensorRT-RTX build links the stock plugin's runtime libraries, which are not vendored at {StockDirectory}.",
+                    StockMissingHint);
+            }
 
-        try
-        {
-            _loadDependencies(StockDirectory, TensorRtRtxProviderConstants.PluginLibraryFileNameLinux);
-            _register(RegistrationName, patched);
-        }
-        catch (ArgumentException ex)
-        {
-            // The catalog registered the stock plugin earlier in this process; ORT keeps one per name.
-            return new(
-                LinMlWsl2PluginStatus.Failed,
-                $"The stock TensorRT-RTX plugin was already registered in this process, so the WSL2 build cannot replace it. "
-                + $"Restart to use {patched}. ({ex.Message})");
-        }
-        catch (Exception ex) when (ex is OnnxRuntimeException or FileNotFoundException or DllNotFoundException or BadImageFormatException)
-        {
-            return new(LinMlWsl2PluginStatus.Failed, $"Registering {patched} failed: {ex.Message}");
-        }
+            try
+            {
+                _loadDependencies(StockDirectory, TensorRtRtxProviderConstants.PluginLibraryFileNameLinux);
+                _register(RegistrationName, patched);
+            }
+            catch (ArgumentException ex)
+            {
+                // Another registration of this EP name won the race, or the catalog registered the stock plugin earlier.
+                int existing = _deviceCount();
+                if (existing > 0)
+                {
+                    return new(LinMlWsl2PluginStatus.Registered, $"TensorRT-RTX WSL2 plugin already registered ({existing} EP device(s)).");
+                }
 
-        int devices = _deviceCount();
-        return devices > 0
-            ? new(LinMlWsl2PluginStatus.Registered, $"TensorRT-RTX WSL2 plugin registered from {patched} ({devices} EP device(s)).")
-            : new(LinMlWsl2PluginStatus.Failed, $"{patched} registered but exposes no EP devices. Check that nvidia-smi sees the GPU in WSL.");
+                return new(
+                    LinMlWsl2PluginStatus.Failed,
+                    $"The stock TensorRT-RTX plugin was already registered in this process, so the WSL2 build cannot replace it. "
+                    + $"Restart to use {patched}. ({ex.Message})");
+            }
+            catch (Exception ex) when (ex is OnnxRuntimeException or FileNotFoundException or DllNotFoundException or BadImageFormatException)
+            {
+                return new(LinMlWsl2PluginStatus.Failed, $"Registering {patched} failed: {ex.Message}");
+            }
+
+            int devices = _deviceCount();
+            return devices > 0
+                ? new(LinMlWsl2PluginStatus.Registered, $"TensorRT-RTX WSL2 plugin registered from {patched} ({devices} EP device(s)).")
+                : new(LinMlWsl2PluginStatus.Failed, $"{patched} registered but exposes no EP devices. Check that nvidia-smi sees the GPU in WSL.");
+        }
     }
 
     // Loads the stock plugin's bundled libraries by path so the patched build's SONAME

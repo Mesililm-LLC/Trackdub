@@ -57,12 +57,35 @@ public sealed class LinMlWsl2TensorRtRtxPluginTests
     }
 
     [Fact]
-    public void Missing_stock_libraries_fail_with_a_restart_instruction()
+    public void Missing_stock_libraries_are_reported_with_a_restart_hint()
     {
         LinMlWsl2PluginResult result = Make(new Calls(), stockDirectoryPresent: false).TryRegister();
 
-        Assert.Equal(LinMlWsl2PluginStatus.Failed, result.Status);
-        Assert.Contains("restart", result.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(LinMlWsl2PluginStatus.StockMissing, result.Status);
+        Assert.Contains("Restart", result.Hint, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_duplicate_registration_that_left_devices_counts_as_registered()
+    {
+        var calls = new Calls { RegisterThrows = new ArgumentException("already registered"), DevicesAfterThrow = 1 };
+
+        LinMlWsl2PluginResult result = Make(calls).TryRegister();
+
+        Assert.Equal(LinMlWsl2PluginStatus.Registered, result.Status);
+    }
+
+    [Fact]
+    public async Task Concurrent_callers_register_the_build_once()
+    {
+        var calls = new Calls { DevicesAfterRegister = 1 };
+        LinMlWsl2TensorRtRtxPlugin plugin = Make(calls);
+
+        LinMlWsl2PluginResult[] results = await Task.WhenAll(
+            Enumerable.Range(0, 16).Select(_ => Task.Run(plugin.TryRegister)));
+
+        Assert.All(results, r => Assert.Equal(LinMlWsl2PluginStatus.Registered, r.Status));
+        Assert.Single(calls.Registered);
     }
 
     [Fact]
@@ -113,6 +136,9 @@ public sealed class LinMlWsl2TensorRtRtxPluginTests
         Assert.False(LinuxWsl.HasNvidiaGpuPassthrough(static p => p.EndsWith("libcuda.so.1", StringComparison.Ordinal)));
     }
 
+    internal static LinMlWsl2TensorRtRtxPlugin WslRegistrationFails() =>
+        Make(new Calls { RegisterThrows = new DllNotFoundException("libcudart.so.13") });
+
     internal static LinMlWsl2TensorRtRtxPlugin NotWsl() => Make(new Calls(), isWsl: false);
 
     internal static LinMlWsl2TensorRtRtxPlugin Wsl(int devices, bool patchedPresent = true, bool stockDirectoryPresent = true) =>
@@ -143,6 +169,10 @@ public sealed class LinMlWsl2TensorRtRtxPluginTests
 
         public Exception? RegisterThrows { get; init; }
 
+        public int DevicesAfterThrow { get; init; }
+
+        private bool _threw;
+
         public List<(string Name, string Path)> Registered { get; } = [];
 
         public List<string> LoadedFrom { get; } = [];
@@ -156,12 +186,13 @@ public sealed class LinMlWsl2TensorRtRtxPluginTests
             LoadedBeforeRegister = LoadedFrom.Count > 0;
             if (RegisterThrows is not null)
             {
+                _threw = true;
                 throw RegisterThrows;
             }
 
             Registered.Add((name, path));
         }
 
-        public int DeviceCount() => Registered.Count > 0 ? DevicesAfterRegister : DevicesBefore;
+        public int DeviceCount() => _threw ? DevicesAfterThrow : Registered.Count > 0 ? DevicesAfterRegister : DevicesBefore;
     }
 }

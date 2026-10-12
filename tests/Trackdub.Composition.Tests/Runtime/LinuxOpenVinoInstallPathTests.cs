@@ -136,12 +136,61 @@ public sealed class LinuxOpenVinoInstallPathTests
 
         GpuRuntimeInstallResult openVino = await orchestrator.InstallAsync(
             StarterPackGpuRuntimeKind.IntelOpenVino, new Progress<string>());
-        GpuRuntimeInstallResult trtRtx = await orchestrator.InstallAsync(
-            StarterPackGpuRuntimeKind.NvidiaTensorRtRtx, new Progress<string>());
+        GpuRuntimeInstallResult qnn = await orchestrator.InstallAsync(
+            StarterPackGpuRuntimeKind.QualcommQnn, new Progress<string>());
 
         Assert.True(openVino.Succeeded);
         Assert.Equal(1, installer.Calls);
-        Assert.False(trtRtx.Succeeded);
+        Assert.False(qnn.Succeeded);
+    }
+
+    [Fact]
+    public async Task Orchestrator_dispatches_TensorRtRtx_on_Linux_to_the_installer()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var installer = new RecordingTrtRtxInstaller(succeeded: true);
+        var orchestrator = new GpuRuntimeInstallOrchestrator(trtRtxEpInstaller: installer);
+
+        GpuRuntimeInstallResult result = await orchestrator.InstallAsync(
+            StarterPackGpuRuntimeKind.NvidiaTensorRtRtx, new Progress<string>());
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(1, installer.Calls);
+    }
+
+    [Fact]
+    public async Task Orchestrator_reports_the_TensorRtRtx_installer_failure_on_Linux()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var orchestrator = new GpuRuntimeInstallOrchestrator(
+            trtRtxEpInstaller: new RecordingTrtRtxInstaller(succeeded: false));
+
+        GpuRuntimeInstallResult result = await orchestrator.InstallAsync(
+            StarterPackGpuRuntimeKind.NvidiaTensorRtRtx, new Progress<string>());
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("license not accepted", result.FailureDetail);
+    }
+
+    private sealed class RecordingTrtRtxInstaller(bool succeeded) : ITrtRtxEpInstaller
+    {
+        public int Calls { get; private set; }
+
+        public Task<TrtRtxEpInstallResult> EnsureInstalledAsync(
+            IProgress<string> progress,
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            return Task.FromResult(new TrtRtxEpInstallResult(succeeded, succeeded ? null : "license not accepted"));
+        }
     }
 
     private sealed class FixedHardware(HardwareProfile profile) : IHardwareProfileProvider
