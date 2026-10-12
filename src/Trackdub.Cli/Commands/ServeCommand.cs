@@ -31,6 +31,11 @@ internal static class ServeCommand
         {
             Description = "Extra TensorRT RTX provider option as key=value (repeatable); other providers ignore it.",
         };
+        var ecoQosOption = new Option<bool>("--ecoqos")
+        {
+            Description = "Opt the serve process into Windows EcoQoS (efficiency-oriented CPU scheduling). "
+                + "Intended for batch/service usage; not for latency-critical serving.",
+        };
 
         var command = new Command("serve", """
             Keep ONNX models resident on an execution provider and serve inference over stdin/stdout.
@@ -59,6 +64,7 @@ internal static class ServeCommand
         command.Options.Add(warmupInputsOption);
         command.Options.Add(noWarmupOption);
         command.Options.Add(trtRtxOptionOption);
+        command.Options.Add(ecoQosOption);
 
         command.SetAction(async (ParseResult parseResult, CancellationToken cancellationToken) =>
         {
@@ -91,7 +97,9 @@ internal static class ServeCommand
                     Console.In,
                     Console.Out,
                     Console.Error,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+                    ecoQos: parseResult.GetValue(ecoQosOption),
+                    efficiency: factory.GetRequiredService<IProcessEfficiencyControl>()).ConfigureAwait(false);
             }
         });
 

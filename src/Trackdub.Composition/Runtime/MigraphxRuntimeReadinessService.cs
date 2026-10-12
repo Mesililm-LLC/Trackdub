@@ -12,10 +12,11 @@ public sealed class MigraphxRuntimeReadinessService(IMigraphxReadinessProbe read
 
     public async Task<MigraphxRuntimeReadinessSnapshot> ProbeAsync(
         bool allowProviderDownloads,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<double>? progress = null)
     {
         MigraphxReadinessReport report = await readinessProbe
-            .ProbeAsync(allowProviderDownloads, cancellationToken)
+            .ProbeAsync(allowProviderDownloads, cancellationToken, progress)
             .ConfigureAwait(false);
 
         if (report.Route is MigraphxPlatformRoute.None)

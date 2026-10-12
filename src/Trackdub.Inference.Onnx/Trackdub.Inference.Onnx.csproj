@@ -113,6 +113,7 @@
     <Compile Remove="Migraphx\WindowsMigraphxHardwareGate.cs" />
     <Compile Remove="NativeCudaTensorRt\**" />
     <Compile Remove="Runtime\WindowsDeviceEnumerator.cs" />
+    <Compile Remove="Runtime\WindowsEcoQos.cs" />
     <Compile Remove="Runtime\WindowsVramMonitor.cs" />
     <Compile Remove="OnnxModelBenchmarkRunner.cs" />
   </ItemGroup>

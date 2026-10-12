@@ -35,7 +35,8 @@ public sealed class GpuRuntimeInstallOrchestrator(
     public async Task<GpuRuntimeInstallResult> InstallAsync(
         StarterPackGpuRuntimeKind runtimeKind,
         IProgress<string> progress,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<double>? percentProgress = null)
     {
         ArgumentNullException.ThrowIfNull(progress);
 
@@ -53,7 +54,7 @@ public sealed class GpuRuntimeInstallOrchestrator(
         {
             StarterPackGpuRuntimeKind.NvidiaTensorRtRtx => await InstallTensorRtRtxAsync(progress, cancellationToken)
                 .ConfigureAwait(false),
-            StarterPackGpuRuntimeKind.AmdMigraphx => await InstallMigraphxAsync(progress, cancellationToken)
+            StarterPackGpuRuntimeKind.AmdMigraphx => await InstallMigraphxAsync(progress, percentProgress, cancellationToken)
                 .ConfigureAwait(false),
             StarterPackGpuRuntimeKind.IntelOpenVino => await InstallOpenVinoAsync(progress, cancellationToken)
                 .ConfigureAwait(false),
@@ -99,6 +100,7 @@ public sealed class GpuRuntimeInstallOrchestrator(
 
     private async Task<GpuRuntimeInstallResult> InstallMigraphxAsync(
         IProgress<string> progress,
+        IProgress<double>? percentProgress,
         CancellationToken cancellationToken)
     {
         if (migraphxReadiness is null)
@@ -112,7 +114,7 @@ public sealed class GpuRuntimeInstallOrchestrator(
         // A cached result from an earlier attempt would skip the install.
         InvalidateReadinessCache(migraphxReadinessProbe);
         MigraphxRuntimeReadinessSnapshot snapshot = await migraphxReadiness
-            .ProbeAsync(allowProviderDownloads: true, cancellationToken)
+            .ProbeAsync(allowProviderDownloads: true, cancellationToken, percentProgress)
             .ConfigureAwait(false);
 
         if (snapshot.IsReady)

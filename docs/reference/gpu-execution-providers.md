@@ -188,6 +188,22 @@ trackdub serve --model encoder=models\encoder.onnx --execution-provider trt-rtx 
   failure; `--no-warmup` skips this.
 - A failed run marks the model poisoned. The next request evicts the session and
   reopens it.
+- `--ecoqos` opts the serve process into Windows EcoQoS at startup (see the
+  efficiency knobs below); `health` reports the verified state as `ecoQos`.
+
+## Efficiency knobs
+
+Windows ML efficiency guidance maps onto three opt-in mechanisms:
+
+| Knob | Scope | Effect |
+| --- | --- | --- |
+| Windows ML device policy `max-efficiency` / `min-overall-power` / `min-power` | Session device selection **and** NPU workload hint | Selects efficiency-oriented devices and, for NPU catalog sessions (QNN / VitisAI / OpenVINO), sets `ep.dynamic.workload_type=Efficient` through ONNX Runtime (`SetEpDynamicOptions`). Outcomes are logged; the mode is never silently claimed. |
+| `TRACKDUB_ECOQOS=1` | Inference worker process (inherited from host env) | Opts the out-of-process worker into Windows EcoQoS power throttling (CPU efficiency scheduling). Background/batch usage; leave off for latency-critical runs. |
+| `TRACKDUB_DISABLE_CPU_MEM_ARENA=1` | All ORT sessions in the process | Disables the CPU memory arena (system allocator instead of the ORT arena): lower peak memory, throughput cost. Deployment opt-in for memory-constrained hosts. |
+
+Quantized model variants (int8 / int4 / fp16) are selected per stage by the runtime planner
+already; see "Provider order". A `trackdub serve` process can additionally opt in with
+`--ecoqos`.
 
 ## References
 

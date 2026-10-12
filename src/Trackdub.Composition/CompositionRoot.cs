@@ -185,6 +185,9 @@ public static class CompositionRoot
                 return ExecutionProviderProbeOrder.InProcessAvailable(availability);
             });
         });
+        // Process-level efficiency control for host processes (serve --ecoqos). Resolved through
+        // DI because the CLI must not reference the inference runtime directly (AGENTS.md graph).
+        services.TryAddSingleton<IProcessEfficiencyControl>(_ => new Trackdub.Inference.Onnx.Serving.ProcessEfficiencyControl());
         // Readiness probes are wrapped in thread-safe caching decorators so a single
         // `providers list` invocation runs each underlying native/ORT readiness check exactly
         // once. Both OnnxExecutionProviderDiscovery and the *RuntimeReadinessService wrappers

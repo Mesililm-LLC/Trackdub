@@ -50,14 +50,16 @@ public interface IMigraphxReadinessProbe
 {
     Task<MigraphxReadinessReport> ProbeAsync(
         bool allowProviderDownloads,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        IProgress<double>? progress = null);
 }
 
 public interface IMigraphxProviderBootstrap
 {
     Task<MigraphxBootstrapResult> EnsureRegisteredAsync(
         bool allowProviderDownloads,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        IProgress<double>? progress = null);
 }
 
 public sealed record MigraphxBootstrapResult(
