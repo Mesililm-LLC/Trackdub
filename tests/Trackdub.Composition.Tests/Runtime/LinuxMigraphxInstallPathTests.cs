@@ -126,7 +126,8 @@ public sealed class LinuxMigraphxInstallPathTests
 
         public Task<MigraphxReadinessReport> ProbeAsync(
             bool allowProviderDownloads,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            IProgress<double>? progress = null)
         {
             AllowDownloadsCalls.Add(allowProviderDownloads);
             return Task.FromResult(Report);
