@@ -34,12 +34,23 @@ public sealed class TimelineMediaMixPreparer(
 
             var fingerprint = await preparer.fingerprintService.ComputeAsync(placement.MediaPath, cancellationToken).ConfigureAwait(false);
             string relativePath = $"artifacts/timeline-media/{fingerprint.Sha256.ToLowerInvariant()}.wav";
-            if (!File.Exists(preparer.artifactStore.GetPath(relativePath)))
+            string preparedPath = preparer.artifactStore.GetPath(relativePath);
+            double? extractedDurationSeconds = null;
+            if (!File.Exists(preparedPath))
             {
                 await using var handle = preparer.artifactStore.CreateWriteHandle(relativePath);
-                await preparer.audioExtractionService.ExtractNormalizedAudioAsync(
+                AudioExtractionResult extraction = await preparer.audioExtractionService.ExtractNormalizedAudioAsync(
                     placement.MediaPath, handle.TemporaryPath, cancellationToken).ConfigureAwait(false);
+                extractedDurationSeconds = extraction.DurationSeconds;
                 await preparer.artifactStore.CommitAsync(handle, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (extractedDurationSeconds is double preparedDurationSeconds &&
+                (!double.IsFinite(preparedDurationSeconds) || preparedDurationSeconds <= 0d ||
+                 preparedDurationSeconds + 0.01d < placement.DurationSeconds))
+            {
+                throw new InvalidOperationException(
+                    $"Timeline clip '{placement.DisplayName}' audio is shorter than its requested duration.");
             }
             clips.Add(new MixMediaClip(relativePath, placement.StartSeconds, placement.DurationSeconds));
         }
@@ -47,11 +58,24 @@ public sealed class TimelineMediaMixPreparer(
     }
 
     // The desktop persists its primary source lane at track zero, time zero.
-    // That lane already supplies the mix bed, including after source relinking.
-    public static IReadOnlyList<ProjectTimelineMediaPlacement> GetPlacements(TranscriptProjectState state) =>
-        (state.ProjectUiSettings?.TimelinePlacements ?? [])
-            .Where(placement => !(placement.TrackIndex == 0 && placement.StartSeconds == 0d))
-            .ToArray();
+    // Only the first such placement is the primary lane; added clips may legitimately
+    // share the same origin and must remain part of the mix.
+    public static IReadOnlyList<ProjectTimelineMediaPlacement> GetPlacements(TranscriptProjectState state)
+    {
+        IReadOnlyList<ProjectTimelineMediaPlacement> placements = state.ProjectUiSettings?.TimelinePlacements ?? [];
+        int primaryIndex = -1;
+        for (int index = 0; index < placements.Count; index++)
+        {
+            if (placements[index].TrackIndex == 0 && placements[index].StartSeconds == 0d)
+            {
+                primaryIndex = index;
+                break;
+            }
+        }
+        return primaryIndex >= 0
+            ? placements.Where((_, index) => index != primaryIndex).ToArray()
+            : placements.ToArray();
+    }
 
     private readonly IArtifactStore artifactStore = artifactStore;
     private readonly IAudioExtractionService audioExtractionService = audioExtractionService;

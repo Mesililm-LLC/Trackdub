@@ -168,6 +168,11 @@ public sealed class PreviewRangeRenderer(IArtifactStore artifactStore) : IPrevie
 
             foreach (MixMediaClip clip in request.MixPlan.MediaClips)
             {
+                if (clip.StartSeconds + clip.DurationSeconds > sourceInfo.DurationSeconds + 0.01d)
+                {
+                    throw new InvalidOperationException(
+                        $"Timeline clip '{clip.AudioRelativePath}' must fit within the available source audio duration.");
+                }
                 await MixPlacedMediaAsync(clip, request.StartSeconds, range.EndSeconds,
                     output, outputFrameCount, outputChannelCount, sampleRate, cancellationToken).ConfigureAwait(false);
             }
@@ -207,7 +212,12 @@ public sealed class PreviewRangeRenderer(IArtifactStore artifactStore) : IPrevie
         string path = artifactStore.GetPath(clip.AudioRelativePath);
         if (!File.Exists(path)) throw new FileNotFoundException("Prepared timeline audio is missing.", path);
         var info = await WavePcm16.ReadInfoAsync(path, cancellationToken).ConfigureAwait(false);
-        end = Math.Min(end, clip.StartSeconds + info.DurationSeconds);
+        if (!double.IsFinite(info.DurationSeconds) || info.DurationSeconds <= 0d ||
+            info.DurationSeconds + 0.01d < clip.DurationSeconds)
+        {
+            throw new InvalidOperationException(
+                $"Timeline clip audio '{clip.AudioRelativePath}' is shorter than its requested duration.");
+        }
         if (end <= start) return;
         var samples = await WavePcm16.ReadSamplesAsync(path, info, start - clip.StartSeconds,
             end - start, cancellationToken).ConfigureAwait(false);
