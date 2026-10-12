@@ -17,8 +17,9 @@ public interface ILinuxNativeGpuRuntimeProbe
 
 public sealed class LinuxNativeGpuRuntimeProbe : ILinuxNativeGpuRuntimeProbe
 {
+    // WSL2 exposes the GPU through /dev/dxg instead of /proc/driver/nvidia.
     public bool IsNvidiaDriverLoaded() =>
-        Directory.Exists("/proc/driver/nvidia/gpus");
+        Directory.Exists("/proc/driver/nvidia/gpus") || LinuxWsl.HasNvidiaGpuPassthrough();
 
     public bool IsAmdGpuPresent()
     {

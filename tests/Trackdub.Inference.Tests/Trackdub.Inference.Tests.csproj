@@ -49,6 +49,8 @@
   <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041.0'">
     <Compile Remove="LinMlOpenVinoCatalogTests.cs" />
     <Compile Remove="LinMlMigraphxCatalogTests.cs" />
+    <Compile Remove="LinMlTensorRtRtxBootstrapTests.cs" />
+    <Compile Remove="LinMlWsl2TensorRtRtxPluginTests.cs" />
     <Compile Remove="LinuxOpenVinoSessionE2ETests.cs" />
   </ItemGroup>
 

@@ -12,7 +12,7 @@ on Windows:
 |------------------|---------------------------------------------|
 | `net10.0` (portable, every OS) | CPU, **TensorRT RTX** (EP ABI plugin, Windows/Linux NVIDIA) |
 | `net10.0-windows10.0.19041.0` | CPU, TensorRT RTX, **DirectML**, Windows ML catalog EPs (MIGraphX, OpenVINO catalog, QNN, VitisAI) |
-| Linux `net10.0` | CPU, TensorRT RTX, native CUDA/TensorRT (system ORT GPU build), **OpenVINO** and **MIGraphX** (plugin EPs via [LinML.Catalog](https://github.com/trackdubllc/LinML)) |
+| Linux `net10.0` | CPU, native CUDA/TensorRT (system ORT GPU build), and the plugin EPs **TensorRT RTX**, **OpenVINO** and **MIGraphX**, all via [LinML.Catalog](https://github.com/trackdubllc/LinML) |
 
 The portable `net10.0` build compiles the Linux and macOS code paths on every build host and
 picks the bootstrapper, device enumerator and native routes with `OperatingSystem.IsLinux()` /
@@ -82,6 +82,51 @@ MIGraphX for an AMD GPU when the ROCm MIGraphX runtime is present. Not yet verif
 on AMD hardware; on a host without ROCm, registration fails with
 `libmigraphx_c.so.3: cannot open shared object file`, which is why the runtime is
 checked first.
+
+### TensorRT RTX on Linux
+
+`ExecutionProviderKind.TensorRTRtx` on Linux runs on NVIDIA's EP ABI plugin
+(`NvTensorRTRTXExecutionProvider`, 0.4.0 cu13, TensorRT-RTX 1.6.1) that `LinML.Catalog`
+pins, installs, registers and appends. `LinMlTensorRtRtxBootstrap` implements the same
+`ITensorRtRtxProviderBootstrap` the Windows path uses, so readiness reports, the
+bootstrapper and the session factory are unchanged. The plugin is vendored under
+`~/.local/linml-deps` (the root shared with OpenVINO and MIGraphX), not under
+`Providers/trt-rtx`; Windows keeps the manifest bundle.
+
+- **Hardware gate first.** With no loaded NVIDIA driver the catalog is never touched, because
+  it would download the plugin on any linux-x64 host and then expose no device.
+- **License gate.** The catalog downloads the wheel from PyPI with no license step, so the
+  bootstrap allows a download only when `NvidiaTensorRtRtxLicenseAccepted` is set. Without
+  it the install reports "NVIDIA TensorRT RTX license not accepted".
+- **Downloads stay explicit.** Session bootstrap, readiness and doctor pass
+  `allowProviderDownloads: false`; `TrtRtxEpInstaller` (Model Manager, `trackdub providers
+  trt-rtx install --accept-license`) is the only caller that downloads, and on Linux it skips
+  the bundle step and lets the bootstrap do it.
+- **A directory you chose still wins.** A valid `StudioSettings.TensorRtRtxPluginDirectory` or
+  `TRACKDUB_TRT_RTX_EP_DIR` is registered through `TensorRtRtxPluginService` exactly as
+  before, with no download. An invalid one falls through to the catalog. Only the DI-wired
+  app and CLI can read the studio setting, so an existing Linux install whose persisted
+  setting points at a complete managed bundle keeps using it there. The default-path
+  bootstrappers (benchmarks, EP-context compilation, the session factory's fallback
+  bootstrapper) no longer discover `Providers/trt-rtx/<version>/cu13/linux-x64` on their own:
+  they see the catalog install or the environment variable only.
+- **WSL2.** WSL2 has no `/proc/driver/nvidia`; the GPU arrives through `/dev/dxg` and
+  `/usr/lib/wsl/lib/libcuda.so.1`, which the NVIDIA check now recognizes. The stock plugin
+  registers there but exposes no device (ONNX Runtime reports the GPU on a virtual PCI bus
+  that `cudaDeviceGetByPCIBusId` rejects), so `LinMlWsl2TensorRtRtxPlugin` registers LinML's
+  patched build first when it is vendored at
+  `~/.local/linml-deps/ep-plugins/trt-rtx-wsl2/linml_trt_rtx_ep/` (release
+  `ep-trt-rtx-wsl2-0.4.0-wsl2p1`, upstream NVIDIA/TensorRT-RTX-EP-ABI PR #12). It preloads
+  the stock plugin's runtime libraries from `ep-plugins/trt-rtx`, because the patched `.so`
+  ships none. Trackdub never downloads the patched build: vendor it with LinML's
+  `bash scripts/fetch-ep-plugins.sh trt-rtx-wsl2`. ORT accepts one registration per EP name, so
+  the first install on WSL2 (which registers the stock plugin, with no device) needs one restart
+  before the patched build can take over. Without the patched build the catalog reports
+  `NoDevices` (`OrtProviderUnavailable`) with a pointer to that script.
+
+Verified on WSL2 with an RTX 5070: the production factory registers the patched build, ORT
+exposes the GPU device, and a small model run through `AppendTensorRtRtxOrFallbackProvider`
+returns the expected output. Not verified on bare-metal Linux; the unit tests use a fake catalog.
 
 ## Provider order
 

@@ -23,7 +23,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
     private static readonly AsyncLocal<WindowsMlExecutionDevicePolicy?> RunWindowsMlDevicePolicy = new();
 
     public OnnxModelBenchmarkRunner()
-        : this(TensorRtRtxPluginService.Shared)
+        : this(TensorRtRtxProviderBootstrapFactory.Shared)
     {
     }
 

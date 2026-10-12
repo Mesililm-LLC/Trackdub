@@ -8,7 +8,7 @@ public sealed class TensorRtRtxReadinessProbe : ITensorRtRtxReadinessProbe
     private readonly ITensorRtRtxProviderBootstrap _pluginBootstrap;
 
     public TensorRtRtxReadinessProbe()
-        : this(TensorRtRtxPluginService.Shared)
+        : this(TensorRtRtxProviderBootstrapFactory.Shared)
     {
     }
 
