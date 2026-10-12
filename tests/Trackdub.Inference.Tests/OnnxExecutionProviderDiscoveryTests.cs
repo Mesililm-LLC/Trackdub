@@ -266,15 +266,15 @@ public sealed class OnnxExecutionProviderDiscoveryTests
     {
         public List<bool> EnsureCalls { get; } = [];
 
-        public Task<Trackdub.Inference.Onnx.ExecutionProviders.LinMl.LinuxOpenVinoCatalogResult> EnsureReadyAsync(
+        public Task<Trackdub.Inference.Onnx.ExecutionProviders.LinMl.LinuxPluginCatalogResult> EnsureReadyAsync(
             bool allowDownloads,
             CancellationToken cancellationToken)
         {
             EnsureCalls.Add(allowDownloads);
-            return Task.FromResult(new Trackdub.Inference.Onnx.ExecutionProviders.LinMl.LinuxOpenVinoCatalogResult(
+            return Task.FromResult(new Trackdub.Inference.Onnx.ExecutionProviders.LinMl.LinuxPluginCatalogResult(
                 ready
-                    ? Trackdub.Inference.Onnx.ExecutionProviders.LinMl.LinuxOpenVinoCatalogStatus.Ready
-                    : Trackdub.Inference.Onnx.ExecutionProviders.LinMl.LinuxOpenVinoCatalogStatus.NotInstalled,
+                    ? Trackdub.Inference.Onnx.ExecutionProviders.LinMl.LinuxPluginCatalogStatus.Ready
+                    : Trackdub.Inference.Onnx.ExecutionProviders.LinMl.LinuxPluginCatalogStatus.NotInstalled,
                 "catalog detail"));
         }
 

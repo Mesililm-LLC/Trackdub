@@ -127,24 +127,24 @@ public sealed class OpenVinoCatalogReadinessProbe : IOpenVinoCatalogReadinessPro
                 Detail: "No Intel CPU, GPU or NPU found; the OpenVINO plugin EP is not offered.");
         }
 
-        LinuxOpenVinoCatalogResult result = await catalog
+        LinuxPluginCatalogResult result = await catalog
             .EnsureReadyAsync(allowProviderDownloads, cancellationToken)
             .ConfigureAwait(false);
         return ToReport(result, allowProviderDownloads);
     }
 
-    internal static WinMlCatalogReadinessReport ToReport(LinuxOpenVinoCatalogResult result, bool allowProviderDownloads) =>
+    internal static WinMlCatalogReadinessReport ToReport(LinuxPluginCatalogResult result, bool allowProviderDownloads) =>
         result.Status switch
         {
-            LinuxOpenVinoCatalogStatus.Ready => LinuxReport(WinMlCatalogReadinessBlocker.None, ready: true, result.Detail),
-            LinuxOpenVinoCatalogStatus.NotInstalled => LinuxReport(WinMlCatalogReadinessBlocker.EpNotPresent, ready: false, result.Detail),
+            LinuxPluginCatalogStatus.Ready => LinuxReport(WinMlCatalogReadinessBlocker.None, ready: true, result.Detail),
+            LinuxPluginCatalogStatus.NotInstalled => LinuxReport(WinMlCatalogReadinessBlocker.EpNotPresent, ready: false, result.Detail),
             // With downloads allowed the failure may be the download: the install may be retried.
             // Without, an installed plugin failed to register, and reinstalling would not help.
-            LinuxOpenVinoCatalogStatus.Failed => LinuxReport(
+            LinuxPluginCatalogStatus.Failed => LinuxReport(
                 allowProviderDownloads ? WinMlCatalogReadinessBlocker.EpDownloadFailed : WinMlCatalogReadinessBlocker.EpRegisterFailed,
                 ready: false,
                 result.Detail),
-            LinuxOpenVinoCatalogStatus.NoDevices => new(
+            LinuxPluginCatalogStatus.NoDevices => new(
                 OpenVinoCatalogProviderIds.LinMl,
                 WinMlCatalogPlatformRoute.LinMlCatalog,
                 WinMlCatalogReadinessBlocker.HardwareNotSupported,

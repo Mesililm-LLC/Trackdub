@@ -242,7 +242,7 @@ public sealed class OnnxExecutionProviderDiscovery : IExecutionProviderDiscovery
         {
             // OpenVINO on Linux — sessions append the LinML catalog's plugin EP. Discovery never
             // downloads: it registers an installed plugin and reports ready only with a usable device.
-            ExecutionProviders.LinMl.LinuxOpenVinoCatalogResult openVinoCatalog = await _linuxOpenVinoCatalog
+            ExecutionProviders.LinMl.LinuxPluginCatalogResult openVinoCatalog = await _linuxOpenVinoCatalog
                 .EnsureReadyAsync(allowDownloads: false, cancellationToken)
                 .ConfigureAwait(false);
             availabilities.Add(new(ExecutionProviderKind.OpenVino, openVinoCatalog.IsReady, openVinoCatalog.Detail));
@@ -429,7 +429,7 @@ public sealed class OnnxExecutionProviderDiscovery : IExecutionProviderDiscovery
             return new(
                 ExecutionProviderKind.Migraphx,
                 false,
-                "MIGraphX is available on Windows (WinML catalog) and Linux (system ROCm ORT build) only.");
+                "MIGraphX is available on Windows (WinML catalog) and Linux (LinML catalog plugin EP) only.");
         }
 
         if (isWindows && !OnnxRuntimeBuildCapabilities.SupportsWindowsMlRoutes)
@@ -437,7 +437,7 @@ public sealed class OnnxExecutionProviderDiscovery : IExecutionProviderDiscovery
             return new(
                 ExecutionProviderKind.Migraphx,
                 false,
-                "MIGraphX requires the net10.0-windows10.0.19041.0 build on Windows, or Linux with a ROCm/MIGraphX-capable ONNX Runtime build.");
+                "MIGraphX requires the net10.0-windows10.0.19041.0 build on Windows, or Linux with ROCm and MIGraphX 2.17 or newer.");
         }
 
         if (isWindows && !isAmdGpu)
@@ -453,7 +453,7 @@ public sealed class OnnxExecutionProviderDiscovery : IExecutionProviderDiscovery
             return new(
                 ExecutionProviderKind.Migraphx,
                 false,
-                "MIGraphX on Linux requires an AMD GPU and a ROCm/MIGraphX-capable ONNX Runtime build.");
+                "MIGraphX on Linux requires an AMD GPU and ROCm with MIGraphX 2.17 or newer.");
         }
 
         MigraphxReadinessReport report = await _migraphxReadinessProbe

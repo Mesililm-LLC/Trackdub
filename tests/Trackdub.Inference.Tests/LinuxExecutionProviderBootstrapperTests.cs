@@ -259,6 +259,49 @@ public sealed class LinuxExecutionProviderBootstrapperTests
         Assert.DoesNotContain("Verified fallback: CUDA", result.Detail, StringComparison.OrdinalIgnoreCase);
     }
 
+    // ── MIGraphX through the LinML catalog ───────────────────────────────────
+
+    [Fact]
+    public async Task Migraphx_succeeds_when_catalog_plugin_is_ready()
+    {
+        var catalog = new StubMigraphxCatalog(LinuxPluginCatalogStatus.Ready);
+
+        var result = await MakeWithMigraphx(catalog).BootstrapAsync(ExecutionProviderKind.Migraphx, allowDownloads: false, default);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(ExecutionProviderKind.Migraphx, result.SelectedProvider);
+        Assert.Equal([false], catalog.EnsureCalls);
+    }
+
+    [Theory]
+    [InlineData(LinuxPluginCatalogStatus.NotInstalled)]
+    [InlineData(LinuxPluginCatalogStatus.Unsupported)]
+    [InlineData(LinuxPluginCatalogStatus.Failed)]
+    public async Task Migraphx_falls_back_to_Cpu_when_catalog_plugin_is_not_ready(LinuxPluginCatalogStatus status)
+    {
+        var catalog = new StubMigraphxCatalog(status);
+
+        var result = await MakeWithMigraphx(catalog).BootstrapAsync(ExecutionProviderKind.Migraphx, allowDownloads: true, default);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(ExecutionProviderKind.Cpu, result.SelectedProvider);
+        Assert.Equal("stub detail", result.FailureReason);
+        Assert.Equal([true], catalog.EnsureCalls);
+    }
+
+    [Fact]
+    public async Task Migraphx_uses_a_built_in_ort_provider_without_the_catalog()
+    {
+        var catalog = new StubMigraphxCatalog(LinuxPluginCatalogStatus.NotInstalled);
+        var probe = new StubLinuxNativeGpuRuntimeProbe(false, false, amdGpuPresent: true, migraphxOrtProviderAvailable: true);
+
+        var result = await MakeWithMigraphx(catalog, probe).BootstrapAsync(ExecutionProviderKind.Migraphx, allowDownloads: false, default);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(ExecutionProviderKind.Migraphx, result.SelectedProvider);
+        Assert.Empty(catalog.EnsureCalls);
+    }
+
     // ── CheckReadiness mirrors Bootstrap ────────────────────────────────────
 
     [Fact]
@@ -291,6 +334,16 @@ public sealed class LinuxExecutionProviderBootstrapperTests
             FailingTrtRtx(),
             catalog);
 
+    private static LinuxExecutionProviderBootstrapper MakeWithMigraphx(
+        StubMigraphxCatalog catalog,
+        ILinuxNativeGpuRuntimeProbe? linuxRuntimeProbe = null) =>
+        new(
+            new StubOpenVinoProvider(isAvailable: false),
+            linuxRuntimeProbe ?? new StubLinuxNativeGpuRuntimeProbe(false, false, amdGpuPresent: true),
+            FailingTrtRtx(),
+            new StubOpenVinoCatalog(isReady: false),
+            catalog);
+
     private static StubTensorRtRtxProviderBootstrap FailingTrtRtx() =>
         new(new TensorRtRtxBootstrapResult(
             Succeeded: false,
@@ -302,11 +355,11 @@ public sealed class LinuxExecutionProviderBootstrapperTests
     {
         public List<bool> EnsureCalls { get; } = [];
 
-        public Task<LinuxOpenVinoCatalogResult> EnsureReadyAsync(bool allowDownloads, CancellationToken cancellationToken)
+        public Task<LinuxPluginCatalogResult> EnsureReadyAsync(bool allowDownloads, CancellationToken cancellationToken)
         {
             EnsureCalls.Add(allowDownloads);
-            return Task.FromResult(new LinuxOpenVinoCatalogResult(
-                isReady ? LinuxOpenVinoCatalogStatus.Ready : LinuxOpenVinoCatalogStatus.NotInstalled,
+            return Task.FromResult(new LinuxPluginCatalogResult(
+                isReady ? LinuxPluginCatalogStatus.Ready : LinuxPluginCatalogStatus.NotInstalled,
                 isReady ? "stub: ready" : "stub: not ready"));
         }
 
@@ -314,6 +367,17 @@ public sealed class LinuxExecutionProviderBootstrapperTests
         {
             failureReason = isReady ? null : "stub: not ready";
             return isReady;
+        }
+    }
+
+    private sealed class StubMigraphxCatalog(LinuxPluginCatalogStatus status) : ILinuxMigraphxCatalog
+    {
+        public List<bool> EnsureCalls { get; } = [];
+
+        public Task<LinuxPluginCatalogResult> EnsureReadyAsync(bool allowDownloads, CancellationToken cancellationToken)
+        {
+            EnsureCalls.Add(allowDownloads);
+            return Task.FromResult(new LinuxPluginCatalogResult(status, "stub detail"));
         }
     }
 
@@ -328,7 +392,8 @@ public sealed class LinuxExecutionProviderBootstrapperTests
         bool nvidiaDriverLoaded,
         bool nativeTensorRtAvailable,
         bool cudaOrtProviderAvailable = true,
-        bool amdGpuPresent = false)
+        bool amdGpuPresent = false,
+        bool migraphxOrtProviderAvailable = false)
         : ILinuxNativeGpuRuntimeProbe
     {
         public bool IsNvidiaDriverLoaded() => nvidiaDriverLoaded;
@@ -339,7 +404,7 @@ public sealed class LinuxExecutionProviderBootstrapperTests
 
         public bool IsCudaOrtProviderAvailable() => cudaOrtProviderAvailable;
 
-        public bool IsMigraphxOrtProviderAvailable() => false;
+        public bool IsMigraphxOrtProviderAvailable() => migraphxOrtProviderAvailable;
     }
 
     private sealed class StubTensorRtRtxProviderBootstrap(TensorRtRtxBootstrapResult result)

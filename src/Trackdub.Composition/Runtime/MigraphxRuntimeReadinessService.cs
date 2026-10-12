@@ -53,14 +53,21 @@ public sealed class MigraphxRuntimeReadinessService(IMigraphxReadinessProbe read
                 InstallHint: null);
         }
 
-        bool canInstall = report.Route is MigraphxPlatformRoute.WinMlCatalog &&
+        bool canInstall = report.Route is MigraphxPlatformRoute.WinMlCatalog or MigraphxPlatformRoute.LinMlCatalog &&
                           report.Blocker is MigraphxReadinessBlocker.EpNotPresent or MigraphxReadinessBlocker.EpDownloadFailed;
 
         string? installHint = report.Route switch
         {
             MigraphxPlatformRoute.WinMlCatalog when canInstall =>
                 "Download the Windows ML MIGraphX execution provider package, then refresh.",
-            MigraphxPlatformRoute.NativeRocm =>
+            MigraphxPlatformRoute.LinMlCatalog when canInstall =>
+                "Download AMD's MIGraphX plugin execution provider through the LinML catalog, then refresh.",
+            MigraphxPlatformRoute.LinMlCatalog when report.Blocker is MigraphxReadinessBlocker.EpRegisterFailed =>
+                "The installed MIGraphX plugin did not register or exposes no device. Check that ROCm's MIGraphX " +
+                "is 2.17 or newer and the GPU is supported, then reinstall.",
+            MigraphxPlatformRoute.LinMlCatalog when report.Blocker is MigraphxReadinessBlocker.GpuVendorMismatch =>
+                null,
+            MigraphxPlatformRoute.NativeRocm or MigraphxPlatformRoute.LinMlCatalog =>
                 MigraphxProviderConstants.LinuxInstallHint,
             _ => null
         };
@@ -85,6 +92,7 @@ public sealed class MigraphxRuntimeReadinessService(IMigraphxReadinessProbe read
         {
             MigraphxPlatformRoute.WinMlCatalog => "Windows (WinML catalog)",
             MigraphxPlatformRoute.NativeRocm => "Linux (system ROCm ORT)",
+            MigraphxPlatformRoute.LinMlCatalog => "Linux (LinML catalog)",
             _ => "Not supported"
         };
 

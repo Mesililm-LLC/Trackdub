@@ -47,10 +47,10 @@ public sealed class StarterPackGpuSetupAdvisor(
 
         StarterPackGpuRuntimeKind runtimeKind = ResolveRecommendedRuntimeKind(hardware, gpuEpFallbackStages);
         bool isWindows = hardware.OperatingSystem.Equals("windows", StringComparison.OrdinalIgnoreCase);
-        // Linux can install only the OpenVINO plugin EP (LinML catalog).
-        bool isLinuxOpenVino = hardware.OperatingSystem.Equals("linux", StringComparison.OrdinalIgnoreCase)
-            && runtimeKind is StarterPackGpuRuntimeKind.IntelOpenVino;
-        if (!isWindows && !isLinuxOpenVino)
+        // Linux can install only the LinML catalog's plugin EPs: OpenVINO and MIGraphX.
+        bool isLinuxCatalogRuntime = hardware.OperatingSystem.Equals("linux", StringComparison.OrdinalIgnoreCase)
+            && runtimeKind is StarterPackGpuRuntimeKind.IntelOpenVino or StarterPackGpuRuntimeKind.AmdMigraphx;
+        if (!isWindows && !isLinuxCatalogRuntime)
         {
             return new StarterPackGpuSetupHint(
                 StarterPackGpuRuntimeKind.None,

@@ -5,6 +5,7 @@ public static class MigraphxProviderIds
 {
     public const string WinMl = "migraphx-winml";
     public const string Rocm = "migraphx-rocm";
+    public const string LinMl = "migraphx-linml";
 }
 
 public enum MigraphxReadinessBlocker
@@ -25,7 +26,8 @@ public enum MigraphxPlatformRoute
 {
     None = 0,
     WinMlCatalog,
-    NativeRocm
+    NativeRocm,
+    LinMlCatalog
 }
 
 public sealed record MigraphxReadinessReport(

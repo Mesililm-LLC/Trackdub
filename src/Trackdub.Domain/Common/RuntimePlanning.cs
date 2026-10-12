@@ -24,7 +24,7 @@ public enum ExecutionProviderKind
     CoreMl = 5,          // macOS CoreML + ANE — no download required
     Cuda = 6,            // Linux NVIDIA CUDA (native); Windows: pin remaps to TensorRTRtx (native CUDA is advanced-only)
     TensorRt = 7,        // Linux native TensorRT (requires libnvinfer); Windows: promoted to TensorRTRtx
-    Migraphx = 8,        // AMD MIGraphX: Windows via WinML catalog EP; Linux via system ROCm ORT build
+    Migraphx = 8,        // AMD MIGraphX: Windows via WinML catalog EP; Linux via LinML catalog plugin EP
     /// <summary>
     /// Qualcomm QNN via Windows ML catalog EP (Windows).
     /// </summary>
