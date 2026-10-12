@@ -38,7 +38,8 @@ public sealed class ServeCommandTests : IDisposable
             """{"id":7,"op":"health"}""",
             """{"id":"u","op":"nope"}""");
 
-        int exitCode = await ServeHandler.RunLoopAsync(host, new StringReader(requests), output, CancellationToken.None);
+        using var input = new StringReader(requests);
+        int exitCode = await ServeHandler.RunLoopAsync(host, input, output, CancellationToken.None);
 
         Assert.Equal(Program.ExitSuccess, exitCode);
         JsonElement[] responses = ParseLines(output.ToString());
@@ -135,6 +136,17 @@ public sealed class ServeCommandTests : IDisposable
         Assert.Equal("v", spec.ProviderOptions!["k"]);
     }
 
+    [Fact]
+    public async Task Load_WarmupFailure_StillReportsLoadedWithTheWarmupError()
+    {
+        using var host = new FakeHost { RunError = new ResidentInferenceException("bad-inputs", "zeros rejected") };
+
+        JsonElement response = await HandleAsync(host, """{"op":"load","model":"enc","path":"enc.onnx","warmup":true}""");
+
+        Assert.Equal("loaded", response.GetProperty("status").GetString());
+        Assert.Equal("zeros rejected", response.GetProperty("warmupError").GetString());
+    }
+
     [Theory]
     [InlineData("""{"op":"load","model":"m","path":"p","provider":"warp-drive"}""")]
     [InlineData("""{"op":"load","model":"m","path":"p","require":true}""")]
@@ -163,13 +175,14 @@ public sealed class ServeCommandTests : IDisposable
     public async Task Serve_LoadFailure_ExitsWithPipelineFailureAndWritesNothingToStdout()
     {
         using var host = new FakeHost { LoadError = new ResidentInferenceException("provider-unavailable", "no GPU") };
+        using var input = new StringReader("");
         using var output = new StringWriter();
         using var diagnostics = new StringWriter();
 
         int exitCode = await ServeHandler.ServeAsync(
             host, [new ServeModelArgument("m", "m.onnx")], ExecutionProviderKind.TensorRTRtx, requireProvider: true,
             new Dictionary<string, string>(), new Dictionary<string, string>(), autoWarmup: true,
-            new StringReader(""), output, diagnostics, CancellationToken.None);
+            input, output, diagnostics, CancellationToken.None);
 
         Assert.Equal(Program.ExitPipelineFailure, exitCode);
         Assert.Empty(output.ToString());
@@ -182,10 +195,12 @@ public sealed class ServeCommandTests : IDisposable
         using var host = new FakeHost { RunError = new ResidentInferenceException("bad-inputs", "zeros rejected") };
         using var diagnostics = new StringWriter();
 
+        using var input = new StringReader("");
+        using var output = new StringWriter();
         int exitCode = await ServeHandler.ServeAsync(
             host, [new ServeModelArgument("m", "m.onnx")], provider: null, requireProvider: false,
             new Dictionary<string, string>(), new Dictionary<string, string>(), autoWarmup: true,
-            new StringReader(""), new StringWriter(), diagnostics, CancellationToken.None);
+            input, output, diagnostics, CancellationToken.None);
 
         Assert.Equal(Program.ExitSuccess, exitCode);
         Assert.Contains("auto-warmup for 'm' failed", diagnostics.ToString(), StringComparison.Ordinal);
@@ -198,10 +213,13 @@ public sealed class ServeCommandTests : IDisposable
         await File.WriteAllTextAsync(warmup, """{"tensors":[]}""", CancellationToken.None);
         using var host = new FakeHost { RunError = new ResidentInferenceException("infer-failed", "boom") };
 
+        using var input = new StringReader("");
+        using var output = new StringWriter();
+        using var diagnostics = new StringWriter();
         int exitCode = await ServeHandler.ServeAsync(
             host, [new ServeModelArgument("m", "m.onnx")], provider: null, requireProvider: false,
             new Dictionary<string, string>(), new Dictionary<string, string> { ["m"] = warmup }, autoWarmup: true,
-            new StringReader(""), new StringWriter(), new StringWriter(), CancellationToken.None);
+            input, output, diagnostics, CancellationToken.None);
 
         Assert.Equal(Program.ExitPipelineFailure, exitCode);
     }
@@ -217,10 +235,12 @@ public sealed class ServeCommandTests : IDisposable
         using var host = new FakeHost();
         using var diagnostics = new StringWriter();
 
+        using var input = new StringReader("");
+        using var output = new StringWriter();
         int exitCode = await ServeHandler.ServeAsync(
             host, [new ServeModelArgument("m", "m.onnx")], provider: null, requireProvider: false,
             new Dictionary<string, string>(), new Dictionary<string, string> { ["m"] = warmup }, autoWarmup: true,
-            new StringReader(""), new StringWriter(), diagnostics, CancellationToken.None);
+            input, output, diagnostics, CancellationToken.None);
 
         Assert.Equal(Program.ExitPipelineFailure, exitCode);
         Assert.Contains("Warmup run failed for 'm'", diagnostics.ToString(), StringComparison.Ordinal);

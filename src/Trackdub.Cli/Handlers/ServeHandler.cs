@@ -359,15 +359,29 @@ internal static class ServeHandler
         ResidentModelInfo info = await host.LoadAsync(
             new ResidentModelSpec(name, path, provider, require, options.Count > 0 ? options : null),
             cancellationToken).ConfigureAwait(false);
+        // The model is loaded and pinned whatever the warmup does, so a warmup failure is reported
+        // alongside a "loaded" status rather than as an error a client might retry.
+        string? warmupError = null;
         if (root.TryGetProperty("warmup", out JsonElement warmup) && warmup.ValueKind == JsonValueKind.True)
         {
-            await host.WarmAsync(name, inputs: null, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await host.WarmAsync(name, inputs: null, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ResidentInferenceException ex)
+            {
+                warmupError = ex.Message;
+            }
         }
 
         return Write(writer =>
         {
             WriteHeader(writer, id, StatusLoaded);
             WriteModel(writer, info);
+            if (warmupError is not null)
+            {
+                writer.WriteString("warmupError", warmupError);
+            }
         });
     }
 

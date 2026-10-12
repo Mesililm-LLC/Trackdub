@@ -134,6 +134,18 @@ public sealed class ResidentInferenceHostTests : IDisposable
         Array.Empty<ServeTensor>(),
     };
 
+    [Fact]
+    public void Validate_DynamicShapeTooLargeForOneArray_ReportsBadInputs()
+    {
+        using var session = new InferenceSession(DynamicIdentityModel);
+
+        var ex = Assert.Throws<ResidentInferenceException>(() => ServeTensorConverter.Validate(
+            session, [new ServeTensor("x", ServeTensorTypes.Float32, [long.MaxValue], new float[1])]));
+
+        Assert.Equal(ResidentInferenceErrorReasons.BadInputs, ex.Reason);
+        Assert.Contains("too large", ex.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [MemberData(nameof(MismatchedInputs))]
     public async Task Run_MismatchedInputs_ReportsBadInputsWithoutPoisoning(ServeTensor[] inputs)
@@ -286,6 +298,18 @@ public sealed class ResidentInferenceHostTests : IDisposable
 
     private static ServeTensor Input(float value) =>
         new("x", ServeTensorTypes.Float32, [1], new[] { value });
+
+    // IdentityModel with both dims symbolic (dim_param "N" instead of dim_value 1).
+    private static readonly byte[] DynamicIdentityModel =
+    [
+        0x08, 0x07, 0x3A, 0x3C,
+        0x0A, 0x10, 0x0A, 0x01, 0x78, 0x12, 0x01, 0x79, 0x22, 0x08,
+        0x49, 0x64, 0x65, 0x6E, 0x74, 0x69, 0x74, 0x79,
+        0x12, 0x04, 0x74, 0x65, 0x73, 0x74,
+        0x5A, 0x10, 0x0A, 0x01, 0x78, 0x12, 0x0B, 0x0A, 0x09, 0x08, 0x01, 0x12, 0x05, 0x0A, 0x03, 0x12, 0x01, 0x4E,
+        0x62, 0x10, 0x0A, 0x01, 0x79, 0x12, 0x0B, 0x0A, 0x09, 0x08, 0x01, 0x12, 0x05, 0x0A, 0x03, 0x12, 0x01, 0x4E,
+        0x42, 0x04, 0x0A, 0x00, 0x10, 0x09,
+    ];
 
     // Identity graph x (float32 [1]) -> y (float32 [1]); same bytes as InferenceSessionPoolTests.
     private static readonly byte[] IdentityModel =

@@ -69,7 +69,12 @@ internal static class ServeTensorConverter
                         $"Input '{input.Name}' dimension {i} must be {FormatDimension(dimensions[i])}, got {actual}.");
                 }
 
-                elementCount = checked(elementCount * actual);
+                if (actual > 0 && elementCount > Array.MaxLength / actual)
+                {
+                    throw BadInputs($"Input '{input.Name}' shape [{string.Join(",", input.Shape)}] is too large.");
+                }
+
+                elementCount *= actual;
             }
 
             if (input.Data.LongLength != elementCount)
