@@ -50,6 +50,7 @@
     <Compile Remove="LinMlOpenVinoCatalogTests.cs" />
     <Compile Remove="LinMlMigraphxCatalogTests.cs" />
     <Compile Remove="LinMlTensorRtRtxBootstrapTests.cs" />
+    <Compile Remove="LinMlBuiltInProvidersTests.cs" />
     <Compile Remove="LinMlWsl2TensorRtRtxPluginTests.cs" />
     <Compile Remove="LinuxOpenVinoSessionE2ETests.cs" />
   </ItemGroup>

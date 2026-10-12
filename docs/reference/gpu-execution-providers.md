@@ -128,6 +128,16 @@ Verified on WSL2 with an RTX 5070: the production factory registers the patched 
 exposes the GPU device, and a small model run through `AppendTensorRtRtxOrFallbackProvider`
 returns the expected output. Not verified on bare-metal Linux; the unit tests use a fake catalog.
 
+### CUDA and TensorRT on Linux
+
+CUDA and classic TensorRT are compiled into the loaded ONNX Runtime build, so nothing is
+installed. Their readiness now comes from the catalog's built-in providers: ORT must list the
+provider and appending it to session options must work, on top of a loaded NVIDIA driver (and
+`libnvinfer` for TensorRT). A CPU-only ORT build, or a missing CUDA library, therefore reports
+the provider unavailable at discovery and bootstrap instead of passing on the driver alone and
+failing at session creation. The catalog caches that result for the life of the process.
+TensorRT falls back to CUDA only when CUDA is usable, otherwise to CPU.
+
 ## Provider order
 
 On Windows with an NVIDIA GPU the effective preference chain is:

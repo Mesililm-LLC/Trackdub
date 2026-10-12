@@ -114,19 +114,23 @@ public sealed class LinuxExecutionProviderBootstrapper : IExecutionProviderBoots
                 new(provider, provider, Succeeded: true, Detail: "CPU available on Linux."),
 
             ExecutionProviderKind.Cuda =>
-                nvidiaDriver
-                    ? new(provider, provider, Succeeded: true, Detail: "NVIDIA driver detected.")
-                    : new(provider, ExecutionProviderKind.Cpu, Succeeded: false,
+                !nvidiaDriver
+                    ? new(provider, ExecutionProviderKind.Cpu, Succeeded: false,
                         Detail: "No NVIDIA driver found (/proc/driver/nvidia/gpus/ absent). Falling back to CPU.",
-                        FailureReason: "NVIDIA driver not loaded."),
+                        FailureReason: "NVIDIA driver not loaded.")
+                    : _linuxRuntimeProbe.IsCudaOrtProviderAvailable()
+                        ? new(provider, provider, Succeeded: true,
+                            Detail: "NVIDIA driver detected and CUDAExecutionProvider is usable.")
+                        : new(provider, ExecutionProviderKind.Cpu, Succeeded: false,
+                            Detail: CudaNotUsableDetail + " Falling back to CPU.",
+                            FailureReason: CudaNotUsableDetail),
 
             ExecutionProviderKind.TensorRt =>
                 nvidiaDriver && _linuxRuntimeProbe.IsNativeTensorRtAvailable()
-                    ? new(provider, provider, Succeeded: true, Detail: "NVIDIA driver + libnvinfer detected.")
+                    ? new(provider, provider, Succeeded: true,
+                        Detail: "NVIDIA driver, libnvinfer and TensorrtExecutionProvider are usable.")
                     : nvidiaDriver
-                        ? new(provider, ExecutionProviderKind.Cuda, Succeeded: false,
-                            Detail: "libnvinfer not found; TensorRT unavailable. Falling back to CUDA.",
-                            FailureReason: "libnvinfer not found.")
+                        ? ResolveTensorRtFallback(provider)
                         : new(provider, ExecutionProviderKind.Cpu, Succeeded: false,
                             Detail: "No NVIDIA driver; TensorRT unavailable. Falling back to CPU.",
                             FailureReason: "NVIDIA driver not loaded."),
@@ -157,6 +161,22 @@ public sealed class LinuxExecutionProviderBootstrapper : IExecutionProviderBoots
 
         return result;
     }
+
+    private const string CudaNotUsableDetail =
+        "CUDAExecutionProvider is not usable in the loaded ONNX Runtime (it needs a CUDA-enabled build and the CUDA libraries).";
+
+    private const string TensorRtNotUsableReason =
+        "libnvinfer not found or TensorrtExecutionProvider is not usable in the loaded ONNX Runtime.";
+
+    // A driver without a working TensorRT lands on CUDA only when CUDA itself is usable.
+    private ExecutionProviderBootstrapResult ResolveTensorRtFallback(ExecutionProviderKind provider) =>
+        _linuxRuntimeProbe.IsCudaOrtProviderAvailable()
+            ? new(provider, ExecutionProviderKind.Cuda, Succeeded: false,
+                Detail: $"{TensorRtNotUsableReason} TensorRT unavailable. Falling back to CUDA.",
+                FailureReason: TensorRtNotUsableReason)
+            : new(provider, ExecutionProviderKind.Cpu, Succeeded: false,
+                Detail: $"{TensorRtNotUsableReason} TensorRT unavailable, and CUDA is not usable either. Falling back to CPU.",
+                FailureReason: TensorRtNotUsableReason);
 
     // The session appends the OpenVINO plugin EP, so readiness is the catalog's. The standalone
     // OpenVINO runtime (IOpenVinoAvailabilityProvider) loads libopenvino_c.so but registers no
