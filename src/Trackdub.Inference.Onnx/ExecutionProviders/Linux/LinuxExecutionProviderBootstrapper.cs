@@ -11,13 +11,14 @@ namespace Trackdub.Inference.Onnx.ExecutionProviders.Linux;
 
 /// <summary>
 /// Linux-specific execution provider bootstrapper.
-/// Supports CPU execution, optional CUDA/TensorRT for NVIDIA GPUs, and OpenVINO through the
-/// LinML catalog's plugin EP.
+/// Supports CPU execution, optional CUDA/TensorRT for NVIDIA GPUs, and OpenVINO and MIGraphX through
+/// the LinML catalog's plugin EPs.
 /// </summary>
 [SupportedOSPlatform("linux")]
 public sealed class LinuxExecutionProviderBootstrapper : IExecutionProviderBootstrapper
 {
     private readonly ILinuxOpenVinoCatalog _openVinoCatalog;
+    private readonly ILinuxMigraphxCatalog _migraphxCatalog;
     private readonly ILinuxNativeGpuRuntimeProbe _linuxRuntimeProbe;
     private readonly ITensorRtRtxProviderBootstrap _tensorRtRtxPluginBootstrap;
     private readonly IDnnlReadinessProbe _dnnlReadinessProbe = new DnnlReadinessProbe();
@@ -47,9 +48,20 @@ public sealed class LinuxExecutionProviderBootstrapper : IExecutionProviderBoots
         ILinuxNativeGpuRuntimeProbe linuxRuntimeProbe,
         ITensorRtRtxProviderBootstrap tensorRtRtxPluginBootstrap,
         ILinuxOpenVinoCatalog openVinoCatalog)
+        : this(openVino, linuxRuntimeProbe, tensorRtRtxPluginBootstrap, openVinoCatalog, DefaultMigraphxCatalog)
+    {
+    }
+
+    public LinuxExecutionProviderBootstrapper(
+        IOpenVinoAvailabilityProvider openVino,
+        ILinuxNativeGpuRuntimeProbe linuxRuntimeProbe,
+        ITensorRtRtxProviderBootstrap tensorRtRtxPluginBootstrap,
+        ILinuxOpenVinoCatalog openVinoCatalog,
+        ILinuxMigraphxCatalog migraphxCatalog)
     {
         ArgumentNullException.ThrowIfNull(openVino);
         _openVinoCatalog = openVinoCatalog ?? throw new ArgumentNullException(nameof(openVinoCatalog));
+        _migraphxCatalog = migraphxCatalog ?? throw new ArgumentNullException(nameof(migraphxCatalog));
         _linuxRuntimeProbe = linuxRuntimeProbe ?? throw new ArgumentNullException(nameof(linuxRuntimeProbe));
         _tensorRtRtxPluginBootstrap = tensorRtRtxPluginBootstrap
             ?? throw new ArgumentNullException(nameof(tensorRtRtxPluginBootstrap));
@@ -60,6 +72,13 @@ public sealed class LinuxExecutionProviderBootstrapper : IExecutionProviderBoots
         LinMlOpenVinoCatalog.Default;
 #else
         UnavailableLinuxOpenVinoCatalog.Instance;
+#endif
+
+    private static ILinuxMigraphxCatalog DefaultMigraphxCatalog =>
+#if LINML
+        LinMlMigraphxCatalog.Default;
+#else
+        UnavailableLinuxMigraphxCatalog.Instance;
 #endif
 
     /// <summary>
@@ -123,12 +142,7 @@ public sealed class LinuxExecutionProviderBootstrapper : IExecutionProviderBoots
                     FailureReason: $"{provider} not available on Linux."),
 
             ExecutionProviderKind.Migraphx =>
-                _linuxRuntimeProbe.IsMigraphxOrtProviderAvailable()
-                    ? new(provider, provider, Succeeded: true,
-                        Detail: "MIGraphXExecutionProvider is listed by ONNX Runtime.")
-                    : new(provider, ExecutionProviderKind.Cpu, Succeeded: false,
-                        Detail: Inference.Runtime.Migraphx.MigraphxProviderConstants.LinuxInstallHint,
-                        FailureReason: "MIGraphXExecutionProvider not listed by ONNX Runtime."),
+                await ResolveMigraphxAsync(provider, allowDownloads, cancellationToken).ConfigureAwait(false),
 
             ExecutionProviderKind.CoreMl =>
                 new(provider, ExecutionProviderKind.Cpu, Succeeded: false,
@@ -152,7 +166,29 @@ public sealed class LinuxExecutionProviderBootstrapper : IExecutionProviderBoots
         bool allowDownloads,
         CancellationToken cancellationToken)
     {
-        LinuxOpenVinoCatalogResult catalog = await _openVinoCatalog
+        LinuxPluginCatalogResult catalog = await _openVinoCatalog
+            .EnsureReadyAsync(allowDownloads, cancellationToken)
+            .ConfigureAwait(false);
+        return catalog.IsReady
+            ? new(provider, provider, Succeeded: true, Detail: catalog.Detail)
+            : new(provider, ExecutionProviderKind.Cpu, Succeeded: false,
+                Detail: $"{catalog.Detail} Falling back to CPU.",
+                FailureReason: catalog.Detail);
+    }
+
+    private async Task<ExecutionProviderBootstrapResult> ResolveMigraphxAsync(
+        ExecutionProviderKind provider,
+        bool allowDownloads,
+        CancellationToken cancellationToken)
+    {
+        // An ONNX Runtime build with MIGraphX compiled in needs no plugin.
+        if (_linuxRuntimeProbe.IsMigraphxOrtProviderAvailable())
+        {
+            return new(provider, provider, Succeeded: true,
+                Detail: "MIGraphXExecutionProvider is listed by ONNX Runtime.");
+        }
+
+        LinuxPluginCatalogResult catalog = await _migraphxCatalog
             .EnsureReadyAsync(allowDownloads, cancellationToken)
             .ConfigureAwait(false);
         return catalog.IsReady

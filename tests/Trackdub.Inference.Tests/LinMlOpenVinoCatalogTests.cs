@@ -10,22 +10,22 @@ namespace Trackdub.Inference.Tests;
 public sealed class LinMlOpenVinoCatalogTests
 {
     [Theory]
-    [InlineData(ProviderEnsureStatus.Ready, LinuxOpenVinoCatalogStatus.Ready)]
-    [InlineData(ProviderEnsureStatus.Downloaded, LinuxOpenVinoCatalogStatus.Ready)]
-    [InlineData(ProviderEnsureStatus.DownloadDisallowed, LinuxOpenVinoCatalogStatus.NotInstalled)]
-    [InlineData(ProviderEnsureStatus.NoDevices, LinuxOpenVinoCatalogStatus.NoDevices)]
-    [InlineData(ProviderEnsureStatus.AbiIncompatible, LinuxOpenVinoCatalogStatus.Unsupported)]
-    [InlineData(ProviderEnsureStatus.NotAvailable, LinuxOpenVinoCatalogStatus.Unsupported)]
-    [InlineData(ProviderEnsureStatus.Failed, LinuxOpenVinoCatalogStatus.Failed)]
-    public async Task EnsureReadyAsync_maps_catalog_status(ProviderEnsureStatus status, LinuxOpenVinoCatalogStatus expected)
+    [InlineData(ProviderEnsureStatus.Ready, LinuxPluginCatalogStatus.Ready)]
+    [InlineData(ProviderEnsureStatus.Downloaded, LinuxPluginCatalogStatus.Ready)]
+    [InlineData(ProviderEnsureStatus.DownloadDisallowed, LinuxPluginCatalogStatus.NotInstalled)]
+    [InlineData(ProviderEnsureStatus.NoDevices, LinuxPluginCatalogStatus.NoDevices)]
+    [InlineData(ProviderEnsureStatus.AbiIncompatible, LinuxPluginCatalogStatus.Unsupported)]
+    [InlineData(ProviderEnsureStatus.NotAvailable, LinuxPluginCatalogStatus.Unsupported)]
+    [InlineData(ProviderEnsureStatus.Failed, LinuxPluginCatalogStatus.Failed)]
+    public async Task EnsureReadyAsync_maps_catalog_status(ProviderEnsureStatus status, LinuxPluginCatalogStatus expected)
     {
         var provider = new FakeProvider(_ => Task.FromResult(Result(status)));
         var catalog = new LinMlOpenVinoCatalog(new FakeCatalog(provider));
 
-        LinuxOpenVinoCatalogResult result = await catalog.EnsureReadyAsync(allowDownloads: false, default);
+        LinuxPluginCatalogResult result = await catalog.EnsureReadyAsync(allowDownloads: false, default);
 
         Assert.Equal(expected, result.Status);
-        Assert.Equal(expected is LinuxOpenVinoCatalogStatus.Ready, result.IsReady);
+        Assert.Equal(expected is LinuxPluginCatalogStatus.Ready, result.IsReady);
         Assert.Contains(status.ToString(), result.Detail, StringComparison.Ordinal);
     }
 
@@ -51,7 +51,7 @@ public sealed class LinMlOpenVinoCatalogTests
     {
         var catalog = new LinMlOpenVinoCatalog(new FakeCatalog(provider: null));
 
-        LinuxOpenVinoCatalogResult result = await catalog.EnsureReadyAsync(allowDownloads: true, default);
+        LinuxPluginCatalogResult result = await catalog.EnsureReadyAsync(allowDownloads: true, default);
 
         Assert.False(result.IsReady);
     }

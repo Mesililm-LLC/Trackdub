@@ -12,7 +12,7 @@ on Windows:
 |------------------|---------------------------------------------|
 | `net10.0` (portable, every OS) | CPU, **TensorRT RTX** (EP ABI plugin, Windows/Linux NVIDIA) |
 | `net10.0-windows10.0.19041.0` | CPU, TensorRT RTX, **DirectML**, Windows ML catalog EPs (MIGraphX, OpenVINO catalog, QNN, VitisAI) |
-| Linux `net10.0` | CPU, TensorRT RTX, native CUDA/TensorRT (system ORT GPU build), **OpenVINO** (plugin EP via [LinML.Catalog](https://github.com/trackdubllc/LinML)) |
+| Linux `net10.0` | CPU, TensorRT RTX, native CUDA/TensorRT (system ORT GPU build), **OpenVINO** and **MIGraphX** (plugin EPs via [LinML.Catalog](https://github.com/trackdubllc/LinML)) |
 
 The portable `net10.0` build compiles the Linux and macOS code paths on every build host and
 picks the bootstrapper, device enumerator and native routes with `OperatingSystem.IsLinux()` /
@@ -43,8 +43,9 @@ readiness service offers the install while the plugin is missing or its download
 failed, `StarterPackGpuSetupAdvisor` proposes `IntelOpenVino` on Intel hardware, and
 `GpuRuntimeInstallOrchestrator` dispatches it to `OpenVinoCatalogEpInstaller`, which
 downloads, verifies and registers the pinned plugin through LinML. On Linux these
-offer and accept only `IntelOpenVino`, and only on hardware with an Intel CPU or an
-Intel display/NPU PCI device; other runtime kinds stay Windows-only. The caller obtains Intel license consent first, as on Windows.
+offer and accept `IntelOpenVino` (only on hardware with an Intel CPU or an Intel
+display/NPU PCI device) and `AmdMigraphx` (see below); other runtime kinds stay
+Windows-only. The caller obtains Intel license consent first, as on Windows.
 Opt-in check: `TRACKDUB_LINML_OPENVINO_INSTALL_E2E=1 dotnet test
 tests/Trackdub.Composition.Tests -f net10.0 --filter Installer_end_to_end`. The standalone OpenVINO runtime component
 (`libopenvino_c.so`) registers no ORT execution provider and no longer decides
@@ -56,6 +57,31 @@ Opt-in end-to-end check on an Intel host:
 TRACKDUB_LINML_OPENVINO_MODEL=/path/to/small-model.onnx \
   dotnet test tests/Trackdub.Inference.Tests -f net10.0 --filter LinuxOpenVinoSessionE2ETests
 ```
+
+### MIGraphX on Linux
+
+`ExecutionProviderKind.Migraphx` on Linux runs on AMD's MIGraphX plugin EP
+(`onnxruntime-ep-amdgpu`), which LinML builds from a pinned commit, publishes as the
+`ep-migraphx-<version>` release and pins by sha256 in `LinML.Catalog`. The host needs
+an AMD GPU and ROCm with MIGraphX 2.17 or newer: a loadable `libmigraphx_c.so.3` under
+`/opt/rocm/lib` or on the loader path that exports the 2.17 C API (MIGraphX 2.15 ships
+the same soname without it). Without either, `LinMlMigraphxCatalog` reports
+the provider unsupported and never downloads the plugin; the catalog itself has no
+such check. Once registered, the plugin's GPU device is what the existing MIGraphX
+session append uses, so sessions need no Linux-specific append code.
+
+An ONNX Runtime build with MIGraphX compiled in (`MIGraphXExecutionProvider` in
+`GetAvailableProviders`) still works and takes precedence, reported on the
+`NativeRocm` route. Otherwise `MigraphxReadinessProbe` reports the `LinMlCatalog`
+route: install is offered while the plugin is missing or its download failed,
+`StarterPackGpuSetupAdvisor` proposes `AmdMigraphx` for AMD GPUs, and
+`GpuRuntimeInstallOrchestrator` installs it by probing with downloads allowed, then
+clears the cached readiness so the next check sees the installed plugin. The caller
+obtains AMD license consent first, as on Windows. The Linux device enumerator lists
+MIGraphX for an AMD GPU when the ROCm MIGraphX runtime is present. Not yet verified
+on AMD hardware; on a host without ROCm, registration fails with
+`libmigraphx_c.so.3: cannot open shared object file`, which is why the runtime is
+checked first.
 
 ## Provider order
 
