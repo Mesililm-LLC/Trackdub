@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Microsoft.ML.OnnxRuntime;
+using Trackdub.Domain;
 
 namespace Trackdub.Inference.Onnx.TensorRtRtx;
 
@@ -29,6 +30,21 @@ internal static class TensorRtRtxTeardownGuard
 
     /// <summary>Records a session whose effective execution provider is TensorRT-RTX.</summary>
     internal static void Track(InferenceSession session) => TrackedSessions.TryAdd(session, Marker);
+
+    /// <summary>Drops a session that was tracked before effective-provider detection placed it elsewhere.</summary>
+    internal static void Untrack(InferenceSession session) => TrackedSessions.Remove(session);
+
+    /// <summary>
+    /// Keeps tracking only when <paramref name="effectiveProvider"/> is TensorRT-RTX.
+    /// A CPU or DirectML fallback must still release its native session after a later OOM.
+    /// </summary>
+    internal static void ReconcileTracking(InferenceSession session, ExecutionProviderKind effectiveProvider)
+    {
+        if (effectiveProvider is not ExecutionProviderKind.TensorRTRtx)
+        {
+            Untrack(session);
+        }
+    }
 
     /// <summary>
     /// Marks the runtime poisoned when <paramref name="failure"/> is a CUDA allocation failure.

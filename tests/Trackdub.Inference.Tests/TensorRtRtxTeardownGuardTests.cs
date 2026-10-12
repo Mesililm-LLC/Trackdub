@@ -1,5 +1,6 @@
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Trackdub.Domain;
 using Trackdub.Inference.Onnx;
 using Trackdub.Inference.Onnx.TensorRtRtx;
 
@@ -103,6 +104,7 @@ public sealed class TensorRtRtxTeardownGuardTests : IDisposable
 
             new OnnxExecutionSessionFactory.SingleSessionLease(single, "TensorRT RTX", "TensorRT RTX", null).Dispose();
             new OnnxExecutionSessionFactory.WhisperSessionLease(encoder, decoder, "TensorRT RTX", "TensorRT RTX", null).Dispose();
+            new OnnxExecutionSessionFactory.OpusSessionLease(encoder, decoder, "TensorRT RTX", "TensorRT RTX", null).Dispose();
 
             Assert.Equal(1f, RunIdentity(single));
             Assert.Equal(1f, RunIdentity(encoder));
@@ -115,6 +117,59 @@ public sealed class TensorRtRtxTeardownGuardTests : IDisposable
             encoder.Dispose();
             decoder.Dispose();
         }
+    }
+
+    [Fact]
+    public void Create_failure_marks_cuda_oom_before_disposing_the_tracked_encoder()
+    {
+        InferenceSession encoder = CreateSession();
+        try
+        {
+            TensorRtRtxTeardownGuard.Track(encoder);
+            Assert.False(TensorRtRtxTeardownGuard.IsPoisoned);
+
+            OnnxExecutionSessionFactory.ReleaseSessionsAfterCreateFailure(
+                new InvalidOperationException("CUDA failure: out of memory"),
+                encoder,
+                decoder: null);
+
+            Assert.True(TensorRtRtxTeardownGuard.IsPoisoned);
+            Assert.Equal(1f, RunIdentity(encoder));
+        }
+        finally
+        {
+            TensorRtRtxTeardownGuard.ResetForTests();
+            encoder.Dispose();
+        }
+    }
+
+    [Fact]
+    public void Create_failure_still_disposes_when_the_error_is_not_cuda_oom()
+    {
+        InferenceSession encoder = CreateSession();
+        TensorRtRtxTeardownGuard.Track(encoder);
+
+        OnnxExecutionSessionFactory.ReleaseSessionsAfterCreateFailure(
+            new InvalidOperationException("unrelated IO error"),
+            encoder,
+            decoder: null);
+
+        Assert.False(TensorRtRtxTeardownGuard.IsPoisoned);
+        Assert.Throws<NullReferenceException>(() => RunIdentity(encoder));
+    }
+
+    [Fact]
+    public void Cpu_fallback_is_untracked_and_still_disposes_after_cuda_oom()
+    {
+        InferenceSession session = CreateSession();
+        TensorRtRtxTeardownGuard.Track(session);
+        TensorRtRtxTeardownGuard.ReconcileTracking(session, ExecutionProviderKind.Cpu);
+        TensorRtRtxTeardownGuard.MarkPoisonedIfCudaOutOfMemory(
+            new InvalidOperationException("CUDA failure: out of memory"));
+
+        TensorRtRtxTeardownGuard.DisposeSafely(session);
+
+        Assert.Throws<NullReferenceException>(() => RunIdentity(session));
     }
 
     private static float RunIdentity(InferenceSession session)

@@ -310,17 +310,18 @@ internal static class OnnxExecutionSessionFactory
                 bootstrapResult.Detail,
                 BuildSessionOptionsFallbackReason(provider, effectiveProvider, sessionOptionsSelection));
             CpuExecutionAdmission.Shared.RegisterSession(session, effectiveProvider);
+            TensorRtRtxTeardownGuard.ReconcileTracking(session, effectiveProvider);
             return new SingleSessionLease(
                 session,
                 requestedProvider,
                 selectedProvider,
                 bootstrapDetail);
         }
-        catch
+        catch (Exception ex)
         {
-            // CreateSession tracks TensorRT-RTX sessions. A CUDA OOM poisons native teardown,
-            // so this failure path must use the same guard as the pool.
-            TensorRtRtxTeardownGuard.DisposeSafely(session);
+            // CreateSession tracks TensorRT-RTX sessions before this catch runs. Mark a CUDA
+            // OOM first, or DisposeSafely still calls native Dispose on that tracked session.
+            ReleaseSessionsAfterCreateFailure(ex, session, decoder: null);
             throw;
         }
         finally
@@ -631,6 +632,8 @@ internal static class OnnxExecutionSessionFactory
                 provider, bootstrap, selections, encoderSession, decoderSession);
             CpuExecutionAdmission.Shared.RegisterSession(encoderSession, metadata.EncoderProvider);
             CpuExecutionAdmission.Shared.RegisterSession(decoderSession, metadata.DecoderProvider);
+            TensorRtRtxTeardownGuard.ReconcileTracking(encoderSession, metadata.EncoderProvider);
+            TensorRtRtxTeardownGuard.ReconcileTracking(decoderSession, metadata.DecoderProvider);
 
             return new WhisperSessionLease(
                 encoderSession,
@@ -639,10 +642,9 @@ internal static class OnnxExecutionSessionFactory
                 FormatProviderLabel(metadata.SelectedProvider),
                 metadata.BootstrapDetail);
         }
-        catch
+        catch (Exception ex)
         {
-            TensorRtRtxTeardownGuard.DisposeSafely(encoderSession);
-            TensorRtRtxTeardownGuard.DisposeSafely(decoderSession);
+            ReleaseSessionsAfterCreateFailure(ex, encoderSession, decoderSession);
             throw;
         }
     }
@@ -674,6 +676,8 @@ internal static class OnnxExecutionSessionFactory
                 provider, bootstrap, selections, encoderSession, decoderSession);
             CpuExecutionAdmission.Shared.RegisterSession(encoderSession, metadata.EncoderProvider);
             CpuExecutionAdmission.Shared.RegisterSession(decoderSession, metadata.DecoderProvider);
+            TensorRtRtxTeardownGuard.ReconcileTracking(encoderSession, metadata.EncoderProvider);
+            TensorRtRtxTeardownGuard.ReconcileTracking(decoderSession, metadata.DecoderProvider);
 
             return new OpusSessionLease(
                 encoderSession,
@@ -685,12 +689,26 @@ internal static class OnnxExecutionSessionFactory
                 SelectedProviderKind = metadata.SelectedProvider
             };
         }
-        catch
+        catch (Exception ex)
         {
-            TensorRtRtxTeardownGuard.DisposeSafely(encoderSession);
-            TensorRtRtxTeardownGuard.DisposeSafely(decoderSession);
+            ReleaseSessionsAfterCreateFailure(ex, encoderSession, decoderSession);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Marks a CUDA out-of-memory before disposing sessions from a failed create.
+    /// <see cref="CreateSession"/> tracks a TensorRT-RTX session as soon as it exists, so a
+    /// decoder failure after a tracked encoder must poison the guard first.
+    /// </summary>
+    internal static void ReleaseSessionsAfterCreateFailure(
+        Exception failure,
+        InferenceSession? encoder,
+        InferenceSession? decoder)
+    {
+        TensorRtRtxTeardownGuard.MarkPoisonedIfCudaOutOfMemory(failure);
+        TensorRtRtxTeardownGuard.DisposeSafely(encoder);
+        TensorRtRtxTeardownGuard.DisposeSafely(decoder);
     }
 
     // ── Pooled factory methods ─────────────────────────────────────────────
