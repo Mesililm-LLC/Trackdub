@@ -332,7 +332,8 @@ internal static class OnnxExecutionSessionFactory
         SessionOptions options,
         Func<string, SessionOptions, InferenceSession>? sessionFactory,
         CancellationToken cancellationToken,
-        ExecutionProviderKind selectedProvider)
+        ExecutionProviderKind selectedProvider,
+        WindowsMlExecutionDevicePolicy devicePolicy = WindowsMlExecutionDevicePolicy.Explicit)
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var phase = BenchmarkPhaseCapture.Start("onnx-session-create");
@@ -359,6 +360,36 @@ internal static class OnnxExecutionSessionFactory
         {
             TensorRtRtxTeardownGuard.Track(session);
         }
+
+#if WINDOWS
+        // MS "Efficiency tips for Windows ML inference": express efficiency intent through ORT
+        // (ep.dynamic.workload_type) for NPU catalog sessions under efficiency-flavored device
+        // policies. Only NPU EPs act on the signal; the call is a no-op elsewhere but is gated
+        // to NPU providers to keep the no-op surface minimal. Outcomes are logged, never assumed.
+        // This hook runs strictly post-registration: an NPU catalog session can only exist here
+        // if WindowsMlProviderRegistrationPolicy already readied + TryRegister()-ed the EP
+        // (MS "Register Windows ML execution providers") — no new install/registration logic
+        // is introduced, and the hook never fires when the EP was not registered.
+        (bool efficiencyApplied, string? efficiencyError) =
+            WindowsMl.WindowsMlEfficiencyPolicy.ApplyToSession(session, selectedProvider, devicePolicy);
+        if (efficiencyApplied || efficiencyError is not null)
+        {
+            string efficiencySessionLabel =
+                string.IsNullOrEmpty(options.LogId) ? Path.GetFileName(modelPath) : options.LogId;
+            if (efficiencyApplied)
+            {
+                _logger?.LogInformation(
+                    $"Session '{efficiencySessionLabel}' ({FormatProviderLabel(selectedProvider)}): " +
+                    "ep.dynamic.workload_type=Efficient applied.");
+            }
+            else
+            {
+                _logger?.LogWarning(
+                    $"Session '{efficiencySessionLabel}' ({FormatProviderLabel(selectedProvider)}): " +
+                    $"ep.dynamic.workload_type=Efficient was NOT applied: {efficiencyError}");
+            }
+        }
+#endif
 
         return session;
     }
@@ -406,7 +437,8 @@ internal static class OnnxExecutionSessionFactory
                 initialSelection.Options,
                 sessionFactory,
                 cancellationToken,
-                initialSelection.SelectedProvider);
+                initialSelection.SelectedProvider,
+                devicePolicy);
             return (session, initialSelection);
         }
         catch (Exception ex) when (
@@ -431,7 +463,7 @@ internal static class OnnxExecutionSessionFactory
             try
             {
                 InferenceSession session = CreateSession(modelPath, fallbackSelection.Options, sessionFactory,
-                    cancellationToken, fallbackSelection.SelectedProvider);
+                    cancellationToken, fallbackSelection.SelectedProvider, devicePolicy);
                 initialSelection.Options.Dispose();
                 string label = FormatProviderLabel(fallbackSelection.SelectedProvider);
                 return (session, new SessionOptionsSelection(fallbackSelection.Options,
@@ -464,7 +496,7 @@ internal static class OnnxExecutionSessionFactory
             try
             {
                 InferenceSession session = CreateSession(modelPath, fallbackSelection.Options, sessionFactory,
-                    cancellationToken, fallbackSelection.SelectedProvider);
+                    cancellationToken, fallbackSelection.SelectedProvider, devicePolicy);
                 // Transfer ownership: the caller owns fallback options after success.
                 initialSelection.Options.Dispose();
                 string label = FormatProviderLabel(fallbackSelection.SelectedProvider);

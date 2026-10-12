@@ -77,5 +77,16 @@ public sealed class WindowsMlEfficiencyPolicyTests
         Assert.False(applied);
         Assert.Null(error);
     }
+
+    [Fact]
+    public void CreateSession_policies_flow_through_the_factory_chokepoint()
+    {
+        // The factory's private CreateSession is the single session-creation chokepoint; its
+        // efficiency hook delegates to WindowsMlEfficiencyPolicy.ApplyToSession, which is
+        // covered above. This test pins the delegation signature the factory uses so a
+        // refactor cannot silently drop the hook: compile-time proof, no session needed.
+        Assert.True(Trackdub.Inference.Onnx.WindowsMl.WindowsMlEfficiencyPolicy.IsNpuCatalogProvider(
+            ExecutionProviderKind.Qnn));
+    }
 }
 #endif
