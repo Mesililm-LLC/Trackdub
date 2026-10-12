@@ -243,10 +243,10 @@ internal static class OnnxExecutionSessionFactory
             [
                 new SessionLeaseRequest(
                     encoderKey,
-                    ct => Task.FromResult(CreateSession(encoderModelPath, selections.Encoder.Options, sessionFactory, ct, selections.Encoder.SelectedProvider))),
+                    ct => Task.FromResult(CreateSession(encoderModelPath, selections.Encoder.Options, sessionFactory, ct, selections.Encoder.SelectedProvider, bootstrap.DevicePolicy))),
                 new SessionLeaseRequest(
                     decoderKey,
-                    ct => Task.FromResult(CreateSession(decoderModelPath, selections.Decoder.Options, sessionFactory, ct, selections.Decoder.SelectedProvider))),
+                    ct => Task.FromResult(CreateSession(decoderModelPath, selections.Decoder.Options, sessionFactory, ct, selections.Decoder.SelectedProvider, bootstrap.DevicePolicy))),
             ],
             cancellationToken).ConfigureAwait(false);
 
@@ -333,7 +333,7 @@ internal static class OnnxExecutionSessionFactory
         Func<string, SessionOptions, InferenceSession>? sessionFactory,
         CancellationToken cancellationToken,
         ExecutionProviderKind selectedProvider,
-        WindowsMlExecutionDevicePolicy devicePolicy = WindowsMlExecutionDevicePolicy.Explicit)
+        WindowsMlExecutionDevicePolicy devicePolicy)
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var phase = BenchmarkPhaseCapture.Start("onnx-session-create");
@@ -623,8 +623,8 @@ internal static class OnnxExecutionSessionFactory
         {
             // Through CreateSession so smoke probes load (or capture) EP-context artifacts like
             // pooled sessions do, instead of rebuilding every engine from source.
-            encoderSession = CreateSession(encoderModelPath, encoderOptions, null, cancellationToken, selections.Encoder.SelectedProvider);
-            decoderSession = CreateSession(decoderModelPath, decoderOptions, null, cancellationToken, selections.Decoder.SelectedProvider);
+            encoderSession = CreateSession(encoderModelPath, encoderOptions, null, cancellationToken, selections.Encoder.SelectedProvider, bootstrap.DevicePolicy);
+            decoderSession = CreateSession(decoderModelPath, decoderOptions, null, cancellationToken, selections.Decoder.SelectedProvider, bootstrap.DevicePolicy);
             DualSessionMetadata metadata = ResolveDualSessionMetadata(
                 provider, bootstrap, selections, encoderSession, decoderSession);
             CpuExecutionAdmission.Shared.RegisterSession(encoderSession, metadata.EncoderProvider);
@@ -666,8 +666,8 @@ internal static class OnnxExecutionSessionFactory
         {
             // Through CreateSession so smoke probes load (or capture) EP-context artifacts like
             // pooled sessions do, instead of rebuilding every engine from source.
-            encoderSession = CreateSession(encoderModelPath, encoderOptions, null, cancellationToken, selections.Encoder.SelectedProvider);
-            decoderSession = CreateSession(decoderModelPath, decoderOptions, null, cancellationToken, selections.Decoder.SelectedProvider);
+            encoderSession = CreateSession(encoderModelPath, encoderOptions, null, cancellationToken, selections.Encoder.SelectedProvider, bootstrap.DevicePolicy);
+            decoderSession = CreateSession(decoderModelPath, decoderOptions, null, cancellationToken, selections.Decoder.SelectedProvider, bootstrap.DevicePolicy);
             DualSessionMetadata metadata = ResolveDualSessionMetadata(
                 provider, bootstrap, selections, encoderSession, decoderSession);
             CpuExecutionAdmission.Shared.RegisterSession(encoderSession, metadata.EncoderProvider);
@@ -1117,13 +1117,13 @@ internal static class OnnxExecutionSessionFactory
             [
                 new SessionLeaseRequest(
                     encoderKey,
-                    ct => Task.FromResult(CreateSession(encoderModelPath, encoderOptionsSelection.Options, sessionFactory, ct, encoderOptionsSelection.SelectedProvider))),
+                    ct => Task.FromResult(CreateSession(encoderModelPath, encoderOptionsSelection.Options, sessionFactory, ct, encoderOptionsSelection.SelectedProvider, devicePolicy))),
                 new SessionLeaseRequest(
                     decoderInitKey,
-                    ct => Task.FromResult(CreateSession(decoderInitModelPath, decoderInitOptions, sessionFactory, ct, decoderOptionsSelectedProvider))),
+                    ct => Task.FromResult(CreateSession(decoderInitModelPath, decoderInitOptions, sessionFactory, ct, decoderOptionsSelectedProvider, devicePolicy))),
                 new SessionLeaseRequest(
                     decoderStepKey,
-                    ct => Task.FromResult(CreateSession(decoderStepModelPath, decoderStepOptions, sessionFactory, ct, decoderOptionsSelectedProvider))),
+                    ct => Task.FromResult(CreateSession(decoderStepModelPath, decoderStepOptions, sessionFactory, ct, decoderOptionsSelectedProvider, devicePolicy))),
             ],
             cancellationToken).ConfigureAwait(false);
 
@@ -1248,16 +1248,16 @@ internal static class OnnxExecutionSessionFactory
             [
                 new SessionLeaseRequest(
                     unetKey,
-                    ct => Task.FromResult(CreateSession(unetModelPath, unetOptions, sessionFactory, ct, unetSelectedProvider))),
+                    ct => Task.FromResult(CreateSession(unetModelPath, unetOptions, sessionFactory, ct, unetSelectedProvider, devicePolicy))),
                 new SessionLeaseRequest(
                     vaeEncKey,
-                    ct => Task.FromResult(CreateSession(vaeEncoderModelPath, vaeEncOptions, sessionFactory, ct, vaeEncOptionsSelection.SelectedProvider))),
+                    ct => Task.FromResult(CreateSession(vaeEncoderModelPath, vaeEncOptions, sessionFactory, ct, vaeEncOptionsSelection.SelectedProvider, devicePolicy))),
                 new SessionLeaseRequest(
                     vaeDecKey,
-                    ct => Task.FromResult(CreateSession(vaeDecoderModelPath, vaeDecOptions, sessionFactory, ct, vaeDecOptionsSelection.SelectedProvider))),
+                    ct => Task.FromResult(CreateSession(vaeDecoderModelPath, vaeDecOptions, sessionFactory, ct, vaeDecOptionsSelection.SelectedProvider, devicePolicy))),
                 new SessionLeaseRequest(
                     whisperKey,
-                    ct => Task.FromResult(CreateSession(whisperEncoderModelPath, whisperOptions, sessionFactory, ct, whisperSelectedProvider))),
+                    ct => Task.FromResult(CreateSession(whisperEncoderModelPath, whisperOptions, sessionFactory, ct, whisperSelectedProvider, devicePolicy))),
             ],
             cancellationToken).ConfigureAwait(false);
 
