@@ -20,7 +20,8 @@ public sealed class PreviewMixWorkflow(
     IMediaAssetRepository mediaAssetRepository,
     IProjectStageRunStore stageRunStore,
     ITtsCandidateGroupRepository? candidateGroupRepository = null,
-    IRuntimePlanningPreferences? runtimePlanningPreferences = null)
+    IRuntimePlanningPreferences? runtimePlanningPreferences = null,
+    TimelineMediaMixPreparer? timelineMediaMixPreparer = null)
 {
     private readonly MixPlanBuilder mixPlanBuilder = mixPlanBuilder ?? throw new ArgumentNullException(nameof(mixPlanBuilder));
     private readonly MixPlanStore mixPlanStore = mixPlanStore ?? throw new ArgumentNullException(nameof(mixPlanStore));
@@ -67,7 +68,9 @@ public sealed class PreviewMixWorkflow(
                 RestoreOriginalPan: request.RestoreOriginalPan,
                 ApplyTimbrePolish: request.ApplyTimbrePolish,
                 CandidateGroups: candidateGroups,
-                MediaDurationSeconds: mediaAsset.DurationSeconds));
+                MediaDurationSeconds: mediaAsset.DurationSeconds,
+                MediaClips: await TimelineMediaMixPreparer.PrepareAsync(
+                    timelineMediaMixPreparer, currentState, cancellationToken).ConfigureAwait(false)));
             await mixPlanStore.SaveAsync(mixPlan, cancellationToken).ConfigureAwait(false);
 
             string previewRelativePath = ProjectArtifactPaths.GetPreviewMixRelativePath(stageRun.Id);
