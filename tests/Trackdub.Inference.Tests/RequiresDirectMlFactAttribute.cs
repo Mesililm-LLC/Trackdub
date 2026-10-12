@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using Microsoft.ML.OnnxRuntime;
 using Trackdub.Domain;
 using Trackdub.Inference.Onnx;
+using Trackdub.Inference.Onnx.Runtime;
 using Trackdub.TestDoubles;
 #if WINDOWS
 using Trackdub.Inference.Onnx.WindowsMl;
@@ -32,6 +33,12 @@ public sealed class RequiresDirectMlFactAttribute : FactAttribute
 
 #if WINDOWS
         WindowsMlOnnxRuntimeNativeResolver.EnsureInitialized();
+#else
+        // This runs at xunit discovery, before any test. Constructing SessionOptions triggers ORT's own
+        // native resolver registration, which would leave GenAiNativeRuntimeSelection unable to claim it.
+        // Unverified is tolerated: the DNNL flavor emits no native-pair metadata, and a stock ORT whose
+        // hash matches a manifest is still recorded as verified for the later GenAI load.
+        GenAiNativeRuntimeSelection.EnsureOrtLoaded(requireVerified: false);
 #endif
 
         using SessionOptions options = new();

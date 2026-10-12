@@ -1,3 +1,4 @@
+using System.Xml.Linq;
 using Trackdub.Inference.Onnx.Runtime;
 
 namespace Trackdub.Inference.Tests;
@@ -73,6 +74,28 @@ public sealed class GenAiNativeCompatibilityTests
             Assert.Equal(Path.GetFullPath(ort),
                 GenAiNativeRuntimeSelection.FindCandidate(managed, directory, "win-x64", "onnxruntime.dll"));
         });
+    }
+
+    [Theory]
+    [InlineData("Cpu")]
+    [InlineData("Cuda")]
+    public void StockOrtAtTheCentralPackagePinIsSupportedWithGenAi(string genAiFlavor)
+    {
+        string? directory = AppContext.BaseDirectory;
+        while (directory is not null && !File.Exists(Path.Join(directory, "Directory.Packages.props")))
+        {
+            directory = Path.GetDirectoryName(directory);
+        }
+
+        Assert.NotNull(directory);
+        string version = XDocument.Load(Path.Join(directory, "Directory.Packages.props"))
+            .Root!.Descendants("OnnxRuntimeVersion").Single().Value.Trim();
+        var pair = new NativePairManifest("Stock", version, version, genAiFlavor, "0.17.1", "win-x64", "ort", "genai");
+
+        Assert.True(GenAiNativeRuntimeSelection.IsSupported(pair),
+            $"Update the stock ORT allow-list in GenAiNativeRuntimeSelection to {version}.");
+        Assert.True(GenAiNativeRuntimeSelection.IsKnownOrt(pair),
+            $"Update the stock ORT allow-list in GenAiNativeRuntimeSelection to {version}.");
     }
 
     private static NativePairManifest Pair(string ort, string genAi) =>

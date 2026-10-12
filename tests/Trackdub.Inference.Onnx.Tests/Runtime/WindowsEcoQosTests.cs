@@ -1,6 +1,10 @@
 namespace Trackdub.Inference.Onnx.Tests.Runtime;
 
+// EcoQoS throttling is PROCESS-GLOBAL state; shares the ProcessEfficiencyControlTests
+// collection so the two classes never interleave enable/disable/read-back (flake observed
+// 2026-10-12 when xunit ran them in parallel collections).
 #if WINDOWS
+[Collection("ProcessEcoQosState")]
 public sealed class WindowsEcoQosTests
 {
     [Fact]
