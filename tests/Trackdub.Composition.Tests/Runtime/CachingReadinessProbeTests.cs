@@ -283,7 +283,7 @@ public sealed class CachingReadinessProbeTests
 
     private sealed class StubMigraphxReadinessProbe : IMigraphxReadinessProbe
     {
-        public Task<MigraphxReadinessReport> ProbeAsync(bool allowProviderDownloads, CancellationToken cancellationToken = default) =>
+        public Task<MigraphxReadinessReport> ProbeAsync(bool allowProviderDownloads, CancellationToken cancellationToken = default, IProgress<double>? progress = null) =>
             Task.FromResult(new MigraphxReadinessReport(
                 MigraphxProviderIds.WinMl,
                 MigraphxPlatformRoute.None,

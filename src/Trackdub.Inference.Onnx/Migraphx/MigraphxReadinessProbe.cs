@@ -13,14 +13,15 @@ public sealed class MigraphxReadinessProbe : IMigraphxReadinessProbe
 
     public async Task<MigraphxReadinessReport> ProbeAsync(
         bool allowProviderDownloads,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<double>? progress = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
 #if WINDOWS
         if (OperatingSystem.IsWindows())
         {
-            return await ProbeWindowsAsync(allowProviderDownloads, cancellationToken).ConfigureAwait(false);
+            return await ProbeWindowsAsync(allowProviderDownloads, cancellationToken, progress).ConfigureAwait(false);
         }
 #endif
 
@@ -42,7 +43,8 @@ public sealed class MigraphxReadinessProbe : IMigraphxReadinessProbe
 #if WINDOWS
     private async Task<MigraphxReadinessReport> ProbeWindowsAsync(
         bool allowProviderDownloads,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<double>? progress)
     {
         const string providerId = MigraphxProviderIds.WinMl;
         (bool eligible, MigraphxReadinessBlocker hardwareBlocker, string hardwareDetail) =
@@ -67,7 +69,7 @@ public sealed class MigraphxReadinessProbe : IMigraphxReadinessProbe
 
         if (!bootstrap.Succeeded && bootstrap.Blocker is MigraphxReadinessBlocker.EpNotPresent && allowProviderDownloads)
         {
-            bootstrap = await _windowsCatalog.EnsureRegisteredAsync(true, cancellationToken).ConfigureAwait(false);
+            bootstrap = await _windowsCatalog.EnsureRegisteredAsync(true, cancellationToken, progress).ConfigureAwait(false);
         }
 
         ortListed = MigraphxOrtProbe.IsProviderListed();

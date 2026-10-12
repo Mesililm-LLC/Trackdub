@@ -123,8 +123,21 @@ public sealed class CachingMigraphxReadinessProbe(IMigraphxReadinessProbe inner)
 {
     public Task<MigraphxReadinessReport> ProbeAsync(
         bool allowProviderDownloads,
-        CancellationToken cancellationToken = default) =>
-        ProbeCachedAsync(allowProviderDownloads, cancellationToken);
+        CancellationToken cancellationToken = default,
+        IProgress<double>? progress = null)
+    {
+        // The cache base hard-codes the underlying probe to run with CancellationToken.None,
+        // so a percent sink attached to a cache-miss call would not see the in-flight events
+        // from concurrent callers. Bypass the cache when a progress sink is requested; the
+        // caller's token still controls cancellation, and the next status-only call repopulates
+        // the cache as usual.
+        if (progress is not null)
+        {
+            return inner.ProbeAsync(allowProviderDownloads, cancellationToken, progress);
+        }
+
+        return ProbeCachedAsync(allowProviderDownloads, cancellationToken);
+    }
 }
 
 /// <summary>Caching decorator for <see cref="IDnnlReadinessProbe"/>.</summary>

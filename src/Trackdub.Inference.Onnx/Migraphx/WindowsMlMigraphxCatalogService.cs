@@ -12,7 +12,8 @@ internal sealed class WindowsMlMigraphxCatalogService
 {
     public async Task<MigraphxBootstrapResult> EnsureRegisteredAsync(
         bool allowProviderDownloads,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<double>? progress = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -59,7 +60,7 @@ internal sealed class WindowsMlMigraphxCatalogService
             if (plan.CallEnsureReady)
             {
                 ExecutionProviderReadyResult readyResult = await WindowsMlEnsureReady
-                    .EnsureReadyBoundedAsync(migraphx, timeoutCts.Token)
+                    .EnsureReadyBoundedAsync(migraphx, timeoutCts.Token, progress)
                     .ConfigureAwait(false);
                 CatalogPreparationOutcome outcome = WindowsMlCatalogPreparationPolicy.Classify(
                     WindowsMlEnsureReady.MapEnsureStatus(readyResult.Status),

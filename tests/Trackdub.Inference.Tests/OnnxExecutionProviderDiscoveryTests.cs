@@ -295,7 +295,8 @@ public sealed class OnnxExecutionProviderDiscoveryTests
     {
         public Task<MigraphxReadinessReport> ProbeAsync(
             bool allowProviderDownloads,
-            CancellationToken cancellationToken = default) =>
+            CancellationToken cancellationToken = default,
+            IProgress<double>? progress = null) =>
             Task.FromResult(new MigraphxReadinessReport(
                 ProviderId: string.Empty,
                 MigraphxPlatformRoute.None,
