@@ -11,6 +11,21 @@ using Trackdub.Inference.Runtime.Planning;
 // diagnostics go to standard error, which the application keeps as the crash tail.
 Stream input = Console.OpenStandardInput();
 Stream output = Console.OpenStandardOutput();
+
+// Opt-in EcoQoS (MS efficiency guidance, CPU workloads): the worker is a background helper
+// process, so operators may prefer efficiency-oriented CPU scheduling for it. The variable is
+// inherited from the host process env; default stays OS-managed. The outcome is verified by
+// read-back and reported — never claimed without proof.
+if (string.Equals(
+        Environment.GetEnvironmentVariable(Trackdub.Inference.Onnx.Runtime.WindowsEcoQos.EnvironmentVariable),
+        "1", StringComparison.Ordinal))
+{
+    (bool ecoQosApplied, string? ecoQosError) =
+        Trackdub.Inference.Onnx.Runtime.WindowsEcoQos.EnableExecutionSpeedThrottling();
+    Console.Error.WriteLine(ecoQosApplied
+        ? $"[worker] EcoQoS enabled (verified: {Trackdub.Inference.Onnx.Runtime.WindowsEcoQos.IsExecutionSpeedThrottled})."
+        : $"[worker] EcoQoS requested but NOT applied: {ecoQosError}");
+}
 var writeGate = new SemaphoreSlim(1, 1);
 var inFlight = new ConcurrentDictionary<long, CancellationTokenSource>();
 var handlers = new ConcurrentDictionary<long, Task>();
