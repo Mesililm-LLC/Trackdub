@@ -144,7 +144,11 @@ public sealed class OnnxExecutionProviderDiscovery : IExecutionProviderDiscovery
         bool isWindows = hardwareProfile.OperatingSystem.Equals("windows", StringComparison.OrdinalIgnoreCase);
         bool isMacOs = hardwareProfile.OperatingSystem.Equals("macos", StringComparison.OrdinalIgnoreCase);
         bool isLinux = hardwareProfile.OperatingSystem.Equals("linux", StringComparison.OrdinalIgnoreCase);
-        bool isNvidiaGpu = hardwareProfile.GpuDescription?.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase) ?? false;
+        // WSL2 can expose the NVIDIA GPU through /dev/dxg without a PCI-derived description.
+        // Include the native probe so catalog plugin discovery is not gated on PCI enumeration.
+        bool linuxNvidiaDriverLoaded = isLinux && _linuxRuntimeProbe.IsNvidiaDriverLoaded();
+        bool isNvidiaGpu = (hardwareProfile.GpuDescription?.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase) ?? false)
+            || linuxNvidiaDriverLoaded;
         bool isAmdGpu = MigraphxProviderOrdering.ShouldPreferMigraphxOnAmdGpu(hardwareProfile);
         bool tensorRtRtxEnabled = await _isTensorRtRtxEnabled(cancellationToken).ConfigureAwait(false);
 
@@ -195,7 +199,6 @@ public sealed class OnnxExecutionProviderDiscovery : IExecutionProviderDiscovery
                 "CoreML is macOS-only."));
 
         // Native ORT CUDA / TensorRT (Linux always; Windows when advanced setting enabled)
-        bool linuxNvidiaDriverLoaded = isLinux && isNvidiaGpu && _linuxRuntimeProbe.IsNvidiaDriverLoaded();
         bool linuxTensorRtAvailable = linuxNvidiaDriverLoaded && _linuxRuntimeProbe.IsNativeTensorRtAvailable();
 
         bool windowsNativeProbe = isWindows && isNvidiaGpu && allowNativeCudaTensorRtOnWindows;
