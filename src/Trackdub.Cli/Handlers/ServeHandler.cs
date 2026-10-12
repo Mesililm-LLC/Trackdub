@@ -41,8 +41,33 @@ internal static class ServeHandler
         TextReader input,
         TextWriter output,
         TextWriter diagnostics,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool ecoQos = false,
+        IProcessEfficiencyControl? efficiency = null)
     {
+        // Opt-in EcoQoS (MS efficiency guidance, CPU workloads): `serve` is a long-lived
+        // batch/service process, so operators may prefer efficiency-oriented scheduling for
+        // it. Applied before model loads so engine builds run under the chosen policy too.
+        // The mechanism is resolved through DI (the CLI must not reference the inference
+        // runtime directly); the control reports the platform verdict — verified by
+        // read-back on Windows, "unsupported" elsewhere. Never claimed without proof.
+        if (ecoQos)
+        {
+            if (efficiency is null)
+            {
+                await diagnostics.WriteLineAsync(
+                    "[serve] --ecoqos was requested but no process-efficiency control is available in this host; ignored.")
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                (bool ecoQosApplied, string? ecoQosError) = efficiency.TryEnableEcoQos();
+                await diagnostics.WriteLineAsync(ecoQosApplied
+                    ? $"[serve] EcoQoS enabled (verified: {efficiency.IsEcoQosEnabled})."
+                    : $"[serve] EcoQoS requested but NOT applied: {ecoQosError}").ConfigureAwait(false);
+            }
+        }
+
         foreach (ServeModelArgument model in models)
         {
             ResidentModelInfo info;
@@ -72,14 +97,15 @@ internal static class ServeHandler
         }
 
         await diagnostics.WriteLineAsync("Serving. Awaiting JSON requests on stdin; EOF stops.").ConfigureAwait(false);
-        return await RunLoopAsync(host, input, output, cancellationToken).ConfigureAwait(false);
+        return await RunLoopAsync(host, input, output, cancellationToken, efficiency).ConfigureAwait(false);
     }
 
     public static async Task<int> RunLoopAsync(
         IResidentInferenceHost host,
         TextReader input,
         TextWriter output,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProcessEfficiencyControl? efficiency = null)
     {
         while (await input.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
         {
@@ -88,7 +114,7 @@ internal static class ServeHandler
                 continue;
             }
 
-            string response = await HandleLineAsync(host, line, cancellationToken).ConfigureAwait(false);
+            string response = await HandleLineAsync(host, line, cancellationToken, efficiency).ConfigureAwait(false);
             await output.WriteLineAsync(response).ConfigureAwait(false);
             await output.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -99,7 +125,8 @@ internal static class ServeHandler
     internal static async Task<string> HandleLineAsync(
         IResidentInferenceHost host,
         string line,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProcessEfficiencyControl? efficiency = null)
     {
         JsonDocument document;
         try
@@ -128,7 +155,7 @@ internal static class ServeHandler
                     OpInfer => await InferAsync(host, root, id, cancellationToken).ConfigureAwait(false),
                     OpLoad => await LoadAsync(host, root, id, cancellationToken).ConfigureAwait(false),
                     OpUnload => await UnloadAsync(host, root, id).ConfigureAwait(false),
-                    OpHealth => Health(host, id),
+                    OpHealth => Health(host, id, efficiency),
                     _ => Error(id, ReasonUnknownOp, $"Unknown op '{op}'. Expected infer, load, unload or health."),
                 };
             }
@@ -410,7 +437,7 @@ internal static class ServeHandler
         });
     }
 
-    private static string Health(IResidentInferenceHost host, JsonElement? id) =>
+    private static string Health(IResidentInferenceHost host, JsonElement? id, IProcessEfficiencyControl? efficiency = null) =>
         Write(writer =>
         {
             WriteHeader(writer, id, StatusAlive);
@@ -423,6 +450,9 @@ internal static class ServeHandler
             }
 
             writer.WriteEndArray();
+            // Verified EcoQoS state of this serve process: false unless --ecoqos was both
+            // requested and confirmed by OS read-back. Absent control / portable leg: false.
+            writer.WriteBoolean("ecoQos", efficiency?.IsEcoQosEnabled ?? false);
         });
 
     private static string ResolveModelName(IResidentInferenceHost host, string? requested)
