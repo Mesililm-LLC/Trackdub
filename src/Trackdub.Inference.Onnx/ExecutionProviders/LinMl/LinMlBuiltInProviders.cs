@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using LinML.Catalog;
 using LinML.Contracts;
 
@@ -11,15 +12,26 @@ namespace Trackdub.Inference.Onnx.ExecutionProviders.LinMl;
 /// </summary>
 internal static class LinMlBuiltInProviders
 {
-    public static bool IsReady(ProviderId id) => IsReady(ExecutionProviderCatalog.GetDefault(), id);
+    // The append probe builds session options, so the default catalog's answer is computed once per provider.
+    private static readonly ConcurrentDictionary<ProviderId, bool> DefaultCatalogResults = new();
+
+    public static bool IsReady(ProviderId id) =>
+        DefaultCatalogResults.GetOrAdd(id, static key => IsReady(ExecutionProviderCatalog.GetDefault(), key));
 
     internal static bool IsReady(IExecutionProviderCatalog catalog, ProviderId id)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(id);
 
-        // ReadyState is cheap and cached after the first append probe; it never downloads.
-        return catalog.Find(id) is { Source: ProviderSource.BuiltIn } provider
-            && provider.ReadyState is ProviderReadyState.Ready;
+        if (catalog.Find(id) is not { Source: ProviderSource.BuiltIn } provider
+            || provider.ReadyState is ProviderReadyState.Unsupported)
+        {
+            return false;
+        }
+
+        // ReadyState reports Ready as soon as ORT lists an EP device, before any append is tried.
+        // EnsureReadyAsync on a built-in runs the append probe (it never downloads), so ready means
+        // the provider can actually be appended to session options.
+        return provider.EnsureReadyAsync(new EnsureOptions(AllowDownloads: false)).GetAwaiter().GetResult().IsReady;
     }
 }

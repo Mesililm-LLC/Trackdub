@@ -21,9 +21,27 @@ public sealed class LinMlBuiltInProvidersTests
     [InlineData(ProviderReadyState.Unsupported)]
     public void A_built_in_provider_that_is_not_ready_is_not_ready(ProviderReadyState state)
     {
-        var catalog = new FakeCatalog(new FakeProvider(ProviderId.Tensorrt, ProviderSource.BuiltIn, state));
+        var catalog = new FakeCatalog(new FakeProvider(ProviderId.Tensorrt, ProviderSource.BuiltIn, state) { AppendWorks = false });
 
         Assert.False(LinMlBuiltInProviders.IsReady(catalog, ProviderId.Tensorrt));
+    }
+
+    [Fact]
+    public void A_listed_provider_whose_append_probe_fails_is_not_ready()
+    {
+        var provider = new FakeProvider(ProviderId.Cuda, ProviderSource.BuiltIn, ProviderReadyState.Ready) { AppendWorks = false };
+
+        Assert.False(LinMlBuiltInProviders.IsReady(new FakeCatalog(provider), ProviderId.Cuda));
+        Assert.Equal(1, provider.EnsureCalls);
+    }
+
+    [Fact]
+    public void An_unsupported_provider_is_not_probed()
+    {
+        var provider = new FakeProvider(ProviderId.Cuda, ProviderSource.BuiltIn, ProviderReadyState.Unsupported);
+
+        Assert.False(LinMlBuiltInProviders.IsReady(new FakeCatalog(provider), ProviderId.Cuda));
+        Assert.Equal(0, provider.EnsureCalls);
     }
 
     [Fact]
@@ -55,12 +73,25 @@ public sealed class LinMlBuiltInProvidersTests
 
         public ProviderReadyState ReadyState => state;
 
+        public int EnsureCalls { get; private set; }
+
+        // Whether the append probe succeeds; independent of the cheap ReadyState.
+        public bool AppendWorks { get; init; } = true;
+
         public string? LibraryPath => null;
 
         public string? PinnedVersion => null;
 
-        public Task<ProviderEnsureResult> EnsureReadyAsync(EnsureOptions options, CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException("The built-in readiness check must not call EnsureReadyAsync.");
+        public Task<ProviderEnsureResult> EnsureReadyAsync(EnsureOptions options, CancellationToken cancellationToken = default)
+        {
+            EnsureCalls++;
+            Assert.False(options.AllowDownloads);
+            return Task.FromResult(new ProviderEnsureResult(
+                id,
+                AppendWorks ? ProviderEnsureStatus.Ready : ProviderEnsureStatus.Failed,
+                "probe",
+                []));
+        }
 
         public bool TryRegister(out string? failureReason)
         {
