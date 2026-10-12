@@ -43,6 +43,9 @@ internal sealed class ResidentInferenceHost : IResidentInferenceHost
     /// <summary>Test seam: invoked with the model name immediately before each run.</summary>
     internal Action<string>? BeforeRun { get; set; }
 
+    /// <summary>Test seam: invoked with the model name after its entry resolves, before the lease is acquired.</summary>
+    internal Action<string>? BeforeAcquire { get; set; }
+
     public async Task<ResidentModelInfo> LoadAsync(ResidentModelSpec spec, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(spec);
@@ -86,34 +89,44 @@ internal sealed class ResidentInferenceHost : IResidentInferenceHost
     {
         ArgumentNullException.ThrowIfNull(modelName);
         ArgumentNullException.ThrowIfNull(inputs);
-        ResidentEntry entry = await GetRunnableAsync(modelName, cancellationToken).ConfigureAwait(false);
+        while (true)
+        {
+            ResidentEntry entry = await GetRunnableAsync(modelName, cancellationToken).ConfigureAwait(false);
+            BeforeAcquire?.Invoke(modelName);
+            using OnnxExecutionSessionFactory.SingleSessionLease lease =
+                await entry.Pin.AcquireAsync(cancellationToken).ConfigureAwait(false);
+            // A concurrent load, unload or poisoned reopen can swap the entry while the lease was
+            // acquired; the pin would resurrect the removed model, so run only on the current one.
+            if (!entries.TryGetValue(modelName, out ResidentEntry? current) || !ReferenceEquals(current, entry))
+            {
+                continue;
+            }
 
-        using OnnxExecutionSessionFactory.SingleSessionLease lease =
-            await entry.Pin.AcquireAsync(cancellationToken).ConfigureAwait(false);
-        InferenceSession session = lease.Session;
-        ServeTensorConverter.Validate(session, inputs);
+            InferenceSession session = lease.Session;
+            ServeTensorConverter.Validate(session, inputs);
 
-        try
-        {
-            BeforeRun?.Invoke(entry.Spec.Name);
-            var stopwatch = Stopwatch.StartNew();
-            IReadOnlyList<ServeTensor> outputs = Run(session, inputs, cancellationToken);
-            stopwatch.Stop();
-            return new ResidentRunResult(entry.Spec.Name, entry.SelectedProvider, outputs, stopwatch.Elapsed);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is not ResidentInferenceException)
-        {
-            // Device errors (sticky CUDA faults, lost devices) can leave the session unusable;
-            // the next request reopens it instead of failing forever.
-            entry.Poisoned = true;
-            throw new ResidentInferenceException(
-                ResidentInferenceErrorReasons.InferFailed,
-                $"Inference failed on {entry.SelectedProvider}: {ex.Message}",
-                ex);
+            try
+            {
+                BeforeRun?.Invoke(entry.Spec.Name);
+                var stopwatch = Stopwatch.StartNew();
+                IReadOnlyList<ServeTensor> outputs = Run(session, inputs, cancellationToken);
+                stopwatch.Stop();
+                return new ResidentRunResult(entry.Spec.Name, entry.SelectedProvider, outputs, stopwatch.Elapsed);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is not ResidentInferenceException)
+            {
+                // Device errors (sticky CUDA faults, lost devices) can leave the session unusable;
+                // the next request reopens it instead of failing forever.
+                entry.Poisoned = true;
+                throw new ResidentInferenceException(
+                    ResidentInferenceErrorReasons.InferFailed,
+                    $"Inference failed on {entry.SelectedProvider}: {ex.Message}",
+                    ex);
+            }
         }
     }
 

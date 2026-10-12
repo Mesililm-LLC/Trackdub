@@ -102,6 +102,7 @@ public sealed class ResidentWarmupService : IResidentWarmupService
                 : $"{stage} not warmed: {result.Detail ?? "no detail"}");
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         return new ResidentWarmupReport(Skipped: false, SkipReason: null, providers, stages);
     }
 
@@ -119,27 +120,7 @@ public sealed class ResidentWarmupService : IResidentWarmupService
         {
             throw;
         }
-        catch (InvalidOperationException ex)
-        {
-            progress?.Report($"Provider discovery failed: {ex.Message}");
-            return [];
-        }
-        catch (NotSupportedException ex)
-        {
-            progress?.Report($"Provider discovery failed: {ex.Message}");
-            return [];
-        }
-        catch (DllNotFoundException ex)
-        {
-            progress?.Report($"Provider discovery failed: {ex.Message}");
-            return [];
-        }
-        catch (TypeLoadException ex)
-        {
-            progress?.Report($"Provider discovery failed: {ex.Message}");
-            return [];
-        }
-        catch (BadImageFormatException ex)
+        catch (Exception ex)
         {
             progress?.Report($"Provider discovery failed: {ex.Message}");
             return [];

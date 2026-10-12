@@ -356,6 +356,12 @@ internal static class ServeHandler
             }
         }
 
+        string? providerWarning = null;
+        if (provider is ExecutionProviderKind providerKind)
+        {
+            ExecutionProviderTokens.ResolvePlatformPin(providerKind, out providerWarning);
+        }
+
         ResidentModelInfo info = await host.LoadAsync(
             new ResidentModelSpec(name, path, provider, require, options.Count > 0 ? options : null),
             cancellationToken).ConfigureAwait(false);
@@ -378,6 +384,10 @@ internal static class ServeHandler
         {
             WriteHeader(writer, id, StatusLoaded);
             WriteModel(writer, info);
+            if (providerWarning is not null)
+            {
+                writer.WriteString("providerWarning", providerWarning);
+            }
             if (warmupError is not null)
             {
                 writer.WriteString("warmupError", warmupError);

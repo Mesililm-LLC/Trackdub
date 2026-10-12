@@ -104,6 +104,33 @@ public class ResidentWarmupServiceTests
     }
 
     [Fact]
+    public async Task WarmAsync_DiscoveryFailureIsReportedAndStagesStillWarm()
+    {
+        var reported = new List<string>();
+        ResidentWarmupReport report = await CreateService(
+                discoveryOverride: new ThrowingDiscovery(new IOException("catalog locked")))
+            .WarmAsync(
+                Request([RuntimeStage.Asr]),
+                progress: new DelegateProgress(reported.Add),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Empty(bootstrapped);
+        Assert.Empty(report.Providers);
+        Assert.True(Assert.Single(report.Stages).Succeeded);
+        Assert.Contains(reported, message => message.Contains("catalog locked", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task WarmAsync_CancellationDuringFinalStage_Propagates()
+    {
+        using var cancellation = new CancellationTokenSource();
+        coordinator.OnWarm = _ => cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => CreateService().WarmAsync(
+            Request([RuntimeStage.Asr]), cancellationToken: cancellation.Token));
+    }
+
+    [Fact]
     public void DefaultStages_FollowTheDefaultPipelineOrder() =>
         Assert.Equal(
             [RuntimeStage.Vad, RuntimeStage.Diarization, RuntimeStage.Asr, RuntimeStage.Translation, RuntimeStage.Separation, RuntimeStage.Tts],
@@ -122,14 +149,15 @@ public class ResidentWarmupServiceTests
 
     private ResidentWarmupService CreateService(
         Func<ExecutionProviderKind, CancellationToken, Task<ResidentProviderBootstrapOutcome>>? bootstrap = null,
-        string? environment = null)
+        string? environment = null,
+        IExecutionProviderDiscovery? discoveryOverride = null)
     {
         var services = new ServiceCollection();
         services.AddScoped<IStageWarmupCoordinator>(_ => coordinator);
         ServiceProvider provider = services.BuildServiceProvider();
         return new ResidentWarmupService(
             provider.GetRequiredService<IServiceScopeFactory>(),
-            discovery,
+            discoveryOverride ?? discovery,
             new FakeHardwareProfileProvider(),
             async (kind, cancellationToken) =>
             {
@@ -150,6 +178,18 @@ public class ResidentWarmupServiceTests
                 HardwareOverrides: new Dictionary<string, ExecutionProviderKind>()),
             SourceLanguageCode: "en",
             TargetLanguageCode: "de");
+
+    private sealed class ThrowingDiscovery(Exception exception) : IExecutionProviderDiscovery
+    {
+        public Task<IReadOnlyList<ExecutionProviderAvailability>> DiscoverAsync(
+            HardwareProfile hardwareProfile, CancellationToken cancellationToken = default) =>
+            Task.FromException<IReadOnlyList<ExecutionProviderAvailability>>(exception);
+    }
+
+    private sealed class DelegateProgress(Action<string> report) : IProgress<string>
+    {
+        public void Report(string value) => report(value);
+    }
 
     private sealed class RecordingCoordinator : IStageWarmupCoordinator
     {

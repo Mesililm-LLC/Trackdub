@@ -147,6 +147,36 @@ public sealed class ServeCommandTests : IDisposable
         Assert.Equal("zeros rejected", response.GetProperty("warmupError").GetString());
     }
 
+    [Fact]
+    public async Task Load_CudaPin_ReportsTheRemapWarningOnlyOnWindows()
+    {
+        using var host = new FakeHost();
+
+        JsonElement response = await HandleAsync(host,
+            """{"op":"load","model":"enc","path":"enc.onnx","provider":"cuda"}""");
+
+        Assert.Equal("loaded", response.GetProperty("status").GetString());
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Equal(ExecutionProviderTokens.WindowsCudaRemapWarning, response.GetProperty("providerWarning").GetString());
+        }
+        else
+        {
+            Assert.False(response.TryGetProperty("providerWarning", out _));
+        }
+    }
+
+    [Fact]
+    public async Task Load_UnmappedProvider_OmitsTheRemapWarning()
+    {
+        using var host = new FakeHost();
+
+        JsonElement response = await HandleAsync(host,
+            """{"op":"load","model":"enc","path":"enc.onnx","provider":"cpu"}""");
+
+        Assert.False(response.TryGetProperty("providerWarning", out _));
+    }
+
     [Theory]
     [InlineData("""{"op":"load","model":"m","path":"p","provider":"warp-drive"}""")]
     [InlineData("""{"op":"load","model":"m","path":"p","require":true}""")]

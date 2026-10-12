@@ -102,6 +102,42 @@ public sealed class ResidentInferenceHostTests : IDisposable
     }
 
     [Fact]
+    public async Task Run_EntryUnloadedDuringAcquire_DoesNotRunTheRemovedSession()
+    {
+        using ResidentInferenceHost host = CreateHost();
+        await host.LoadAsync(Spec(ExecutionProviderKind.Cpu), TestContext.Current.CancellationToken);
+        host.BeforeAcquire = name => host.UnloadAsync(name).GetAwaiter().GetResult();
+
+        var ex = await Assert.ThrowsAsync<ResidentInferenceException>(
+            () => host.RunAsync("id", [Input(1f)], TestContext.Current.CancellationToken));
+
+        Assert.Equal(ResidentInferenceErrorReasons.UnknownModel, ex.Reason);
+    }
+
+    [Fact]
+    public async Task Run_EntryReplacedDuringAcquire_RetriesOnTheReplacement()
+    {
+        string otherPath = Path.Join(modelDirectory, "identity-copy.onnx");
+        File.Copy(modelPath, otherPath);
+        using ResidentInferenceHost host = CreateHost();
+        await host.LoadAsync(Spec(ExecutionProviderKind.Cpu), TestContext.Current.CancellationToken);
+        int fired = 0;
+        host.BeforeAcquire = name =>
+        {
+            if (Interlocked.Increment(ref fired) == 1)
+            {
+                host.LoadAsync(new ResidentModelSpec("id", otherPath, ExecutionProviderKind.Cpu), CancellationToken.None)
+                    .GetAwaiter().GetResult();
+            }
+        };
+
+        ResidentRunResult result = await host.RunAsync("id", [Input(4f)], TestContext.Current.CancellationToken);
+
+        Assert.Equal([4f], (float[])Assert.Single(result.Outputs).Data);
+        Assert.Equal(otherPath, Assert.Single(host.Describe()).ModelPath);
+    }
+
+    [Fact]
     public async Task Run_UnknownModel_ReportsUnknownModel()
     {
         using ResidentInferenceHost host = CreateHost();
