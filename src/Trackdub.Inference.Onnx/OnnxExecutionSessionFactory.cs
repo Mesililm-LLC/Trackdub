@@ -2222,7 +2222,10 @@ internal static class OnnxExecutionSessionFactory
                 ? GraphOptimizationLevel.ORT_ENABLE_BASIC
                 : GraphOptimizationLevel.ORT_ENABLE_ALL,
             ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
-            LogId = logId ?? string.Empty
+            LogId = logId ?? string.Empty,
+            // MS "Efficiency tips for Windows ML inference" memory lever: opt-in arena disable
+            // for memory-footprint-sensitive deployments (throughput tradeoff). Default: arena on.
+            EnableCpuMemArena = !Common.SessionEfficiencyEnvironment.DisableCpuMemArena
         };
 
         devicePolicyApplied = false;
