@@ -318,7 +318,9 @@ internal static class OnnxExecutionSessionFactory
         }
         catch
         {
-            session?.Dispose();
+            // CreateSession tracks TensorRT-RTX sessions. A CUDA OOM poisons native teardown,
+            // so this failure path must use the same guard as the pool.
+            TensorRtRtxTeardownGuard.DisposeSafely(session);
             throw;
         }
         finally
@@ -639,8 +641,8 @@ internal static class OnnxExecutionSessionFactory
         }
         catch
         {
-            encoderSession?.Dispose();
-            decoderSession?.Dispose();
+            TensorRtRtxTeardownGuard.DisposeSafely(encoderSession);
+            TensorRtRtxTeardownGuard.DisposeSafely(decoderSession);
             throw;
         }
     }
@@ -685,8 +687,8 @@ internal static class OnnxExecutionSessionFactory
         }
         catch
         {
-            encoderSession?.Dispose();
-            decoderSession?.Dispose();
+            TensorRtRtxTeardownGuard.DisposeSafely(encoderSession);
+            TensorRtRtxTeardownGuard.DisposeSafely(decoderSession);
             throw;
         }
     }
@@ -2361,7 +2363,7 @@ internal static class OnnxExecutionSessionFactory
             }
             else
             {
-                Session.Dispose();
+                TensorRtRtxTeardownGuard.DisposeSafely(Session);
             }
         }
     }
@@ -2494,7 +2496,7 @@ internal static class OnnxExecutionSessionFactory
             }
             else
             {
-                EncoderSession.Dispose();
+                TensorRtRtxTeardownGuard.DisposeSafely(EncoderSession);
             }
 
             if (DecoderPoolLease is not null)
@@ -2503,7 +2505,7 @@ internal static class OnnxExecutionSessionFactory
             }
             else
             {
-                DecoderSession.Dispose();
+                TensorRtRtxTeardownGuard.DisposeSafely(DecoderSession);
             }
         }
     }
@@ -2529,7 +2531,7 @@ internal static class OnnxExecutionSessionFactory
             }
             else
             {
-                EncoderSession.Dispose();
+                TensorRtRtxTeardownGuard.DisposeSafely(EncoderSession);
             }
 
             if (DecoderPoolLease is not null)
@@ -2538,7 +2540,7 @@ internal static class OnnxExecutionSessionFactory
             }
             else
             {
-                DecoderSession.Dispose();
+                TensorRtRtxTeardownGuard.DisposeSafely(DecoderSession);
             }
         }
     }
