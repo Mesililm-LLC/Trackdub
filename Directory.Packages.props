@@ -55,7 +55,7 @@
     <PackageVersion Include="System.Numerics.Tensors" Version="9.0.0" />
     <!-- Linux counterpart to the Windows ML catalog: pinned OpenVINO plugin EP (install, register,
          device append). Managed-only; depends on Microsoft.ML.OnnxRuntime.Managed $(OnnxRuntimeVersion). -->
-    <PackageVersion Include="LinML.Catalog" Version="0.4.0" />
+    <PackageVersion Include="LinML.Catalog" Version="0.4.1" />
     <PackageVersion Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" />
     <PackageVersion Include="Microsoft.ML.OnnxRuntime.Managed" Version="$(OnnxRuntimeVersion)" />
     <PackageVersion Include="Microsoft.ML.OnnxRuntime.Gpu" Version="$(OnnxRuntimeVersion)" />
