@@ -89,7 +89,12 @@ public sealed record StudioSettings(
     /// applied in <c>TtsExecutionOptions</c>). Null means the historical default (4).
     /// Not exposed in Settings UI yet; CLI/SDK and settings.json can set it.
     /// </summary>
-    int? TtsMaxConcurrency = null)
+    int? TtsMaxConcurrency = null,
+    /// <summary>
+    /// When true, the desktop warms the pipeline's planner-selected models in the background
+    /// after startup (IResidentWarmupService), so the first run skips most cold-start cost.
+    /// </summary>
+    bool WarmModelsAtStartup = true)
 {
     public const double DefaultTranscriptConfidenceThreshold = 0.75d;
 

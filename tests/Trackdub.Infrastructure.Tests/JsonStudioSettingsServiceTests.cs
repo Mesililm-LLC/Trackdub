@@ -81,6 +81,55 @@ public sealed class JsonStudioSettingsServiceTests
         }
     }
 
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData(false, false)]
+    public async Task WarmModelsAtStartup_defaults_on_for_settings_saved_without_it_and_round_trips(
+        bool? saved,
+        bool expected)
+    {
+        string tempRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"));
+        var storagePaths = new TrackdubStoragePaths(tempRoot);
+        var service = new JsonStudioSettingsService(storagePaths);
+
+        try
+        {
+            if (saved is bool value)
+            {
+                await service.SaveAsync(
+                    StudioSettings.Default with { WarmModelsAtStartup = value },
+                    TestContext.Current.CancellationToken);
+            }
+            else
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(storagePaths.SettingsPath)!);
+                await File.WriteAllTextAsync(
+                    storagePaths.SettingsPath,
+                    """
+                    {
+                      "defaultSourceLanguage": "es",
+                      "defaultTargetLanguage": "fr",
+                      "modelTierPreference": "quality",
+                      "windowLayout": { "width": 1280, "height": 720, "isMaximized": false },
+                      "recentProjects": []
+                    }
+                    """,
+                    TestContext.Current.CancellationToken);
+            }
+
+            StudioSettings loaded = await service.LoadAsync(TestContext.Current.CancellationToken);
+
+            Assert.Equal(expected, loaded.WarmModelsAtStartup);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
     [Fact]
     public async Task Load_unknown_asr_model_override_keeps_other_settings()
     {

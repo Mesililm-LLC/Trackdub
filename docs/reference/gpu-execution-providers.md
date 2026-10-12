@@ -139,6 +139,32 @@ trackdub providers trt-rtx smoke
 For real pipeline evidence, run a stage and check the logged selected provider,
 not the readiness output. Registration ≠ model loaded ≠ ran ≠ succeeded.
 
+## Resident serving (`trackdub serve`)
+
+Each new process pays EP bootstrap, the model content hash and session/engine
+construction again. `trackdub serve` pays them once and keeps the models pinned in
+the session pool, then answers JSON-lines inference requests on stdin/stdout. The
+command help (`trackdub serve --help`) documents the protocol.
+
+```powershell
+trackdub serve --model encoder=models\encoder.onnx --execution-provider trt-rtx `
+  --warmup-inputs encoder=warmup.json
+```
+
+- Any provider works. `--execution-provider` picks it for the `--model` list, and
+  `auto` takes the first discovered provider in the order above. A `load` request
+  can add more models on other providers at runtime.
+- With `--require-execution-provider`, a provider that cannot load the model fails
+  with `provider-unavailable`. Otherwise it falls back to CPU, and the fallback
+  shows in the `fallbackChain` of `health` and in the stderr diagnostics.
+- Sessions open through the same factory as pipeline stages. EP-context artifacts,
+  the TensorRT RTX runtime cache and pool admission budgets therefore all apply.
+- Each model gets a warmup run before serving. `--warmup-inputs` is fail-fast.
+  Without it, the server runs zero tensors (dynamic dims = 1) and only warns on
+  failure; `--no-warmup` skips this.
+- A failed run marks the model poisoned. The next request evicts the session and
+  reopens it.
+
 ## References
 
 - [tensorrt-rtx-ep-abi-plugin.md](tensorrt-rtx-ep-abi-plugin.md): plugin bundle, install, license, smoke

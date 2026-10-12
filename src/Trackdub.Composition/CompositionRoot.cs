@@ -1,4 +1,5 @@
 using Trackdub.Contracts;
+using Trackdub.Contracts.Serving;
 using Trackdub.Contracts.LipSync;
 using Trackdub.Contracts.Licensing;
 using Trackdub.Application.Mixing;
@@ -172,6 +173,18 @@ public static class CompositionRoot
             sp.GetRequiredService<IHardwareProfileProvider>(),
             new Trackdub.Inference.Onnx.EpContext.EpContextCompiler(
                 sp.GetRequiredService<ITensorRtRtxProviderBootstrap>())));
+        services.TryAddSingleton<IResidentInferenceHost>(sp =>
+        {
+            IExecutionProviderDiscovery discovery = sp.GetRequiredService<IExecutionProviderDiscovery>();
+            IHardwareProfileProvider hardware = sp.GetRequiredService<IHardwareProfileProvider>();
+            return new Trackdub.Inference.Onnx.Serving.ResidentInferenceHost(async cancellationToken =>
+            {
+                HardwareProfile profile = await hardware.GetCurrentAsync(cancellationToken).ConfigureAwait(false);
+                IReadOnlyList<ExecutionProviderAvailability> availability =
+                    await discovery.DiscoverAsync(profile, cancellationToken).ConfigureAwait(false);
+                return ExecutionProviderProbeOrder.InProcessAvailable(availability);
+            });
+        });
         // Readiness probes are wrapped in thread-safe caching decorators so a single
         // `providers list` invocation runs each underlying native/ORT readiness check exactly
         // once. Both OnnxExecutionProviderDiscovery and the *RuntimeReadinessService wrappers
@@ -605,6 +618,11 @@ public static class CompositionRoot
                 sp.GetRequiredService<IRuntimePlanner>(),
                 sp.GetRequiredService<IExecutionProviderSmokeTester>(),
                 sp.GetService<IRuntimePlanningPreferences>()));
+        services.TryAddSingleton<IResidentWarmupService>(sp =>
+            new ResidentWarmupService(
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<IExecutionProviderDiscovery>(),
+                sp.GetRequiredService<IHardwareProfileProvider>()));
         // Wire the model cache directory explicitly: the bare-type registration would fall back
         // to the constructor default (no cache), making downloaded models invisible to alias
         // resolution (e.g. the kokoro voice catalog) even when the planner reports them ready.
