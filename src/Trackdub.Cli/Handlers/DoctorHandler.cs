@@ -483,7 +483,7 @@ internal static class DoctorHandler
             Status = "warn",
             Message = $"migraphx: {snapshot.Detail}",
             Remediation = snapshot.InstallHint
-                ?? "Install the Windows ML MIGraphX catalog package or a ROCm ORT build on Linux.",
+                ?? "Install the Windows ML MIGraphX catalog package, or ROCm with MIGraphX 2.17+ on Linux.",
         };
     }
 

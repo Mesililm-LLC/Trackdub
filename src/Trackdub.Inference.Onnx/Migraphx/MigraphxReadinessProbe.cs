@@ -1,4 +1,5 @@
 using Trackdub.Contracts.ApplicationContracts;
+using Trackdub.Inference.Onnx.ExecutionProviders.LinMl;
 using Trackdub.Inference.Onnx.Runtime.Planning;
 using Trackdub.Inference.Runtime.Migraphx;
 
@@ -9,7 +10,30 @@ public sealed class MigraphxReadinessProbe : IMigraphxReadinessProbe
 #if WINDOWS
     private readonly WindowsMlMigraphxCatalogService _windowsCatalog = new();
 #endif
-    private readonly ILinuxNativeGpuRuntimeProbe _linuxRuntimeProbe = new LinuxNativeGpuRuntimeProbe();
+    private readonly ILinuxNativeGpuRuntimeProbe _linuxRuntimeProbe;
+    private readonly ILinuxMigraphxCatalog _linuxCatalog;
+
+    public MigraphxReadinessProbe()
+        : this(new LinuxNativeGpuRuntimeProbe(), DefaultLinuxCatalog())
+    {
+    }
+
+    internal MigraphxReadinessProbe(ILinuxNativeGpuRuntimeProbe linuxRuntimeProbe, ILinuxMigraphxCatalog linuxCatalog)
+    {
+        _linuxRuntimeProbe = linuxRuntimeProbe ?? throw new ArgumentNullException(nameof(linuxRuntimeProbe));
+        _linuxCatalog = linuxCatalog ?? throw new ArgumentNullException(nameof(linuxCatalog));
+    }
+
+    private static ILinuxMigraphxCatalog DefaultLinuxCatalog()
+    {
+#if LINML
+        if (OperatingSystem.IsLinux())
+        {
+            return LinMlMigraphxCatalog.Default;
+        }
+#endif
+        return UnavailableLinuxMigraphxCatalog.Instance;
+    }
 
     public async Task<MigraphxReadinessReport> ProbeAsync(
         bool allowProviderDownloads,
@@ -26,7 +50,7 @@ public sealed class MigraphxReadinessProbe : IMigraphxReadinessProbe
 
         if (OperatingSystem.IsLinux())
         {
-            return ProbeLinux();
+            return await ProbeLinuxAsync(allowProviderDownloads, cancellationToken).ConfigureAwait(false);
         }
 
         return new MigraphxReadinessReport(
@@ -36,7 +60,7 @@ public sealed class MigraphxReadinessProbe : IMigraphxReadinessProbe
             IsHardwareEligible: false,
             IsOrtProviderListed: false,
             IsRegisteredWithOrt: false,
-            Detail: "MIGraphX is supported on Windows (WinML catalog) and Linux (system ROCm ORT build) only.");
+            Detail: "MIGraphX is supported on Windows (WinML catalog) and Linux (LinML catalog plugin EP) only.");
     }
 
 #if WINDOWS
@@ -86,37 +110,55 @@ public sealed class MigraphxReadinessProbe : IMigraphxReadinessProbe
     }
 #endif
 
-    private MigraphxReadinessReport ProbeLinux()
+    private async Task<MigraphxReadinessReport> ProbeLinuxAsync(
+        bool allowProviderDownloads,
+        CancellationToken cancellationToken)
     {
-        const string providerId = MigraphxProviderIds.Rocm;
-        bool hardwareEligible = _linuxRuntimeProbe.IsAmdGpuPresent();
-        bool ortListed = MigraphxOrtProbe.IsProviderListed();
-
-        if (!hardwareEligible)
+        if (!_linuxRuntimeProbe.IsAmdGpuPresent())
         {
             return new MigraphxReadinessReport(
-                providerId,
-                MigraphxPlatformRoute.NativeRocm,
+                MigraphxProviderIds.LinMl,
+                MigraphxPlatformRoute.LinMlCatalog,
                 MigraphxReadinessBlocker.GpuVendorMismatch,
                 IsHardwareEligible: false,
-                IsOrtProviderListed: ortListed,
+                IsOrtProviderListed: false,
                 IsRegisteredWithOrt: false,
                 Detail: "No AMD GPU detected on Linux.");
         }
 
-        MigraphxReadinessBlocker blocker = ortListed
-            ? MigraphxReadinessBlocker.None
-            : MigraphxReadinessBlocker.OrtProviderUnavailable;
+        // An ONNX Runtime build with MIGraphX compiled in needs no plugin.
+        if (_linuxRuntimeProbe.IsMigraphxOrtProviderAvailable())
+        {
+            return new MigraphxReadinessReport(
+                MigraphxProviderIds.Rocm,
+                MigraphxPlatformRoute.NativeRocm,
+                MigraphxReadinessBlocker.None,
+                IsHardwareEligible: true,
+                IsOrtProviderListed: true,
+                IsRegisteredWithOrt: true,
+                Detail: "MIGraphXExecutionProvider is listed by ONNX Runtime.");
+        }
+
+        LinuxPluginCatalogResult catalog = await _linuxCatalog
+            .EnsureReadyAsync(allowProviderDownloads, cancellationToken)
+            .ConfigureAwait(false);
+
+        MigraphxReadinessBlocker blocker = catalog.Status switch
+        {
+            LinuxPluginCatalogStatus.Ready => MigraphxReadinessBlocker.None,
+            LinuxPluginCatalogStatus.NotInstalled => MigraphxReadinessBlocker.EpNotPresent,
+            LinuxPluginCatalogStatus.Failed when allowProviderDownloads => MigraphxReadinessBlocker.EpDownloadFailed,
+            LinuxPluginCatalogStatus.Failed or LinuxPluginCatalogStatus.NoDevices => MigraphxReadinessBlocker.EpRegisterFailed,
+            _ => MigraphxReadinessBlocker.OrtProviderUnavailable,
+        };
 
         return new MigraphxReadinessReport(
-            providerId,
-            MigraphxPlatformRoute.NativeRocm,
+            MigraphxProviderIds.LinMl,
+            MigraphxPlatformRoute.LinMlCatalog,
             blocker,
             IsHardwareEligible: true,
-            IsOrtProviderListed: ortListed,
-            IsRegisteredWithOrt: ortListed,
-            Detail: ortListed
-                ? "MIGraphXExecutionProvider is listed by ONNX Runtime."
-                : MigraphxProviderConstants.LinuxInstallHint);
+            IsOrtProviderListed: catalog.IsReady,
+            IsRegisteredWithOrt: catalog.IsReady,
+            Detail: catalog.Detail);
     }
 }

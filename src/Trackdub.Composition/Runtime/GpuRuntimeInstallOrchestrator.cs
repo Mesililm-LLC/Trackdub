@@ -16,7 +16,8 @@ public sealed class GpuRuntimeInstallOrchestrator(
     ITensorRtRtxReadinessProbe? tensorRtRtxReadinessProbe = null,
     IOpenVinoCatalogReadinessProbe? openVinoReadinessProbe = null,
     IQnnCatalogReadinessProbe? qnnReadinessProbe = null,
-    IVitisAiCatalogReadinessProbe? vitisAiReadinessProbe = null) : IGpuRuntimeInstallOrchestrator
+    IVitisAiCatalogReadinessProbe? vitisAiReadinessProbe = null,
+    IMigraphxReadinessProbe? migraphxReadinessProbe = null) : IGpuRuntimeInstallOrchestrator
 {
     // Invalidates the shared (process-wide singleton) readiness cache for a probe after a
     // state-changing install so a later status/list/verification re-probe observes the freshly
@@ -38,13 +39,14 @@ public sealed class GpuRuntimeInstallOrchestrator(
     {
         ArgumentNullException.ThrowIfNull(progress);
 
-        // Linux installs only the OpenVINO plugin EP, through the LinML catalog.
+        // Linux installs only the LinML catalog's plugin EPs: OpenVINO and MIGraphX.
         if (!OperatingSystem.IsWindows()
-            && !(OperatingSystem.IsLinux() && runtimeKind is StarterPackGpuRuntimeKind.IntelOpenVino))
+            && !(OperatingSystem.IsLinux()
+                && runtimeKind is StarterPackGpuRuntimeKind.IntelOpenVino or StarterPackGpuRuntimeKind.AmdMigraphx))
         {
             return new GpuRuntimeInstallResult(
                 Succeeded: false,
-                FailureDetail: "GPU runtime install is only available on Windows (and Intel OpenVINO on Linux).");
+                FailureDetail: "GPU runtime install is only available on Windows (and Intel OpenVINO or AMD MIGraphX on Linux).");
         }
 
         return runtimeKind switch
@@ -107,12 +109,15 @@ public sealed class GpuRuntimeInstallOrchestrator(
         }
 
         progress.Report("Installing AMD MIGraphX GPU runtime…");
+        // A cached result from an earlier attempt would skip the install.
+        InvalidateReadinessCache(migraphxReadinessProbe);
         MigraphxRuntimeReadinessSnapshot snapshot = await migraphxReadiness
             .ProbeAsync(allowProviderDownloads: true, cancellationToken)
             .ConfigureAwait(false);
 
         if (snapshot.IsReady)
         {
+            InvalidateReadinessCache(migraphxReadinessProbe);
             return new GpuRuntimeInstallResult(Succeeded: true, Detail: "AMD MIGraphX GPU runtime is ready.");
         }
 

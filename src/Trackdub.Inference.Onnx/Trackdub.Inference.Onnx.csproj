@@ -125,7 +125,7 @@
   <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041.0'">
     <Compile Remove="WindowsMl\WindowsMlExecutionProviderBootstrapper.Deferred.cs" />
     <!-- LinML.Catalog is portable-TFM only; Windows uses the Windows ML catalog. -->
-    <Compile Remove="ExecutionProviders\LinMl\LinMlOpenVinoCatalog.cs" />
+    <Compile Remove="ExecutionProviders\LinMl\LinMl*.cs" />
   </ItemGroup>
 
   <Import Project="../../build/Trackdub.NativePair.targets" />

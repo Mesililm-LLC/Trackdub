@@ -7,13 +7,13 @@ namespace Trackdub.Inference.Tests;
 public sealed class OpenVinoCatalogReadinessProbeLinuxTests
 {
     [Theory]
-    [InlineData(LinuxOpenVinoCatalogStatus.Ready, WinMlCatalogPlatformRoute.LinMlCatalog, WinMlCatalogReadinessBlocker.None, true)]
-    [InlineData(LinuxOpenVinoCatalogStatus.NotInstalled, WinMlCatalogPlatformRoute.LinMlCatalog, WinMlCatalogReadinessBlocker.EpNotPresent, false)]
-    [InlineData(LinuxOpenVinoCatalogStatus.Failed, WinMlCatalogPlatformRoute.LinMlCatalog, WinMlCatalogReadinessBlocker.EpRegisterFailed, false)]
-    [InlineData(LinuxOpenVinoCatalogStatus.NoDevices, WinMlCatalogPlatformRoute.LinMlCatalog, WinMlCatalogReadinessBlocker.HardwareNotSupported, false)]
-    [InlineData(LinuxOpenVinoCatalogStatus.Unsupported, WinMlCatalogPlatformRoute.None, WinMlCatalogReadinessBlocker.PlatformUnsupported, false)]
+    [InlineData(LinuxPluginCatalogStatus.Ready, WinMlCatalogPlatformRoute.LinMlCatalog, WinMlCatalogReadinessBlocker.None, true)]
+    [InlineData(LinuxPluginCatalogStatus.NotInstalled, WinMlCatalogPlatformRoute.LinMlCatalog, WinMlCatalogReadinessBlocker.EpNotPresent, false)]
+    [InlineData(LinuxPluginCatalogStatus.Failed, WinMlCatalogPlatformRoute.LinMlCatalog, WinMlCatalogReadinessBlocker.EpRegisterFailed, false)]
+    [InlineData(LinuxPluginCatalogStatus.NoDevices, WinMlCatalogPlatformRoute.LinMlCatalog, WinMlCatalogReadinessBlocker.HardwareNotSupported, false)]
+    [InlineData(LinuxPluginCatalogStatus.Unsupported, WinMlCatalogPlatformRoute.None, WinMlCatalogReadinessBlocker.PlatformUnsupported, false)]
     public async Task Linux_catalog_status_maps_to_readiness_report(
-        LinuxOpenVinoCatalogStatus status,
+        LinuxPluginCatalogStatus status,
         WinMlCatalogPlatformRoute route,
         WinMlCatalogReadinessBlocker blocker,
         bool ready)
@@ -44,7 +44,7 @@ public sealed class OpenVinoCatalogReadinessProbeLinuxTests
             return;
         }
 
-        var catalog = new StubCatalog(LinuxOpenVinoCatalogStatus.Ready);
+        var catalog = new StubCatalog(LinuxPluginCatalogStatus.Ready);
 
         await new OpenVinoCatalogReadinessProbe(catalog).ProbeAsync(allowDownloads);
 
@@ -64,7 +64,7 @@ public sealed class OpenVinoCatalogReadinessProbeLinuxTests
         }
 
         WinMlCatalogReadinessReport report = await new OpenVinoCatalogReadinessProbe(
-            new StubCatalog(LinuxOpenVinoCatalogStatus.Failed)).ProbeAsync(allowDownloads);
+            new StubCatalog(LinuxPluginCatalogStatus.Failed)).ProbeAsync(allowDownloads);
 
         Assert.Equal(blocker, report.Blocker);
     }
@@ -77,7 +77,7 @@ public sealed class OpenVinoCatalogReadinessProbeLinuxTests
             return;
         }
 
-        var catalog = new StubCatalog(LinuxOpenVinoCatalogStatus.NotInstalled);
+        var catalog = new StubCatalog(LinuxPluginCatalogStatus.NotInstalled);
 
         WinMlCatalogReadinessReport report = await new OpenVinoCatalogReadinessProbe(catalog, () => false)
             .ProbeAsync(allowProviderDownloads: true);
@@ -119,14 +119,14 @@ public sealed class OpenVinoCatalogReadinessProbeLinuxTests
         }
     }
 
-    private sealed class StubCatalog(LinuxOpenVinoCatalogStatus status) : ILinuxOpenVinoCatalog
+    private sealed class StubCatalog(LinuxPluginCatalogStatus status) : ILinuxOpenVinoCatalog
     {
         public List<bool> EnsureCalls { get; } = [];
 
-        public Task<LinuxOpenVinoCatalogResult> EnsureReadyAsync(bool allowDownloads, CancellationToken cancellationToken)
+        public Task<LinuxPluginCatalogResult> EnsureReadyAsync(bool allowDownloads, CancellationToken cancellationToken)
         {
             EnsureCalls.Add(allowDownloads);
-            return Task.FromResult(new LinuxOpenVinoCatalogResult(status, "stub detail"));
+            return Task.FromResult(new LinuxPluginCatalogResult(status, "stub detail"));
         }
 
         public bool TryAppend(Microsoft.ML.OnnxRuntime.SessionOptions options, bool cpuOnly, out string? failureReason)

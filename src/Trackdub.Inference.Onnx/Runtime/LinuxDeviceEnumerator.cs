@@ -1,6 +1,7 @@
 using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging;
 using Trackdub.Domain;
+using Trackdub.Inference.Onnx.ExecutionProviders.LinMl;
 using Trackdub.Inference.Onnx.Migraphx;
 using Trackdub.Inference.Runtime.Planning;
 
@@ -143,7 +144,9 @@ public sealed class LinuxDeviceEnumerator : IDeviceEnumerator
     private static IReadOnlyList<ExecutionProviderKind> BuildAmdSupportedProviders()
     {
         var providers = new List<ExecutionProviderKind> { ExecutionProviderKind.Cpu };
-        if (MigraphxOrtProbe.IsProviderListed())
+        // With the ROCm MIGraphX runtime present, the LinML catalog's plugin EP can serve MIGraphX
+        // even before it is installed; bootstrap installs or falls back to CPU.
+        if (MigraphxOrtProbe.IsProviderListed() || LinuxMigraphxRuntimeProbe.IsRuntimePresent())
         {
             providers.Insert(0, ExecutionProviderKind.Migraphx);
         }
