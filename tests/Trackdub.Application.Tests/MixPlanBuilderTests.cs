@@ -52,8 +52,11 @@ public sealed class MixPlanBuilderTests
             Assert.Equal(1, extraction.Calls);
             await Assert.ThrowsAsync<InvalidOperationException>(() => TimelineMediaMixPreparer.PrepareAsync(null, state,
                 TestContext.Current.CancellationToken));
-            var invalid = state with { ProjectUiSettings = new ProjectUiSettings(TimelinePlacements:
-                [new ProjectTimelineMediaPlacement(input, "Too long", 1, 7d, 2d)]) };
+            var invalid = state with
+            {
+                ProjectUiSettings = new ProjectUiSettings(TimelinePlacements:
+                [new ProjectTimelineMediaPlacement(input, "Too long", 1, 7d, 2d)])
+            };
             await Assert.ThrowsAsync<InvalidOperationException>(() => TimelineMediaMixPreparer.PrepareAsync(preparer, invalid,
                 TestContext.Current.CancellationToken));
             File.Delete(input);

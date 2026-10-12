@@ -223,14 +223,14 @@ public sealed class PreviewRangeRenderer(IArtifactStore artifactStore) : IPrevie
             if (channelCount == 1)
             {
                 float first = MapSourceFrameToMono(samples, index);
-                output[outputIndex] += first + (MapSourceFrameToMono(samples, index + 1) - first) * fraction;
+                output[outputIndex] += first + ((MapSourceFrameToMono(samples, index + 1) - first) * fraction);
             }
             else
             {
                 var first = MapSourceFrameToStereo(samples, index);
                 var next = MapSourceFrameToStereo(samples, index + 1);
-                output[outputIndex] += first.Left + (next.Left - first.Left) * fraction;
-                output[outputIndex + 1] += first.Right + (next.Right - first.Right) * fraction;
+                output[outputIndex] += first.Left + ((next.Left - first.Left) * fraction);
+                output[outputIndex + 1] += first.Right + ((next.Right - first.Right) * fraction);
             }
         }
     }
