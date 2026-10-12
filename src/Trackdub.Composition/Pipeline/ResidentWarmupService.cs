@@ -85,7 +85,11 @@ public sealed class ResidentWarmupService : IResidentWarmupService
             {
                 throw;
             }
-            catch (Exception ex)
+            catch (InvalidOperationException ex)
+            {
+                result = new StageWarmupResult(Attempted: true, Succeeded: false, ex.Message);
+            }
+            catch (ArgumentException ex)
             {
                 result = new StageWarmupResult(Attempted: true, Succeeded: false, ex.Message);
             }
