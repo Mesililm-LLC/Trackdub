@@ -48,17 +48,22 @@ public sealed class TtsStreamingPrefetchTests
     [Fact]
     public async Task HandleAsync_WhenCommittedTextDiffersFromRenderedText_SynthesizesTheCommittedText()
     {
-        var engine = new FakeTtsEngine();
+        const string draftText = "a draft the committed revision does not contain";
+        var engine = new SignalingTtsEngine(draftText);
         var stageRunStore = new FakeProjectStageRunStore();
         using var handler = CreateHandler(engine, stageRunStore);
         StartTtsStageRequest request = CreateRequest(segmentCount: 2);
         await using TtsStreamingPrefetch prefetch = await CreatePrefetchAsync(handler, request);
 
-        prefetch.OnSegmentTranslated(0, "a draft the committed revision does not contain");
+        prefetch.OnSegmentTranslated(0, draftText);
         prefetch.OnSegmentTranslated(1, request.TranslatedSegments[1].Text);
 
         StartTtsStageResult result = await handler.HandleAsync(
             request, TestContext.Current.CancellationToken, progress: null, prefetch);
+
+        // The unclaimed draft render runs in the background and the stage never awaits it, so wait
+        // for the engine to finish it before counting synthesize calls.
+        await engine.SignaledText.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(2, result.Takes.Count);
         Assert.Equal(1, prefetch.ClaimedCount);
@@ -118,6 +123,26 @@ public sealed class TtsStreamingPrefetchTests
             ["translation", "tts"],
             0,
             new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "tts" }));
+    }
+
+    private sealed class SignalingTtsEngine(string signalText) : FakeTtsEngine
+    {
+        private readonly TaskCompletionSource signaled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task SignaledText => signaled.Task;
+
+        public override async Task<TtsSynthesisResult> SynthesizeAsync(
+            TtsSynthesisRequest request,
+            CancellationToken cancellationToken)
+        {
+            TtsSynthesisResult result = await base.SynthesizeAsync(request, cancellationToken);
+            if (string.Equals(request.Text, signalText, StringComparison.Ordinal))
+            {
+                signaled.TrySetResult();
+            }
+
+            return result;
+        }
     }
 
     private static async Task<TtsStreamingPrefetch> CreatePrefetchAsync(
