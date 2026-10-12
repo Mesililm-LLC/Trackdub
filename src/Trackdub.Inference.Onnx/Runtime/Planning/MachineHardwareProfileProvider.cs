@@ -109,11 +109,9 @@ public sealed class MachineHardwareProfileProvider : IHardwareProfileProvider
         }
         else if (OperatingSystem.IsLinux())
         {
-#if LINUX
             var sysfs = new PhysicalSysfsReader();
             hasGpu = LinuxPciDeviceScanner.HasAnyGpu(sysfs);
             gpuDescription = hasGpu ? LinuxPciDeviceScanner.DetectPrimaryVendorName(sysfs) : null;
-#endif
             try
             {
                 string? cpuLine = System.IO.File.ReadAllLines("/proc/cpuinfo")

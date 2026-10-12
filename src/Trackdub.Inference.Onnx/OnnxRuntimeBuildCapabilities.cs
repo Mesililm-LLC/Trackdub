@@ -16,17 +16,9 @@ public static class OnnxRuntimeBuildCapabilities
     public static bool SupportsWindowsMlRoutes { get; } = false;
 #endif
 
-#if LINUX
-    private static bool SupportsLinuxNativeRoutes { get; } = true;
-#else
-    private static bool SupportsLinuxNativeRoutes { get; } = false;
-#endif
+    private static bool SupportsLinuxNativeRoutes => OperatingSystem.IsLinux();
 
-#if MACOS
-    private static bool SupportsCoreMlRoute { get; } = true;
-#else
-    private static bool SupportsCoreMlRoute { get; } = false;
-#endif
+    private static bool SupportsCoreMlRoute => OperatingSystem.IsMacOS();
 
     public static bool IsProviderSupportedInThisBuild(ExecutionProviderKind provider) =>
         provider switch

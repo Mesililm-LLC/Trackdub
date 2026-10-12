@@ -1234,5 +1234,29 @@ public sealed class OnnxExecutionSessionFactoryTests
         0x02, 0x08, 0x01, 0x62, 0x0F, 0x0A, 0x01, 0x79, 0x12, 0x0A, 0x0A, 0x08, 0x08, 0x01,
         0x12, 0x04, 0x0A, 0x02, 0x08, 0x01, 0x42, 0x04, 0x0A, 0x00, 0x10, 0x09,
     ];
+
+    [Fact]
+    public void GetPlatformBootstrapper_selects_the_platform_bootstrapper_at_run_time()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return; // The Windows TFM always uses the Windows bootstrapper.
+        }
+
+        IExecutionProviderBootstrapper bootstrapper = OnnxExecutionSessionFactory.GetPlatformBootstrapper();
+
+        if (OperatingSystem.IsLinux())
+        {
+            Assert.IsType<Trackdub.Inference.Onnx.ExecutionProviders.Linux.LinuxExecutionProviderBootstrapper>(bootstrapper);
+        }
+        else if (OperatingSystem.IsMacOSVersionAtLeast(10, 15))
+        {
+            Assert.IsType<Trackdub.Inference.Onnx.ExecutionProviders.Mac.MacExecutionProviderBootstrapper>(bootstrapper);
+        }
+        else
+        {
+            Assert.IsType<Trackdub.Inference.Onnx.ExecutionProviders.PortableExecutionProviderBootstrapper>(bootstrapper);
+        }
+    }
 }
 
