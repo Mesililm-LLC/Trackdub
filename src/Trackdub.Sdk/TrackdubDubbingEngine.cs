@@ -4,6 +4,7 @@ using Trackdub.Application.Transcripts;
 using Trackdub.Contracts;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Domain;
+using Trackdub.Domain.Artifacts;
 using Trackdub.Domain.StageRuns;
 using Trackdub.Domain.Tts;
 
@@ -95,6 +96,11 @@ public sealed class TrackdubDubbingEngine : IDubbingPipelineEngine, ITransientFa
     internal static (StageStatus Status, string? ReasonCode, IReadOnlyList<string>? Degradations)
         MapStageRunToSdkOutcome(StageRunRecord? stageRun) =>
         DubbingPipelineEngine.MapStageRunToSdkOutcome(stageRun);
+
+    internal static IReadOnlyList<string> ResolveStageArtifactPaths(
+        IEnumerable<ProjectArtifact> artifacts,
+        StageRunRecord? stageRun) =>
+        DubbingPipelineEngine.ResolveStageArtifactPaths(artifacts, stageRun);
 
     internal static bool ShouldSkipModelPreFlight(
         string stageName,

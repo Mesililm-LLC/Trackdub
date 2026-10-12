@@ -1,0 +1,42 @@
+{
+  "fixture_id": "replace-me",
+  "media": "REPLACE_WITH_APPROVED_VIDEO.mp4",
+  "media_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "target_language": "es",
+  "cli_command": [
+    "dotnet",
+    "REPLACE_WITH_ABSOLUTE_BUILT_CLI_DLL"
+  ],
+  "pipeline_args": [],
+  "expected_stages": {
+    "asr": {
+      "statuses": [
+        "succeeded"
+      ],
+      "require_artifacts": true
+    },
+    "translation": {
+      "statuses": [
+        "succeeded"
+      ],
+      "require_artifacts": true
+    },
+    "tts": {
+      "statuses": [
+        "succeeded"
+      ],
+      "require_artifacts": true
+    },
+    "export": {
+      "statuses": [
+        "succeeded"
+      ],
+      "require_artifacts": true
+    }
+  },
+  "expected_duration_seconds": 10,
+  "duration_tolerance_seconds": 0.5,
+  "timeout_seconds": 1800,
+  "validation_timeout_seconds": 120,
+  "voice_clone": false
+}

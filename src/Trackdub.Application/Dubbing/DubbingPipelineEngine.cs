@@ -1927,8 +1927,9 @@ public sealed class DubbingPipelineEngine(
         DateTimeOffset notBeforeUtc,
         IReadOnlyList<string>? additionalDegradations = null)
     {
+        StageRunRecord? stageRun = GetLatestStageRun(state, stageName, notBeforeUtc);
         (StageStatus status, string? reasonCode, IReadOnlyList<string>? degradations) =
-            MapStageRunToSdkOutcome(GetLatestStageRun(state, stageName, notBeforeUtc));
+            MapStageRunToSdkOutcome(stageRun);
 
         if (additionalDegradations is { Count: > 0 })
         {
@@ -1943,7 +1944,34 @@ public sealed class DubbingPipelineEngine(
             }
         }
 
-        return new StageWorkflowResult([], degradations, status, reasonCode);
+        return new StageWorkflowResult(
+            ResolveStageArtifactPaths(state.ProjectState.Artifacts, stageRun),
+            degradations,
+            status,
+            reasonCode);
+    }
+
+    /// <summary>
+    /// Projects registered artifact paths owned by the selected stage run and project.
+    /// Preserves output evidence without changing stage status or claiming file validity.
+    /// </summary>
+    internal static IReadOnlyList<string> ResolveStageArtifactPaths(
+        IEnumerable<ProjectArtifact> artifacts,
+        StageRunRecord? stageRun)
+    {
+        ArgumentNullException.ThrowIfNull(artifacts);
+        if (stageRun is null || stageRun.Id == Guid.Empty || stageRun.ProjectId == Guid.Empty)
+        {
+            return [];
+        }
+
+        return artifacts
+            .Where(artifact => artifact.StageRunId == stageRun.Id
+                && artifact.ProjectId == stageRun.ProjectId)
+            .Select(static artifact => artifact.RelativePath)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(static path => path, StringComparer.Ordinal)
+            .ToArray();
     }
 
     private static StageWorkflowResult BuildNoTranscriptSegmentsSkip(string stageName) =>
