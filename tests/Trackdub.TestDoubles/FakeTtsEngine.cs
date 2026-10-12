@@ -26,7 +26,11 @@ public class FakeTtsEngine : ITtsEngine, ITtsEngineWithExecutionSummary
         LastVoicepack = request.Voice;
         LastOptions = request.Options;
         LastRequest = request;
-        Requests.Add(request);
+        lock (Requests)
+        {
+            Requests.Add(request);
+        }
+
         Interlocked.Increment(ref synthesizeCallCount);
 
         byte[] wav = BuildMinimalSilentWav(SampleRate, DurationSamples);
