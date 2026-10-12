@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Domain;
 using Trackdub.Inference.Onnx;
@@ -51,6 +52,30 @@ public sealed class RequiresTrtRtxStagingFactAttribute : FactAttribute
 }
 
 /// <summary>
+/// Runs the real large-v3 OOM probe in a separate process. The probe is supplied by the
+/// hardware-validation tooling because only that process can safely provoke the device OOM.
+/// </summary>
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = false, Inherited = false)]
+public sealed class RequiresTrtRtxOomProbeFactAttribute : FactAttribute
+{
+    public RequiresTrtRtxOomProbeFactAttribute()
+    {
+        string? repoRoot = TestRepoRootResolver.TryFindRepoRoot();
+        string? executable = Environment.GetEnvironmentVariable("TRACKDUB_TRT_RTX_OOM_PROBE_EXE");
+        string staging = repoRoot is null
+            ? string.Empty
+            : Path.Join(repoRoot, "build", "whisper-large-v3-onnx-trtrtx-validated");
+        if (repoRoot is null || !Directory.Exists(staging) || string.IsNullOrWhiteSpace(executable) ||
+            !File.Exists(executable))
+        {
+            Skip = "Requires the validated whisper-large-v3 TRT-RTX artifact, hardware, and " +
+                   "TRACKDUB_TRT_RTX_OOM_PROBE_EXE (a probe that loads the encoder, triggers " +
+                   "decoder CUDA OOM, disposes the lease, and returns 0).";
+        }
+    }
+}
+
+/// <summary>
 /// Hardware validation tests for TRT-RTX optimization of whisper-onnx models.
 ///
 /// Prerequisites before running any test here:
@@ -96,6 +121,42 @@ public sealed class WhisperOnnxTrtRtxValidationTests
     public async Task WhisperOnnxTrtRtx_LargeV3Model_SessionLoadsAndTranscribesSilence()
     {
         await RunTrtRtxSilenceSmokeAsync("large-v3", "Xenova/whisper-large-v3");
+    }
+
+    [RequiresTrtRtxOomProbeFact]
+    public async Task WhisperOnnxTrtRtx_LargeV3DecoderOutOfMemoryChildSurvivesTeardown()
+    {
+        string stagingDir = Path.Join(FindRepoRoot(), "build", "whisper-large-v3-onnx-trtrtx-validated");
+        string executable = Environment.GetEnvironmentVariable("TRACKDUB_TRT_RTX_OOM_PROBE_EXE")!;
+        var startInfo = new ProcessStartInfo(executable)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(executable))!,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add(stagingDir);
+        startInfo.ArgumentList.Add("--trigger-decoder-oom");
+
+        using var process = new Process { StartInfo = startInfo };
+        Assert.True(process.Start());
+        Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+        Task<string> stderr = process.StandardError.ReadToEndAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync();
+            throw new TimeoutException("The TRT-RTX OOM teardown child exceeded five minutes.");
+        }
+
+        Assert.True(process.ExitCode == 0,
+            $"TRT-RTX OOM child crashed or failed ({process.ExitCode}).\n{await stdout}\n{await stderr}");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
