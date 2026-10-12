@@ -41,11 +41,11 @@ FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends --yes ffmpeg libgomp1 \
+    && apt-get install --no-install-recommends --yes ca-certificates ffmpeg libgomp1 libstdc++6 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 trackdub \
     && useradd --system --uid 10001 --gid trackdub --create-home --home-dir /home/trackdub trackdub \
-    && mkdir --parents /data/models /data/projects /work/input /work/output /logs \
+    && mkdir --parents /data/models /data/projects /work/input /work/output /work/tmp /logs \
     && chown --recursive trackdub:trackdub /app /data /work /logs /home/trackdub
 
 ENV DOTNET_EnableDiagnostics=0 \
@@ -54,12 +54,14 @@ ENV DOTNET_EnableDiagnostics=0 \
     DATABASE_PATH=/data/trackdub.db \
     MODELS_CACHE_DIR=/data/models \
     AUTO_DOWNLOAD_MODELS=false \
-    ONNX_PROVIDER=cpu \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    ONNX_PROVIDER=cuda \
     TMPDIR=/work/tmp
 
-RUN mkdir --parents /work/tmp && chown trackdub:trackdub /work/tmp
 COPY --from=build --chown=trackdub:trackdub /app/publish ./
+COPY --from=build --chown=trackdub:trackdub /src/src/Trackdub.Inference/Runtime/ModelManifest/bundled-models.manifest.json ./src/Trackdub.Inference/Runtime/ModelManifest/bundled-models.manifest.json
 
 USER trackdub
 ENTRYPOINT ["dotnet", "Trackdub.Cli.dll"]
-CMD ["--help"]
+CMD ["doctor"]

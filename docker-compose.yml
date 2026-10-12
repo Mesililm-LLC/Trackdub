@@ -10,7 +10,19 @@ services:
       DATABASE_PATH: /data/trackdub.db
       MODELS_CACHE_DIR: /data/models
       AUTO_DOWNLOAD_MODELS: "false"
-      ONNX_PROVIDER: cpu
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      ONNX_PROVIDER: cuda
+    gpus: all
+    init: true
+    restart: on-failure:5
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 512
+    mem_swappiness: 0
     volumes:
       - trackdub-data:/data
       - ./docker/input:/work/input
@@ -19,11 +31,11 @@ services:
     stdin_open: true
     tty: true
     healthcheck:
-      test: ["CMD", "dotnet", "Trackdub.Cli.dll", "--help"]
+      test: ["CMD", "dotnet", "Trackdub.Cli.dll", "doctor", "--json"]
       interval: 30s
-      timeout: 10s
+      timeout: 15s
       retries: 3
-      start_period: 10s
+      start_period: 20s
 
 volumes:
   trackdub-data:
