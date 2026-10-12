@@ -639,8 +639,12 @@ internal static class OnnxExecutionSessionFactory
                 FormatProviderLabel(metadata.SelectedProvider),
                 metadata.BootstrapDetail);
         }
-        catch
+        catch (Exception failure)
         {
+            // Decoder construction can OOM after the TRT-RTX encoder has already been
+            // created. Mark the runtime before disposing either session; native teardown
+            // of a poisoned encoder can otherwise fault the host process.
+            TensorRtRtxTeardownGuard.MarkPoisonedIfCudaOutOfMemory(failure);
             TensorRtRtxTeardownGuard.DisposeSafely(encoderSession);
             TensorRtRtxTeardownGuard.DisposeSafely(decoderSession);
             throw;
@@ -685,8 +689,12 @@ internal static class OnnxExecutionSessionFactory
                 SelectedProviderKind = metadata.SelectedProvider
             };
         }
-        catch
+        catch (Exception failure)
         {
+            // Decoder construction can OOM after the TRT-RTX encoder has already been
+            // created. Mark the runtime before disposing either session; native teardown
+            // of a poisoned encoder can otherwise fault the host process.
+            TensorRtRtxTeardownGuard.MarkPoisonedIfCudaOutOfMemory(failure);
             TensorRtRtxTeardownGuard.DisposeSafely(encoderSession);
             TensorRtRtxTeardownGuard.DisposeSafely(decoderSession);
             throw;
