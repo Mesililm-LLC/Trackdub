@@ -1229,19 +1229,28 @@ internal static class OnnxExecutionSessionFactory
         ExecutionProviderKind unetSelectedProvider = unetOptionsSelection.SelectedProvider;
         ExecutionProviderKind whisperSelectedProvider = whisperOptionsSelection.SelectedProvider;
 
+        string unetOptionsFingerprint = BuildSessionOptionsFingerprint(
+            unetOptionsSelection.SelectedProvider, devicePolicy, additionalTrtOptions: null);
+        string vaeEncOptionsFingerprint = BuildSessionOptionsFingerprint(
+            vaeEncOptionsSelection.SelectedProvider, devicePolicy, additionalTrtOptions: null);
+        string vaeDecOptionsFingerprint = BuildSessionOptionsFingerprint(
+            vaeDecOptionsSelection.SelectedProvider, devicePolicy, additionalTrtOptions: null);
+        string whisperOptionsFingerprint = BuildSessionOptionsFingerprint(
+            whisperOptionsSelection.SelectedProvider, devicePolicy, additionalTrtOptions: null);
+
         const string poolEngineFamily = "latentsync-diffusion";
         SessionPoolKey unetKey = WithOpenVinoResidency(await SessionPoolKey.CreateAsync(
             poolEngineFamily, modelId, variant, unetOptionsSelection.SelectedProvider,
-            unetModelPath, null, "unet", null, cancellationToken).ConfigureAwait(false));
+            unetModelPath, null, "unet", unetOptionsFingerprint, cancellationToken).ConfigureAwait(false));
         SessionPoolKey vaeEncKey = WithOpenVinoResidency(await SessionPoolKey.CreateAsync(
             poolEngineFamily, modelId, variant, vaeEncOptionsSelection.SelectedProvider,
-            vaeEncoderModelPath, null, "vae-encoder", null, cancellationToken).ConfigureAwait(false));
+            vaeEncoderModelPath, null, "vae-encoder", vaeEncOptionsFingerprint, cancellationToken).ConfigureAwait(false));
         SessionPoolKey vaeDecKey = WithOpenVinoResidency(await SessionPoolKey.CreateAsync(
             poolEngineFamily, modelId, variant, vaeDecOptionsSelection.SelectedProvider,
-            vaeDecoderModelPath, null, "vae-decoder", null, cancellationToken).ConfigureAwait(false));
+            vaeDecoderModelPath, null, "vae-decoder", vaeDecOptionsFingerprint, cancellationToken).ConfigureAwait(false));
         SessionPoolKey whisperKey = WithOpenVinoResidency(await SessionPoolKey.CreateAsync(
             poolEngineFamily, modelId, variant, whisperOptionsSelection.SelectedProvider,
-            whisperEncoderModelPath, null, "whisper-encoder", null, cancellationToken).ConfigureAwait(false));
+            whisperEncoderModelPath, null, "whisper-encoder", whisperOptionsFingerprint, cancellationToken).ConfigureAwait(false));
 
         // Atomic bundle (audit §3A): acquire all four graphs or none.
         SessionLeaseBundle bundle = await pool.GetLeaseBundleAsync(
