@@ -55,7 +55,7 @@ public sealed class TimelineMediaMixPreparer(
             if (probe.AudioStreams.Count == 0)
                 continue;
 
-            double probedAudioSeconds = probe.AudioStreams.Max(static stream => stream.DurationSeconds);
+            double probedAudioSeconds = probe.AudioStreams[0].DurationSeconds;
             if (double.IsFinite(probedAudioSeconds) &&
                 probedAudioSeconds > 0d &&
                 placement.DurationSeconds > probedAudioSeconds + TimingToleranceSeconds)
@@ -84,7 +84,7 @@ public sealed class TimelineMediaMixPreparer(
                     .ConfigureAwait(false);
                 preparedSeconds = prepared.AudioStreams.Count == 0
                     ? prepared.DurationSeconds
-                    : prepared.AudioStreams.Max(static stream => stream.DurationSeconds);
+                    : prepared.AudioStreams[0].DurationSeconds;
             }
 
             if (!double.IsFinite(preparedSeconds) ||

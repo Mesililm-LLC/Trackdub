@@ -186,6 +186,57 @@ public sealed class MixPlanBuilderTests
     }
 
     [Fact]
+    public async Task Timeline_media_uses_the_first_audio_stream_duration()
+    {
+        string root = Path.Join(Path.GetTempPath(), "Trackdub.Timeline.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string added = Path.Join(root, "multi.mkv");
+            await File.WriteAllBytesAsync(added, [1], TestContext.Current.CancellationToken);
+            TestProjectContext context = CreateContext();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            var media = new MediaAsset(context.MediaAssetId, context.ProjectId, Path.Join(root, "source.mp4"), "source.mp4", "source",
+                100, now, "mp4", 8d, true, true, now);
+            var state = CreateState(new TrackdubProject(context.ProjectId, "Timeline", now, now), media, [], [], [], []) with
+            {
+                ProjectUiSettings = new ProjectUiSettings(TimelinePlacements:
+                [
+                    new ProjectTimelineMediaPlacement(added, "Commentary", 1, 1d, 1d),
+                ])
+            };
+            var extraction = new TimelineTestExtractionService();
+            var probe = new FakeMediaProbe
+            {
+                Snapshot = new MediaProbeSnapshot(
+                    "matroska",
+                    "Matroska",
+                    DurationSeconds: 5d,
+                    BitRate: null,
+                    AudioStreams:
+                    [
+                        new MediaAudioStream(1, "aac", 2, 48000, 0.2d),
+                        new MediaAudioStream(2, "aac", 2, 48000, 5d),
+                    ],
+                    VideoStreams: [],
+                    SubtitleStreams: [])
+            };
+            var preparer = new TimelineMediaMixPreparer(
+                new FakeArtifactStore(root),
+                extraction,
+                new FakeFileFingerprintService(new FileFingerprint("multi", 1, now)),
+                probe);
+
+            InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                TimelineMediaMixPreparer.PrepareAsync(preparer, state, TestContext.Current.CancellationToken));
+
+            Assert.Contains("longer than its audio", error.Message, StringComparison.Ordinal);
+            Assert.Equal(0, extraction.Calls);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
     public async Task Timeline_media_past_the_source_audio_end_fails()
     {
         string root = Path.Join(Path.GetTempPath(), "Trackdub.Timeline.Tests", Guid.NewGuid().ToString("N"));
