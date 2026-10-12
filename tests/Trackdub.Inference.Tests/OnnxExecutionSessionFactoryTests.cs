@@ -1197,6 +1197,42 @@ public sealed class OnnxExecutionSessionFactoryTests
         }
     }
 
+    private sealed class MutableDevicePolicyProvider : IWindowsMlEpDevicePolicyProvider
+    {
+        public WindowsMlExecutionDevicePolicy Policy { get; set; }
+
+        public Task<WindowsMlExecutionDevicePolicy> GetPolicyAsync(CancellationToken cancellationToken = default) =>
+            cancellationToken.IsCancellationRequested
+                ? Task.FromCanceled<WindowsMlExecutionDevicePolicy>(cancellationToken)
+                : Task.FromResult(Policy);
+
+        public void InvalidateCache()
+        {
+        }
+    }
+
+    private sealed class FixedSelectingBootstrapper(ExecutionProviderKind selected) : IExecutionProviderBootstrapper
+    {
+        public Task<ExecutionProviderBootstrapResult> BootstrapAsync(
+            ExecutionProviderKind provider,
+            bool allowDownloads,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _ = allowDownloads;
+            return Task.FromResult(new ExecutionProviderBootstrapResult(
+                provider,
+                selected,
+                Succeeded: true,
+                Detail: "test bootstrap"));
+        }
+
+        public Task<ExecutionProviderBootstrapResult> CheckReadinessAsync(
+            ExecutionProviderKind provider,
+            CancellationToken cancellationToken) =>
+            BootstrapAsync(provider, allowDownloads: false, cancellationToken);
+    }
+
     private sealed class CpuSelectingDirectMlBootstrapper : IExecutionProviderBootstrapper
     {
         public Task<ExecutionProviderBootstrapResult> BootstrapAsync(
@@ -1234,6 +1270,96 @@ public sealed class OnnxExecutionSessionFactoryTests
         0x02, 0x08, 0x01, 0x62, 0x0F, 0x0A, 0x01, 0x79, 0x12, 0x0A, 0x0A, 0x08, 0x08, 0x01,
         0x12, 0x04, 0x0A, 0x02, 0x08, 0x01, 0x42, 0x04, 0x0A, 0x00, 0x10, 0x09,
     ];
+
+    [Fact]
+    public async Task CreatePooledLatentSyncAsync_does_not_reuse_sessions_when_only_device_policy_changes()
+    {
+        string directory = Path.Join(Path.GetTempPath(), "trackdub-latentsync-policy-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        byte[] model = BuildIdentityOnnxModel();
+        string unet = Path.Join(directory, "unet.onnx");
+        string vaeEncoder = Path.Join(directory, "vae-encoder.onnx");
+        string vaeDecoder = Path.Join(directory, "vae-decoder.onnx");
+        string whisperEncoder = Path.Join(directory, "whisper-encoder.onnx");
+        File.WriteAllBytes(unet, model);
+        File.WriteAllBytes(vaeEncoder, model);
+        File.WriteAllBytes(vaeDecoder, model);
+        File.WriteAllBytes(whisperEncoder, model);
+
+        var policy = new MutableDevicePolicyProvider
+        {
+            Policy = WindowsMlExecutionDevicePolicy.MaxPerformance,
+        };
+        OnnxExecutionSessionFactory.ResetForTests();
+        OnnxExecutionSessionFactory.Initialize(
+            new FixedSelectingBootstrapper(ExecutionProviderKind.Migraphx),
+            policy);
+
+        try
+        {
+            using var pool = new InferenceSessionPool(maxSessions: 16, enableMemoryAdmission: false);
+            int creations = 0;
+
+            InferenceSession CreateSession(string _, SessionOptions __)
+            {
+                Interlocked.Increment(ref creations);
+                return new InferenceSession(model);
+            }
+
+            using (await OnnxExecutionSessionFactory.CreatePooledLatentSyncAsync(
+                "latentsync",
+                unet,
+                vaeEncoder,
+                vaeDecoder,
+                whisperEncoder,
+                ExecutionProviderKind.Migraphx,
+                CancellationToken.None,
+                pool,
+                sessionFactory: CreateSession))
+            {
+            }
+
+            Assert.Equal(4, creations);
+
+            using (await OnnxExecutionSessionFactory.CreatePooledLatentSyncAsync(
+                "latentsync",
+                unet,
+                vaeEncoder,
+                vaeDecoder,
+                whisperEncoder,
+                ExecutionProviderKind.Migraphx,
+                CancellationToken.None,
+                pool,
+                sessionFactory: CreateSession))
+            {
+            }
+
+            Assert.Equal(4, creations);
+
+            policy.Policy = WindowsMlExecutionDevicePolicy.MaxEfficiency;
+            using (await OnnxExecutionSessionFactory.CreatePooledLatentSyncAsync(
+                "latentsync",
+                unet,
+                vaeEncoder,
+                vaeDecoder,
+                whisperEncoder,
+                ExecutionProviderKind.Migraphx,
+                CancellationToken.None,
+                pool,
+                sessionFactory: CreateSession))
+            {
+            }
+
+            // Catalog providers on Windows include the policy in the pool key. Elsewhere the
+            // fingerprint stays default, so the same provider and model may reuse.
+            Assert.Equal(OperatingSystem.IsWindows() ? 8 : 4, creations);
+        }
+        finally
+        {
+            OnnxExecutionSessionFactory.ResetForTests();
+            Directory.Delete(directory, recursive: true);
+        }
+    }
 
     [Fact]
     public void GetPlatformBootstrapper_selects_the_platform_bootstrapper_at_run_time()
