@@ -186,6 +186,36 @@ public sealed class CachingReadinessProbeTests
     }
 
     [Fact]
+    public async Task ProgressBearingInstallProbe_InvalidatesCache_SoLaterStatusProbeReprobes()
+    {
+        MigraphxReadinessReport preInstall = MigraphxEpNotPresentReport();
+        MigraphxReadinessReport postInstall = MigraphxReadyReport();
+
+        MigraphxReadinessReport current = preInstall;
+        var counting = new CountingMigraphxReadinessProbe(() => current);
+        var cached = new CachingMigraphxReadinessProbe(counting);
+
+        // A status-only probe caches the stale pre-install snapshot.
+        MigraphxReadinessReport stale = await cached.ProbeAsync(allowProviderDownloads: false, CancellationToken.None);
+        Assert.Same(preInstall, stale);
+
+        // A progress-bearing download-enabled install probe changes process state, so it must
+        // invalidate the memoized results when it completes; otherwise the next status-only caller
+        // would keep receiving the stale pre-install snapshot.
+        current = postInstall;
+        MigraphxReadinessReport installed = await cached.ProbeAsync(
+            allowProviderDownloads: true,
+            CancellationToken.None,
+            new RecordingProgress());
+
+        MigraphxReadinessReport fresh = await cached.ProbeAsync(allowProviderDownloads: false, CancellationToken.None);
+
+        Assert.Same(postInstall, installed);
+        Assert.Same(postInstall, fresh);
+        Assert.Equal(3, counting.CallCount);
+    }
+
+    [Fact]
     public async Task IndividualCallerCancellation_DoesNotPoisonConcurrentCallers()
     {
         var gate = new TaskCompletionSource();
@@ -275,6 +305,52 @@ public sealed class CachingReadinessProbeTests
         }
     }
 
+    private sealed class CountingMigraphxReadinessProbe : IMigraphxReadinessProbe
+    {
+        private readonly Func<MigraphxReadinessReport> _factory;
+        private int _callCount;
+
+        public CountingMigraphxReadinessProbe(Func<MigraphxReadinessReport> factory) => _factory = factory;
+
+        public int CallCount => Volatile.Read(ref _callCount);
+
+        public Task<MigraphxReadinessReport> ProbeAsync(
+            bool allowProviderDownloads,
+            CancellationToken cancellationToken = default,
+            IProgress<double>? progress = null)
+        {
+            Interlocked.Increment(ref _callCount);
+            return Task.FromResult(_factory());
+        }
+    }
+
+    private static MigraphxReadinessReport MigraphxEpNotPresentReport() =>
+        new(
+            MigraphxProviderIds.WinMl,
+            MigraphxPlatformRoute.WinMlCatalog,
+            MigraphxReadinessBlocker.EpNotPresent,
+            IsHardwareEligible: true,
+            IsOrtProviderListed: false,
+            IsRegisteredWithOrt: false,
+            Detail: "MIGraphX execution provider is not installed.");
+
+    private static MigraphxReadinessReport MigraphxReadyReport() =>
+        new(
+            MigraphxProviderIds.WinMl,
+            MigraphxPlatformRoute.WinMlCatalog,
+            MigraphxReadinessBlocker.None,
+            IsHardwareEligible: true,
+            IsOrtProviderListed: true,
+            IsRegisteredWithOrt: true,
+            Detail: "MIGraphX execution provider installed and registered.");
+
+    private sealed class RecordingProgress : IProgress<double>
+    {
+        public List<double> Reports { get; } = new();
+
+        public void Report(double value) => Reports.Add(value);
+    }
+
     private sealed class StubNativeCudaTensorRtWindowsPolicy : INativeCudaTensorRtWindowsPolicy
     {
         public Task<bool> IsNativeProvidersAllowedOnWindowsAsync(CancellationToken cancellationToken = default) =>
@@ -283,7 +359,7 @@ public sealed class CachingReadinessProbeTests
 
     private sealed class StubMigraphxReadinessProbe : IMigraphxReadinessProbe
     {
-        public Task<MigraphxReadinessReport> ProbeAsync(bool allowProviderDownloads, CancellationToken cancellationToken = default) =>
+        public Task<MigraphxReadinessReport> ProbeAsync(bool allowProviderDownloads, CancellationToken cancellationToken = default, IProgress<double>? progress = null) =>
             Task.FromResult(new MigraphxReadinessReport(
                 MigraphxProviderIds.WinMl,
                 MigraphxPlatformRoute.None,

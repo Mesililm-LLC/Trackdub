@@ -123,8 +123,45 @@ public sealed class CachingMigraphxReadinessProbe(IMigraphxReadinessProbe inner)
 {
     public Task<MigraphxReadinessReport> ProbeAsync(
         bool allowProviderDownloads,
-        CancellationToken cancellationToken = default) =>
-        ProbeCachedAsync(allowProviderDownloads, cancellationToken);
+        CancellationToken cancellationToken = default,
+        IProgress<double>? progress = null)
+    {
+        // The cache base hard-codes the underlying probe to run with CancellationToken.None,
+        // so a percent sink attached to a cache-miss call would not see the in-flight events
+        // from concurrent callers. Bypass the cache when a progress sink is requested; the
+        // caller's token still controls cancellation, and a download-enabled probe invalidates
+        // the memoized results on completion so the next status-only call re-probes fresh state.
+        if (progress is not null)
+        {
+            return ProbeWithProgressAsync(allowProviderDownloads, cancellationToken, progress);
+        }
+
+        return ProbeCachedAsync(allowProviderDownloads, cancellationToken);
+
+        // A progress-bearing download-enabled probe is state-changing (it can acquire, download, or
+        // register the provider), so invalidate the memoized results when it completes — including on
+        // failure — to avoid serving a stale pre-install snapshot to later status-only callers. The
+        // direct inner call is preserved so each caller retains its independent progress stream.
+        async Task<MigraphxReadinessReport> ProbeWithProgressAsync(
+            bool allowProviderDownloads,
+            CancellationToken cancellationToken,
+            IProgress<double> progress)
+        {
+            try
+            {
+                return await inner
+                    .ProbeAsync(allowProviderDownloads, cancellationToken, progress)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                if (allowProviderDownloads)
+                {
+                    Invalidate();
+                }
+            }
+        }
+    }
 }
 
 /// <summary>Caching decorator for <see cref="IDnnlReadinessProbe"/>.</summary>

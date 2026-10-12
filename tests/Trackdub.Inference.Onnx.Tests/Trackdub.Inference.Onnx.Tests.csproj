@@ -35,4 +35,10 @@
                       SetTargetFramework="TargetFramework=net10.0-windows10.0.19041.0" />
   </ItemGroup>
 
+  <!-- WindowsMlEnsureReady is in the Windows-only WindowsMl/ directory (Compile Remove on
+       the portable TFM in the production csproj), so its tests only run on the Windows TFM. -->
+  <ItemGroup Condition="'$(TargetFramework)' != 'net10.0-windows10.0.19041.0'">
+    <Compile Remove="WindowsMlEnsureReadyProgressTests.cs" />
+  </ItemGroup>
+
 </Project>
