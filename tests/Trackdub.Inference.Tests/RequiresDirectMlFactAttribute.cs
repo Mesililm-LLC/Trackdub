@@ -36,7 +36,9 @@ public sealed class RequiresDirectMlFactAttribute : FactAttribute
 #else
         // This runs at xunit discovery, before any test. Constructing SessionOptions triggers ORT's own
         // native resolver registration, which would leave GenAiNativeRuntimeSelection unable to claim it.
-        GenAiNativeRuntimeSelection.EnsureOrtLoaded(requireVerified: true);
+        // Unverified is tolerated: the DNNL flavor emits no native-pair metadata, and a stock ORT whose
+        // hash matches a manifest is still recorded as verified for the later GenAI load.
+        GenAiNativeRuntimeSelection.EnsureOrtLoaded(requireVerified: false);
 #endif
 
         using SessionOptions options = new();
