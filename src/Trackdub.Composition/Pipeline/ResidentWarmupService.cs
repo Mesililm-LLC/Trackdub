@@ -119,7 +119,27 @@ public sealed class ResidentWarmupService : IResidentWarmupService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (InvalidOperationException ex)
+        {
+            progress?.Report($"Provider discovery failed: {ex.Message}");
+            return [];
+        }
+        catch (NotSupportedException ex)
+        {
+            progress?.Report($"Provider discovery failed: {ex.Message}");
+            return [];
+        }
+        catch (DllNotFoundException ex)
+        {
+            progress?.Report($"Provider discovery failed: {ex.Message}");
+            return [];
+        }
+        catch (TypeLoadException ex)
+        {
+            progress?.Report($"Provider discovery failed: {ex.Message}");
+            return [];
+        }
+        catch (BadImageFormatException ex)
         {
             progress?.Report($"Provider discovery failed: {ex.Message}");
             return [];
