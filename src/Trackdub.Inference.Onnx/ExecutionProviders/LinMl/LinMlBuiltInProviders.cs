@@ -12,11 +12,13 @@ namespace Trackdub.Inference.Onnx.ExecutionProviders.LinMl;
 /// </summary>
 internal static class LinMlBuiltInProviders
 {
-    // The append probe builds session options, so the default catalog's answer is computed once per provider.
-    private static readonly ConcurrentDictionary<ProviderId, bool> DefaultCatalogResults = new();
+    // The append probe builds session options; cache the default catalog's answer per provider.
+    // Lazy<bool> runs the probe once even under concurrent first calls (GetOrAdd's factory runs
+    // outside its lock). A thrown probe is cached and rethrown on later reads, unlike GetOrAdd.
+    private static readonly ConcurrentDictionary<ProviderId, Lazy<bool>> DefaultCatalogResults = new();
 
     public static bool IsReady(ProviderId id) =>
-        DefaultCatalogResults.GetOrAdd(id, static key => IsReady(ExecutionProviderCatalog.GetDefault(), key));
+        DefaultCatalogResults.GetOrAdd(id, static key => new Lazy<bool>(() => IsReady(ExecutionProviderCatalog.GetDefault(), key))).Value;
 
     internal static bool IsReady(IExecutionProviderCatalog catalog, ProviderId id)
     {
