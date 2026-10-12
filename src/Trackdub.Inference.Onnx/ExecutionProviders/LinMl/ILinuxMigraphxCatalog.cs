@@ -14,7 +14,7 @@ public interface ILinuxMigraphxCatalog
 }
 
 /// <summary>
-/// Whether the host has the ROCm MIGraphX runtime the plugin links against
+/// Whether the host has a loadable ROCm MIGraphX runtime the plugin can use
 /// (<c>libmigraphx_c.so.3</c>, MIGraphX 2.17 or newer).
 /// </summary>
 public static class LinuxMigraphxRuntimeProbe
@@ -23,6 +23,10 @@ public static class LinuxMigraphxRuntimeProbe
     // installs on the regular library path.
     private const string RocmLibraryPath = "/opt/rocm/lib/" + MigraphxProviderConstants.LinuxRuntimeLibrary;
 
+    // MIGraphX 2.15 ships the same libmigraphx_c.so.3 soname but lacks this export, which the
+    // plugin calls, so a successful load alone does not prove the version.
+    internal const string RequiredExport = "migraphx_compile_options_set_advance_backend_options";
+
     public static bool IsRuntimePresent()
     {
         if (!OperatingSystem.IsLinux())
@@ -30,18 +34,25 @@ public static class LinuxMigraphxRuntimeProbe
             return false;
         }
 
-        if (File.Exists(RocmLibraryPath))
+        return HasRequiredExport(RocmLibraryPath)
+            || HasRequiredExport(MigraphxProviderConstants.LinuxRuntimeLibrary);
+    }
+
+    private static bool HasRequiredExport(string library)
+    {
+        if (!NativeLibrary.TryLoad(library, out IntPtr handle))
         {
-            return true;
+            return false;
         }
 
-        if (NativeLibrary.TryLoad(MigraphxProviderConstants.LinuxRuntimeLibrary, out IntPtr handle))
+        try
+        {
+            return NativeLibrary.TryGetExport(handle, RequiredExport, out _);
+        }
+        finally
         {
             NativeLibrary.Free(handle);
-            return true;
         }
-
-        return false;
     }
 }
 

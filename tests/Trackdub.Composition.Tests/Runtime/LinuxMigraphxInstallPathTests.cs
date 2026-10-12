@@ -41,6 +41,29 @@ public sealed class LinuxMigraphxInstallPathTests
     }
 
     [Fact]
+    public async Task Readiness_points_at_registration_when_the_plugin_fails_to_register()
+    {
+        var service = new MigraphxRuntimeReadinessService(
+            new StubProbe(LinuxReport(MigraphxReadinessBlocker.EpRegisterFailed, ready: false)));
+
+        MigraphxRuntimeReadinessSnapshot snapshot = await service.ProbeAsync(allowProviderDownloads: false);
+
+        Assert.False(snapshot.CanInstallWinMlProvider);
+        Assert.Contains("did not register", snapshot.InstallHint, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Readiness_gives_no_install_hint_without_an_amd_gpu()
+    {
+        var service = new MigraphxRuntimeReadinessService(
+            new StubProbe(LinuxReport(MigraphxReadinessBlocker.GpuVendorMismatch, ready: false)));
+
+        MigraphxRuntimeReadinessSnapshot snapshot = await service.ProbeAsync(allowProviderDownloads: false);
+
+        Assert.Null(snapshot.InstallHint);
+    }
+
+    [Fact]
     public async Task Readiness_reports_ready_on_the_LinML_route()
     {
         var service = new MigraphxRuntimeReadinessService(

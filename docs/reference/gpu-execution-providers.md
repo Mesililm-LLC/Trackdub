@@ -62,8 +62,9 @@ TRACKDUB_LINML_OPENVINO_MODEL=/path/to/small-model.onnx \
 `ExecutionProviderKind.Migraphx` on Linux runs on AMD's MIGraphX plugin EP
 (`onnxruntime-ep-amdgpu`), which LinML builds from a pinned commit, publishes as the
 `ep-migraphx-<version>` release and pins by sha256 in `LinML.Catalog`. The host needs
-an AMD GPU and ROCm with MIGraphX 2.17 or newer (`libmigraphx_c.so.3`, found under
-`/opt/rocm/lib` or on the loader path). Without either, `LinMlMigraphxCatalog` reports
+an AMD GPU and ROCm with MIGraphX 2.17 or newer: a loadable `libmigraphx_c.so.3` under
+`/opt/rocm/lib` or on the loader path that exports the 2.17 C API (MIGraphX 2.15 ships
+the same soname without it). Without either, `LinMlMigraphxCatalog` reports
 the provider unsupported and never downloads the plugin; the catalog itself has no
 such check. Once registered, the plugin's GPU device is what the existing MIGraphX
 session append uses, so sessions need no Linux-specific append code.
