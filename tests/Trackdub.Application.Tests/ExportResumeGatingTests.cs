@@ -1,4 +1,5 @@
 using Trackdub.Application.Transcripts;
+using Trackdub.Application.Projects;
 using Trackdub.Contracts;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Contracts.Projects;
@@ -22,6 +23,24 @@ namespace Trackdub.Application.Tests;
 /// </summary>
 public sealed class ExportResumeGatingTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Timeline_media_forces_render_when_present_or_removed_since_export(bool currentlyPlaced)
+    {
+        using var temp = new TempDir();
+        var fixture = await ExportResumeFixture.CreateAsync(temp.Path, BaselineGating(), hasTimelineMedia: !currentlyPlaced);
+        var state = fixture.State with
+        {
+            ProjectUiSettings = new ProjectUiSettings(TimelinePlacements: currentlyPlaced
+                ? [new ProjectTimelineMediaPlacement("extra.wav", "Extra", 1, 1d, 1d)] : [])
+        };
+        bool canResume = await StageArtifactResumeEvaluator.CanResumeStageAsync(state, fixture.ArtifactStore,
+            StageNames.Export, BaselineSnapshot(), temp.Path, exportPath: fixture.ExportRelativePath,
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.False(canResume);
+    }
+
     [Fact]
     public async Task CanResumeStageAsync_returns_true_when_gating_flags_match()
     {
@@ -372,7 +391,8 @@ public sealed class ExportResumeGatingTests
         public static async Task<ExportResumeFixture> CreateAsync(
             string projectRootPath,
             ExportManifestGating? gating,
-            bool writeExportOutput = true)
+            bool writeExportOutput = true,
+            bool hasTimelineMedia = false)
         {
             DateTimeOffset now = DateTimeOffset.UtcNow;
             Guid projectId = Guid.NewGuid();
@@ -427,7 +447,8 @@ public sealed class ExportResumeGatingTests
                 Outputs: [],
                 Warnings: [],
                 Segments: [],
-                Gating: gating);
+                Gating: gating,
+                HasTimelineMedia: hasTimelineMedia);
             await artifactStore.WriteJsonAsync(
                 ProjectArtifactPaths.GetExportManifestRelativePath(exportRun.Id),
                 manifest,

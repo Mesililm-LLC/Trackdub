@@ -166,6 +166,12 @@ public sealed class PreviewRangeRenderer(IArtifactStore artifactStore) : IPrevie
                     panGains);
             }
 
+            foreach (MixMediaClip clip in request.MixPlan.MediaClips)
+            {
+                await MixPlacedMediaAsync(clip, request.StartSeconds, range.EndSeconds,
+                    output, outputFrameCount, outputChannelCount, sampleRate, cancellationToken).ConfigureAwait(false);
+            }
+
             await WavePcm16.WriteSamplesAsync(
                     request.OutputPath,
                     new ArraySegment<float>(output, 0, outputSampleCount),
@@ -185,6 +191,58 @@ public sealed class PreviewRangeRenderer(IArtifactStore artifactStore) : IPrevie
             ArrayPool<float>.Shared.Return(duckingGains, clearArray: false);
             output.AsSpan(0, outputSampleCount).Clear();
             ArrayPool<float>.Shared.Return(output, clearArray: false);
+        }
+    }
+
+    private async Task MixPlacedMediaAsync(
+        MixMediaClip clip, double rangeStart, double rangeEnd,
+        float[] output, int frameCount, int channelCount, int sampleRate, CancellationToken cancellationToken)
+    {
+        if (!double.IsFinite(clip.StartSeconds) || clip.StartSeconds < 0d ||
+            !double.IsFinite(clip.DurationSeconds) || clip.DurationSeconds <= 0d)
+            throw new InvalidOperationException("Timeline mix clip has invalid timing.");
+        double start = Math.Max(rangeStart, clip.StartSeconds);
+        double end = Math.Min(rangeEnd, clip.StartSeconds + clip.DurationSeconds);
+        if (end <= start) return;
+        string path = artifactStore.GetPath(clip.AudioRelativePath);
+        if (!File.Exists(path)) throw new FileNotFoundException("Prepared timeline audio is missing.", path);
+        WavePcm16Info info = await WavePcm16.ReadInfoAsync(path, cancellationToken).ConfigureAwait(false);
+        if (end > clip.StartSeconds + info.DurationSeconds + 0.01d)
+        {
+            throw new InvalidOperationException(
+                "Timeline clip audio is shorter than its placed slot and would be cut off.");
+        }
+
+        double sourceOriginSeconds = start - clip.StartSeconds;
+        double exactSourceFrames = sourceOriginSeconds * info.SampleRate;
+        double fractionalSourceFrame = exactSourceFrames - Math.Floor(exactSourceFrames);
+        double readDurationSeconds = (end - start) + (1d / info.SampleRate);
+        WavePcm16Samples samples = await WavePcm16.ReadSamplesAsync(
+            path, info, sourceOriginSeconds, readDurationSeconds, cancellationToken).ConfigureAwait(false);
+        int firstOutputFrame = (int)Math.Round((start - rangeStart) * sampleRate);
+        int framesToMix = Math.Min(frameCount - firstOutputFrame, (int)Math.Ceiling((end - start) * sampleRate));
+        for (int frame = 0; frame < framesToMix; frame++)
+        {
+            if ((frame & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
+            double sourceFrame = fractionalSourceFrame + (frame * (double)info.SampleRate / sampleRate);
+            int lastSourceFrame = Math.Max(0, samples.FrameCount - 1);
+            int index = Math.Clamp((int)Math.Floor(sourceFrame), 0, lastSourceFrame);
+            int nextIndex = Math.Min(lastSourceFrame, index + 1);
+            float fraction = (float)(sourceFrame - index);
+            int outputIndex = (firstOutputFrame + frame) * channelCount;
+            if (channelCount == 1)
+            {
+                float first = MapSourceFrameToMono(samples, index);
+                float next = MapSourceFrameToMono(samples, nextIndex);
+                output[outputIndex] += first + ((next - first) * fraction);
+            }
+            else
+            {
+                (float Left, float Right) first = MapSourceFrameToStereo(samples, index);
+                (float Left, float Right) next = MapSourceFrameToStereo(samples, nextIndex);
+                output[outputIndex] += first.Left + ((next.Left - first.Left) * fraction);
+                output[outputIndex + 1] += first.Right + ((next.Right - first.Right) * fraction);
+            }
         }
     }
 

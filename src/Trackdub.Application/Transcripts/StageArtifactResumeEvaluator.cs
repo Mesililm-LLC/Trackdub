@@ -1,5 +1,6 @@
 using Trackdub.Application.Dubbing;
 using Trackdub.Application.Projects;
+using Trackdub.Application.Mixing;
 using Trackdub.Contracts;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Domain;
@@ -245,6 +246,10 @@ public static class StageArtifactResumeEvaluator
             return true;
         }
 
+        // External timeline files can change without an execution snapshot change.
+        // Re-render while placements exist until their content is part of resume identity.
+        if (TimelineMediaMixPreparer.GetPlacements(state).Count > 0) return false;
+
         return await ExportGatingMatchesSnapshotAsync(
             state,
             artifactStore,
@@ -280,6 +285,7 @@ public static class StageArtifactResumeEvaluator
             return true;
         }
 
+        if (manifest?.HasTimelineMedia == true) return false;
         IReadOnlyDictionary<string, string>? persistedFlags = manifest?.Gating?.Flags;
         if (persistedFlags is null || persistedFlags.Count == 0)
         {

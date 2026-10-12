@@ -26,7 +26,8 @@ public sealed record MixPlan
         int OutputChannelCount = 1,
         bool RestoreOriginalPan = false,
         bool ApplyTimbrePolish = true,
-        string? VocalStemRelativePath = null)
+        string? VocalStemRelativePath = null,
+        IReadOnlyList<MixMediaClip>? MediaClips = null)
     {
         this.ProjectId = ProjectId;
         this.MediaAssetId = MediaAssetId;
@@ -46,6 +47,7 @@ public sealed record MixPlan
         this.RestoreOriginalPan = RestoreOriginalPan;
         this.ApplyTimbrePolish = ApplyTimbrePolish;
         this.VocalStemRelativePath = VocalStemRelativePath;
+        this.MediaClips = MediaClips ?? [];
     }
 
     public Guid ProjectId { get; init; }
@@ -100,6 +102,8 @@ public sealed record MixPlan
 
     public string? VocalStemRelativePath { get; init; }
 
+    public IReadOnlyList<MixMediaClip> MediaClips { get; init; }
+
     private static string? NormalizeOriginalMixAudioRelativePath(string? value, string sourceAudioRelativePath)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -118,6 +122,9 @@ public sealed record MixPlan
     private static int NormalizeOutputChannelCount(int value) =>
         value >= 2 ? 2 : 1;
 }
+
+/// <summary>Project-owned audio placed independently of generated dialogue.</summary>
+public sealed record MixMediaClip(string AudioRelativePath, double StartSeconds, double DurationSeconds);
 
 public sealed record MixSpeechClip(
     int SegmentIndex,

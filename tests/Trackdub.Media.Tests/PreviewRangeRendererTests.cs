@@ -12,6 +12,161 @@ namespace Trackdub.Media.Tests;
 
 public sealed class PreviewRangeRendererTests
 {
+    [Theory]
+    [InlineData(0.5d)]
+    [InlineData(1.25d)]
+    public async Task RenderAsync_mixes_placed_stereo_media_at_offset_and_trims_to_slot(double rangeStart)
+    {
+        string root = Path.Join(Path.GetTempPath(), "Trackdub.Media.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string source = Path.Join(root, "source.wav");
+            string media = Path.Join(root, "media.wav");
+            string output = Path.Join(root, "output.wav");
+            WriteStereoConstantWave(source, 1000, 4d, 0.1f, 0.1f);
+            WriteStereoConstantWave(media, 500, 2d, 0.25f, 0.05f);
+            var store = new FakeArtifactStore();
+            store.SeedPath("source.wav", source);
+            store.SeedPath("media.wav", media);
+            var plan = new MixPlan(Guid.NewGuid(), null, ArtifactKind.NormalizedAudio, "source.wav",
+                0d, -96d, 0d, 0d, 0d, DateTimeOffset.UtcNow, [], [], [], OutputChannelCount: 2,
+                MediaClips: [new MixMediaClip("media.wav", 1d, 0.5d)]);
+            await new PreviewRangeRenderer(store).RenderAsync(
+                new PreviewRangeRenderRequest(plan, rangeStart, 2.5d, output), TestContext.Current.CancellationToken);
+            var samples = await WavePcm16.ReadAllSamplesAsync(output, TestContext.Current.CancellationToken);
+            int within = (int)((Math.Max(1d, rangeStart) + 0.1d - rangeStart) * 1000d) * 2;
+            Assert.InRange(samples.Samples[within], 0.34f, 0.36f);
+            Assert.InRange(samples.Samples[within + 1], 0.14f, 0.16f);
+            int after = (int)((1.8d - rangeStart) * 1000d) * 2;
+            Assert.InRange(samples.Samples[after], 0.09f, 0.11f);
+            Assert.InRange(samples.Samples[after + 1], 0.09f, 0.11f);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task RenderAsync_fails_for_missing_placed_audio()
+    {
+        string root = Path.Join(Path.GetTempPath(), "Trackdub.Media.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string source = Path.Join(root, "source.wav");
+            WriteConstantWave(source, 1000, 4d, 0.1f);
+            var store = new FakeArtifactStore();
+            store.SeedPath("source.wav", source);
+            store.SeedPath("missing.wav", Path.Join(root, "missing.wav"));
+            var plan = new MixPlan(Guid.NewGuid(), null, ArtifactKind.NormalizedAudio, "source.wav",
+                0d, 0d, 0d, 0d, 0d, DateTimeOffset.UtcNow, [], [], [],
+                MediaClips: [new MixMediaClip("missing.wav", 1d, 0.5d)]);
+            await Assert.ThrowsAsync<FileNotFoundException>(() => new PreviewRangeRenderer(store).RenderAsync(
+                new PreviewRangeRenderRequest(plan, 0d, 3d, Path.Join(root, "output.wav")), TestContext.Current.CancellationToken));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task RenderAsync_fails_when_placed_audio_is_shorter_than_the_slot()
+    {
+        string root = Path.Join(Path.GetTempPath(), "Trackdub.Media.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string source = Path.Join(root, "source.wav");
+            string media = Path.Join(root, "media.wav");
+            WriteConstantWave(source, 1000, 4d, 0.1f);
+            WriteConstantWave(media, 1000, 0.2d, 0.25f);
+            var store = new FakeArtifactStore();
+            store.SeedPath("source.wav", source);
+            store.SeedPath("media.wav", media);
+            var plan = new MixPlan(Guid.NewGuid(), null, ArtifactKind.NormalizedAudio, "source.wav",
+                0d, 0d, 0d, 0d, 0d, DateTimeOffset.UtcNow, [], [], [],
+                MediaClips: [new MixMediaClip("media.wav", 1d, 1d)]);
+
+            InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                new PreviewRangeRenderer(store).RenderAsync(
+                    new PreviewRangeRenderRequest(plan, 0d, 3d, Path.Join(root, "output.wav")),
+                    TestContext.Current.CancellationToken));
+            Assert.Contains("shorter than its placed slot", error.Message, StringComparison.Ordinal);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task RenderAsync_keeps_fractional_source_phase_when_preview_starts_inside_a_clip()
+    {
+        string root = Path.Join(Path.GetTempPath(), "Trackdub.Media.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            const int sourceRate = 48000;
+            const int mediaRate = 8000;
+            const double previewStart = 0.50005d;
+            string source = Path.Join(root, "source.wav");
+            string media = Path.Join(root, "media.wav");
+            string output = Path.Join(root, "output.wav");
+            WriteConstantWave(source, sourceRate, 1d, 0f);
+            int mediaFrames = mediaRate;
+            var ramp = new float[mediaFrames];
+            for (int frame = 0; frame < mediaFrames; frame++)
+                ramp[frame] = (frame & 1) == 0 ? 0.8f : 0.2f;
+            WriteMonoWave(media, ramp, mediaRate);
+            var store = new FakeArtifactStore();
+            store.SeedPath("source.wav", source);
+            store.SeedPath("media.wav", media);
+            var plan = new MixPlan(Guid.NewGuid(), null, ArtifactKind.NormalizedAudio, "source.wav",
+                0d, -96d, 0d, 0d, 0d, DateTimeOffset.UtcNow, [], [], [], OutputChannelCount: 1,
+                MediaClips: [new MixMediaClip("media.wav", 0d, 1d)]);
+            await new PreviewRangeRenderer(store).RenderAsync(
+                new PreviewRangeRenderRequest(plan, previewStart, 0.51d, output),
+                TestContext.Current.CancellationToken);
+
+            float[] samples = ReadMonoSamples(output, out int sampleRate);
+            Assert.Equal(sourceRate, sampleRate);
+            double fraction = (previewStart * mediaRate) - Math.Floor(previewStart * mediaRate);
+            double ratio = mediaRate / (double)sourceRate;
+            double first = 0.8d + (fraction * (0.2d - 0.8d));
+            double second = 0.8d + ((fraction + ratio) * (0.2d - 0.8d));
+            Assert.InRange(samples[0] / samples[1], (first / second) - 0.02d, (first / second) + 0.02d);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task RenderAsync_holds_the_last_placed_sample_instead_of_fading_to_silence()
+    {
+        string root = Path.Join(Path.GetTempPath(), "Trackdub.Media.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            const int sourceRate = 48000;
+            const double clipSeconds = 0.25d;
+            string source = Path.Join(root, "source.wav");
+            string media = Path.Join(root, "media.wav");
+            string output = Path.Join(root, "output.wav");
+            WriteConstantWave(source, sourceRate, 1d, 0f);
+            WriteConstantWave(media, 8000, clipSeconds, 0.5f);
+            var store = new FakeArtifactStore();
+            store.SeedPath("source.wav", source);
+            store.SeedPath("media.wav", media);
+            var plan = new MixPlan(Guid.NewGuid(), null, ArtifactKind.NormalizedAudio, "source.wav",
+                0d, -96d, 0d, 0d, 0d, DateTimeOffset.UtcNow, [], [], [], OutputChannelCount: 1,
+                MediaClips: [new MixMediaClip("media.wav", 0d, clipSeconds)]);
+            await new PreviewRangeRenderer(store).RenderAsync(
+                new PreviewRangeRenderRequest(plan, 0d, 0.5d, output),
+                TestContext.Current.CancellationToken);
+
+            float[] samples = ReadMonoSamples(output, out _);
+            int midClipFrame = sourceRate / 8;
+            int lastClipFrame = (int)Math.Ceiling(clipSeconds * sourceRate) - 1;
+            int afterClipFrame = (int)Math.Round(0.3d * sourceRate);
+            Assert.InRange(samples[lastClipFrame], samples[midClipFrame] - 0.02f, samples[midClipFrame] + 0.02f);
+            Assert.InRange(samples[afterClipFrame], -0.02f, 0.02f);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     [Fact]
     public async Task RenderAsync_outputs_requested_duration_and_places_take_at_segment_offset()
     {

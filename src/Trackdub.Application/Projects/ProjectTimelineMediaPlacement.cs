@@ -8,7 +8,8 @@ public sealed record ProjectTimelineMediaPlacement(
     string DisplayName,
     int TrackIndex,
     double StartSeconds,
-    double DurationSeconds)
+    double DurationSeconds,
+    bool IsPrimarySource = false)
 {
     public ProjectTimelineMediaPlacement Normalize() =>
         this with

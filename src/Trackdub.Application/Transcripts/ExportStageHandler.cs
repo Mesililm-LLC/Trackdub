@@ -31,7 +31,8 @@ public sealed class ExportStageHandler(
     IExportTierGate? exportTierGate = null,
     IApplicationLogger? logger = null,
     ITtsCandidateGroupRepository? candidateGroupRepository = null,
-    IRuntimePlanningPreferences? runtimePlanningPreferences = null)
+    IRuntimePlanningPreferences? runtimePlanningPreferences = null,
+    TimelineMediaMixPreparer? timelineMediaMixPreparer = null)
 {
     private const double DurationToleranceSeconds = 0.5d;
     private const double MaxMatchOriginalUpwardBoostDb = 9d;
@@ -278,7 +279,9 @@ public sealed class ExportStageHandler(
             RestoreOriginalPan: request.RestoreOriginalPan,
             ApplyTimbrePolish: request.ApplyTimbrePolish,
             CandidateGroups: candidateGroups,
-            MediaDurationSeconds: mediaAsset.DurationSeconds);
+            MediaDurationSeconds: mediaAsset.DurationSeconds,
+            MediaClips: await TimelineMediaMixPreparer.PrepareAsync(
+                timelineMediaMixPreparer, currentState, cancellationToken).ConfigureAwait(false));
         MixPlan mixPlan = mixPlanBuilder.Build(buildRequest);
         if (mixPlan.Warnings.Count == 0)
         {
@@ -946,7 +949,8 @@ public sealed class ExportStageHandler(
             outputs,
             warnings,
             RenderedSegmentIndices: currentState.TranscriptSegments.Select(static segment => segment.SegmentIndex).ToArray(),
-            Gating: BuildExportGating(request, mixPlan?.SourceAudioKind ?? ArtifactKind.NormalizedAudio)));
+            Gating: BuildExportGating(request, mixPlan?.SourceAudioKind ?? ArtifactKind.NormalizedAudio),
+            HasTimelineMedia: TimelineMediaMixPreparer.GetPlacements(currentState).Count > 0));
 
     // Persist the export-gating flag values for this run so StageArtifactResumeEvaluator can
     // compare them against a later run's snapshot. Produced by the same ExportResumeGating helper
