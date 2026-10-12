@@ -18,6 +18,66 @@ namespace Trackdub.Application.Tests;
 public sealed class MixPlanBuilderTests
 {
     [Fact]
+    public async Task Timeline_media_is_prepared_once_by_content_and_default_source_is_not_duplicated()
+    {
+        string root = Path.Join(Path.GetTempPath(), "Trackdub.Timeline.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string input = Path.Join(root, "media.mp4");
+            await File.WriteAllBytesAsync(input, [1, 2, 3], TestContext.Current.CancellationToken);
+            TestProjectContext context = CreateContext();
+            var now = DateTimeOffset.UtcNow;
+            var project = new TrackdubProject(context.ProjectId, "Timeline", now, now);
+            var media = new MediaAsset(context.MediaAssetId, context.ProjectId, "source.mp4", "source.mp4", "source",
+                100, now, "mp4", 8d, true, true, now);
+            var state = CreateState(project, media, [], [], [], []) with
+            {
+                ProjectUiSettings = new ProjectUiSettings(TimelinePlacements:
+                [
+                    new ProjectTimelineMediaPlacement("missing-old-source.mp4", "Source", 0, 0d, 8d),
+                    new ProjectTimelineMediaPlacement(input, "Added media", 1, 2d, 1d),
+                ])
+            };
+            var store = new FakeArtifactStore(root);
+            var extraction = new TimelineTestExtractionService();
+            var fingerprints = new FakeFileFingerprintService(new FileFingerprint("abc123", 3, now));
+            var preparer = new TimelineMediaMixPreparer(store, extraction, fingerprints);
+            var clips = await TimelineMediaMixPreparer.PrepareAsync(preparer, state, TestContext.Current.CancellationToken);
+            var clip = Assert.Single(clips);
+            Assert.Equal(2d, clip.StartSeconds);
+            Assert.Equal(1d, clip.DurationSeconds);
+            Assert.True(File.Exists(store.GetPath(clip.AudioRelativePath)));
+            await TimelineMediaMixPreparer.PrepareAsync(preparer, state, TestContext.Current.CancellationToken);
+            Assert.Equal(1, extraction.Calls);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => TimelineMediaMixPreparer.PrepareAsync(null, state,
+                TestContext.Current.CancellationToken));
+            var invalid = state with { ProjectUiSettings = new ProjectUiSettings(TimelinePlacements:
+                [new ProjectTimelineMediaPlacement(input, "Too long", 1, 7d, 2d)]) };
+            await Assert.ThrowsAsync<InvalidOperationException>(() => TimelineMediaMixPreparer.PrepareAsync(preparer, invalid,
+                TestContext.Current.CancellationToken));
+            File.Delete(input);
+            await Assert.ThrowsAsync<FileNotFoundException>(() => TimelineMediaMixPreparer.PrepareAsync(preparer, state,
+                TestContext.Current.CancellationToken));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private sealed class TimelineTestExtractionService : IAudioExtractionService
+    {
+        public int Calls { get; private set; }
+        public async Task<AudioExtractionResult> ExtractNormalizedAudioAsync(string sourcePath, string destinationPath,
+            CancellationToken cancellationToken, int? maxEncoderThreads = null)
+        {
+            Calls++;
+            await File.WriteAllBytesAsync(destinationPath, [1, 2, 3], cancellationToken);
+            return new AudioExtractionResult(destinationPath, 1d, 48000, 2, 48000);
+        }
+        public Task<AudioExtractionResult> ExtractStemSeparationAudioAsync(string sourcePath, string destinationPath,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    [Fact]
     public void Build_prefers_ambiance_and_places_fresh_takes_at_segment_start()
     {
         TestProjectContext context = CreateContext();

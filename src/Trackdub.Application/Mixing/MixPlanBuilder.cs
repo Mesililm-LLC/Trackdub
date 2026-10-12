@@ -23,7 +23,8 @@ public sealed record MixPlanBuildRequest(
     bool RestoreOriginalPan = false,
     bool ApplyTimbrePolish = true,
     IReadOnlyList<TtsCandidateGroup>? CandidateGroups = null,
-    double? MediaDurationSeconds = null);
+    double? MediaDurationSeconds = null,
+    IReadOnlyList<MixMediaClip>? MediaClips = null);
 
 public sealed class MixPlanBuilder(IArtifactStore? artifactStore = null)
 {
@@ -139,7 +140,8 @@ public sealed class MixPlanBuilder(IArtifactStore? artifactStore = null)
             ResolveOutputChannelCount(originalMixArtifact, sourceArtifact),
             request.RestoreOriginalPan,
             request.ApplyTimbrePolish,
-            vocalStemArtifact?.RelativePath);
+            vocalStemArtifact?.RelativePath,
+            request.MediaClips);
     }
 
     private static ProjectArtifact? SelectSourceAudioArtifact(IReadOnlyList<ProjectArtifact> artifacts) =>

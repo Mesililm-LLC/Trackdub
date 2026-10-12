@@ -166,6 +166,12 @@ public sealed class PreviewRangeRenderer(IArtifactStore artifactStore) : IPrevie
                     panGains);
             }
 
+            foreach (MixMediaClip clip in request.MixPlan.MediaClips)
+            {
+                await MixPlacedMediaAsync(clip, request.StartSeconds, range.EndSeconds,
+                    output, outputFrameCount, outputChannelCount, sampleRate, cancellationToken).ConfigureAwait(false);
+            }
+
             await WavePcm16.WriteSamplesAsync(
                     request.OutputPath,
                     new ArraySegment<float>(output, 0, outputSampleCount),
@@ -185,6 +191,47 @@ public sealed class PreviewRangeRenderer(IArtifactStore artifactStore) : IPrevie
             ArrayPool<float>.Shared.Return(duckingGains, clearArray: false);
             output.AsSpan(0, outputSampleCount).Clear();
             ArrayPool<float>.Shared.Return(output, clearArray: false);
+        }
+    }
+
+    private async Task MixPlacedMediaAsync(
+        MixMediaClip clip, double rangeStart, double rangeEnd,
+        float[] output, int frameCount, int channelCount, int sampleRate, CancellationToken cancellationToken)
+    {
+        if (!double.IsFinite(clip.StartSeconds) || clip.StartSeconds < 0d ||
+            !double.IsFinite(clip.DurationSeconds) || clip.DurationSeconds <= 0d)
+            throw new InvalidOperationException("Timeline mix clip has invalid timing.");
+        double start = Math.Max(rangeStart, clip.StartSeconds);
+        double end = Math.Min(rangeEnd, clip.StartSeconds + clip.DurationSeconds);
+        if (end <= start) return;
+        string path = artifactStore.GetPath(clip.AudioRelativePath);
+        if (!File.Exists(path)) throw new FileNotFoundException("Prepared timeline audio is missing.", path);
+        var info = await WavePcm16.ReadInfoAsync(path, cancellationToken).ConfigureAwait(false);
+        end = Math.Min(end, clip.StartSeconds + info.DurationSeconds);
+        if (end <= start) return;
+        var samples = await WavePcm16.ReadSamplesAsync(path, info, start - clip.StartSeconds,
+            end - start, cancellationToken).ConfigureAwait(false);
+        int firstOutputFrame = (int)Math.Round((start - rangeStart) * sampleRate);
+        int framesToMix = Math.Min(frameCount - firstOutputFrame, (int)Math.Ceiling((end - start) * sampleRate));
+        for (int frame = 0; frame < framesToMix; frame++)
+        {
+            if ((frame & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
+            double sourceFrame = frame * (double)info.SampleRate / sampleRate;
+            int index = (int)sourceFrame;
+            float fraction = (float)(sourceFrame - index);
+            int outputIndex = (firstOutputFrame + frame) * channelCount;
+            if (channelCount == 1)
+            {
+                float first = MapSourceFrameToMono(samples, index);
+                output[outputIndex] += first + (MapSourceFrameToMono(samples, index + 1) - first) * fraction;
+            }
+            else
+            {
+                var first = MapSourceFrameToStereo(samples, index);
+                var next = MapSourceFrameToStereo(samples, index + 1);
+                output[outputIndex] += first.Left + (next.Left - first.Left) * fraction;
+                output[outputIndex + 1] += first.Right + (next.Right - first.Right) * fraction;
+            }
         }
     }
 

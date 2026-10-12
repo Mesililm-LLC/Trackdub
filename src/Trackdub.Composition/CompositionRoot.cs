@@ -452,6 +452,7 @@ public static class CompositionRoot
                 AcceleratorVramDetector.DetectMaxDedicatedVramMb()));
 
         services.TryAddScoped<MixPlanBuilder>();
+        services.TryAddScoped<TimelineMediaMixPreparer>();
         services.TryAddScoped<MixPlanStore>();
         services.TryAddScoped<ProjectMediaIngestService>();
         services.TryAddScoped<TranscriptProjectStateService>();

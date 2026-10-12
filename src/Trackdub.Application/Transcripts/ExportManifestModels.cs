@@ -19,7 +19,8 @@ public sealed record ExportManifest(
     IReadOnlyList<ExportManifestOutput> Outputs,
     IReadOnlyList<string> Warnings,
     IReadOnlyList<ExportManifestSegment> Segments,
-    ExportManifestGating? Gating = null);
+    ExportManifestGating? Gating = null,
+    bool HasTimelineMedia = false);
 
 /// <summary>
 /// The export-gating flag values for the run that produced this manifest, captured so the
@@ -69,7 +70,8 @@ public sealed record ExportManifestBuildRequest(
     IReadOnlyList<ExportManifestOutput>? Outputs = null,
     IReadOnlyList<string>? Warnings = null,
     IReadOnlyCollection<int>? RenderedSegmentIndices = null,
-    ExportManifestGating? Gating = null);
+    ExportManifestGating? Gating = null,
+    bool HasTimelineMedia = false);
 
 public static class ExportManifestBuilder
 {
@@ -170,7 +172,8 @@ public static class ExportManifestBuilder
             request.Outputs ?? [],
             request.Warnings ?? [],
             segments,
-            request.Gating);
+            request.Gating,
+            request.HasTimelineMedia);
     }
 
     private static string? NormalizeLanguage(string? language) =>
