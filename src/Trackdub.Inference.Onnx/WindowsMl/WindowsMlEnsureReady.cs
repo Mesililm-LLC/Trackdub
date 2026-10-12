@@ -65,17 +65,40 @@ internal static class WindowsMlEnsureReady
         return result;
     }
 
-    private static Task<ExecutionProviderReadyResult> InvokeWithProgressAsync(
+    /// <summary>
+    /// Awaits a WinRT ensure-ready operation, forwarding normalized progress to
+    /// <paramref name="progress"/> while the await is in flight. A <c>0.0</c> report precedes every
+    /// operation so consumers can reset their UI, and the
+    /// <see cref="IAsyncOperationWithProgress{TResult, TProgress}.Progress"/> handler is detached
+    /// when the await ends (success, failure, or cancellation) so a late WinRT callback cannot
+    /// report into the sink after the install has finished.
+    /// </summary>
+    internal static async Task<ExecutionProviderReadyResult> InvokeWithProgressAsync(
         IAsyncOperationWithProgress<ExecutionProviderReadyResult, double> operation,
         IProgress<double>? progress,
         CancellationToken cancellationToken)
     {
-        if (progress is not null)
+        // Establish cancellation/completion ownership of the operation before running any consumer
+        // code, so a synchronously throwing progress sink cannot leave the operation unobserved.
+        Task<ExecutionProviderReadyResult> task = operation.AsTask(cancellationToken);
+
+        if (progress is null)
         {
-            progress.Report(0.0);
-            operation.Progress += (_, percent) => ReportPercent(progress, percent);
+            return await task.ConfigureAwait(false);
         }
-        return operation.AsTask(cancellationToken);
+
+        progress.Report(0.0);
+        AsyncOperationProgressHandler<ExecutionProviderReadyResult, double> handler =
+            (_, percent) => ReportPercent(progress, percent);
+        operation.Progress += handler;
+        try
+        {
+            return await task.ConfigureAwait(false);
+        }
+        finally
+        {
+            operation.Progress -= handler;
+        }
     }
 
     /// <summary>

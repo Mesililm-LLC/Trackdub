@@ -64,7 +64,7 @@ public sealed class MigraphxReadinessProbe : IMigraphxReadinessProbe
         }
 
         MigraphxBootstrapResult bootstrap = await _windowsCatalog
-            .EnsureRegisteredAsync(allowProviderDownloads: false, cancellationToken)
+            .EnsureRegisteredAsync(allowProviderDownloads: false, cancellationToken, progress)
             .ConfigureAwait(false);
 
         if (!bootstrap.Succeeded && bootstrap.Blocker is MigraphxReadinessBlocker.EpNotPresent && allowProviderDownloads)
