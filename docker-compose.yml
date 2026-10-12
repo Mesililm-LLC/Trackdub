@@ -1,0 +1,30 @@
+services:
+  trackdub:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_PATH: /data/trackdub.db
+      MODELS_CACHE_DIR: /data/models
+      AUTO_DOWNLOAD_MODELS: "false"
+      ONNX_PROVIDER: cpu
+    volumes:
+      - trackdub-data:/data
+      - ./docker/input:/work/input
+      - ./docker/output:/work/output
+      - trackdub-logs:/logs
+    stdin_open: true
+    tty: true
+    healthcheck:
+      test: ["CMD", "dotnet", "Trackdub.Cli.dll", "--help"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  trackdub-data:
+  trackdub-logs:
