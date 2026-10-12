@@ -252,7 +252,7 @@ internal sealed class ResidentInferenceHost : IResidentInferenceHost
             {
                 throw;
             }
-            catch (Exception ex) when (ex is OnnxRuntimeException || ex is InvalidOperationException)
+            catch (Exception ex)
             {
                 fallbackChain.Add(new ResidentFallbackStep(candidateLabel, ex.Message));
                 if (spec.RequireProvider)
