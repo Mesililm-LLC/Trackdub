@@ -316,7 +316,10 @@ public static class CompositionRoot
                         result.Succeeded,
                         result.InstallDirectory,
                         result.FailureDetail);
-                });
+                },
+                isLicenseAccepted: async cancellationToken =>
+                    (await settingsService.LoadAsync(cancellationToken).ConfigureAwait(false))
+                        .NvidiaTensorRtRtxLicenseAccepted);
         });
         services.TryAddSingleton<ITensorRtRtxReadinessProbe>(sp =>
             new CachingTensorRtRtxReadinessProbe(

@@ -75,9 +75,10 @@ public static class TensorRtRtxProviderConstants
     ];
 
     public const string LinuxInstallHint =
-        "Use Install in Model Manager to download TensorRT-RTX-EP-ABI v" + BundledVersionLinux + " " + BundledCudaVariant
-        + " for linux-x64, or run tools/dev/Fetch-TrtRtxEp.ps1, then refresh readiness. "
-        + "The bundle ships its own CUDA 13 runtime (libcudart.so.13).";
+        "Use Install in Model Manager to download NVIDIA's TensorRT-RTX EP ABI plugin (v" + BundledVersionLinux + " " + BundledCudaVariant
+        + ") through the LinML catalog, then refresh readiness. "
+        + "The plugin ships its own CUDA 13 runtime (libcudart.so.13). "
+        + "To use your own build instead, set " + PluginDirectoryEnvironmentVariable + ".";
 
     public const string WindowsInstallHint =
         "Use Install in Model Manager to download TensorRT-RTX-EP-ABI v" + BundledVersionWindows + " " + BundledCudaVariant
