@@ -206,29 +206,40 @@ public sealed class PreviewRangeRenderer(IArtifactStore artifactStore) : IPrevie
         if (end <= start) return;
         string path = artifactStore.GetPath(clip.AudioRelativePath);
         if (!File.Exists(path)) throw new FileNotFoundException("Prepared timeline audio is missing.", path);
-        var info = await WavePcm16.ReadInfoAsync(path, cancellationToken).ConfigureAwait(false);
-        end = Math.Min(end, clip.StartSeconds + info.DurationSeconds);
-        if (end <= start) return;
-        var samples = await WavePcm16.ReadSamplesAsync(path, info, start - clip.StartSeconds,
-            end - start, cancellationToken).ConfigureAwait(false);
+        WavePcm16Info info = await WavePcm16.ReadInfoAsync(path, cancellationToken).ConfigureAwait(false);
+        if (end > clip.StartSeconds + info.DurationSeconds + 0.01d)
+        {
+            throw new InvalidOperationException(
+                "Timeline clip audio is shorter than its placed slot and would be cut off.");
+        }
+
+        double sourceOriginSeconds = start - clip.StartSeconds;
+        double exactSourceFrames = sourceOriginSeconds * info.SampleRate;
+        double fractionalSourceFrame = exactSourceFrames - Math.Floor(exactSourceFrames);
+        double readDurationSeconds = (end - start) + (1d / info.SampleRate);
+        WavePcm16Samples samples = await WavePcm16.ReadSamplesAsync(
+            path, info, sourceOriginSeconds, readDurationSeconds, cancellationToken).ConfigureAwait(false);
         int firstOutputFrame = (int)Math.Round((start - rangeStart) * sampleRate);
         int framesToMix = Math.Min(frameCount - firstOutputFrame, (int)Math.Ceiling((end - start) * sampleRate));
         for (int frame = 0; frame < framesToMix; frame++)
         {
             if ((frame & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
-            double sourceFrame = frame * (double)info.SampleRate / sampleRate;
-            int index = (int)sourceFrame;
+            double sourceFrame = fractionalSourceFrame + (frame * (double)info.SampleRate / sampleRate);
+            int lastSourceFrame = Math.Max(0, samples.FrameCount - 1);
+            int index = Math.Clamp((int)Math.Floor(sourceFrame), 0, lastSourceFrame);
+            int nextIndex = Math.Min(lastSourceFrame, index + 1);
             float fraction = (float)(sourceFrame - index);
             int outputIndex = (firstOutputFrame + frame) * channelCount;
             if (channelCount == 1)
             {
                 float first = MapSourceFrameToMono(samples, index);
-                output[outputIndex] += first + ((MapSourceFrameToMono(samples, index + 1) - first) * fraction);
+                float next = MapSourceFrameToMono(samples, nextIndex);
+                output[outputIndex] += first + ((next - first) * fraction);
             }
             else
             {
-                var first = MapSourceFrameToStereo(samples, index);
-                var next = MapSourceFrameToStereo(samples, index + 1);
+                (float Left, float Right) first = MapSourceFrameToStereo(samples, index);
+                (float Left, float Right) next = MapSourceFrameToStereo(samples, nextIndex);
                 output[outputIndex] += first.Left + ((next.Left - first.Left) * fraction);
                 output[outputIndex + 1] += first.Right + ((next.Right - first.Right) * fraction);
             }
