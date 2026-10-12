@@ -118,7 +118,8 @@ public sealed class TimelineMediaMixPreparer(
             return placements.Where(placement => !IsSameMediaPath(placement.MediaPath, media.SourceFilePath)).ToArray();
 
         return placements
-            .Where(static placement => placement.TrackIndex != 0 || placement.StartSeconds != 0d)
+            .Where(static placement =>
+                placement.TrackIndex != 0 || Math.Abs(placement.StartSeconds) > TimingToleranceSeconds)
             .ToArray();
     }
 
