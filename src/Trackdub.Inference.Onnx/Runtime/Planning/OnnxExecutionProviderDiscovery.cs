@@ -144,7 +144,9 @@ public sealed class OnnxExecutionProviderDiscovery : IExecutionProviderDiscovery
         bool isWindows = hardwareProfile.OperatingSystem.Equals("windows", StringComparison.OrdinalIgnoreCase);
         bool isMacOs = hardwareProfile.OperatingSystem.Equals("macos", StringComparison.OrdinalIgnoreCase);
         bool isLinux = hardwareProfile.OperatingSystem.Equals("linux", StringComparison.OrdinalIgnoreCase);
-        bool isNvidiaGpu = hardwareProfile.GpuDescription?.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase) ?? false;
+        // WSL2 has no NVIDIA PCI device in the hardware profile, but a loaded driver (GPU passthrough) is an NVIDIA GPU.
+        bool isNvidiaGpu = (hardwareProfile.GpuDescription?.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase) ?? false)
+            || (isLinux && _linuxRuntimeProbe.IsNvidiaDriverLoaded());
         bool isAmdGpu = MigraphxProviderOrdering.ShouldPreferMigraphxOnAmdGpu(hardwareProfile);
         bool tensorRtRtxEnabled = await _isTensorRtRtxEnabled(cancellationToken).ConfigureAwait(false);
 
@@ -205,9 +207,12 @@ public sealed class OnnxExecutionProviderDiscovery : IExecutionProviderDiscovery
         bool windowsCudaAvailable = windowsCudaListed;
         bool windowsTensorRtAvailable = windowsTensorRtLibs && windowsTensorRtListed;
 
+        bool linuxCudaUsable = linuxNvidiaDriverLoaded && _linuxRuntimeProbe.IsCudaOrtProviderAvailable();
+
         ExecutionProviderAvailability cudaAvailability = ResolveCudaAvailability(
             isLinux,
             linuxNvidiaDriverLoaded,
+            linuxCudaUsable,
             isWindows,
             isNvidiaGpu,
             allowNativeCudaTensorRtOnWindows,
@@ -298,6 +303,7 @@ public sealed class OnnxExecutionProviderDiscovery : IExecutionProviderDiscovery
     private static ExecutionProviderAvailability ResolveCudaAvailability(
         bool isLinux,
         bool linuxNvidiaDriverLoaded,
+        bool linuxCudaUsable,
         bool isWindows,
         bool isNvidiaGpu,
         bool allowNativeCudaTensorRtOnWindows,
@@ -305,11 +311,17 @@ public sealed class OnnxExecutionProviderDiscovery : IExecutionProviderDiscovery
     {
         if (isLinux)
         {
-            return linuxNvidiaDriverLoaded
+            if (!linuxNvidiaDriverLoaded)
+            {
+                return new(ExecutionProviderKind.Cuda, false, "No loaded NVIDIA driver detected on Linux.");
+            }
+
+            return linuxCudaUsable
                 ? new(ExecutionProviderKind.Cuda, true,
-                    "NVIDIA GPU detected; CUDA EP verified at session bootstrap.")
+                    "NVIDIA GPU detected and CUDAExecutionProvider is usable.")
                 : new(ExecutionProviderKind.Cuda, false,
-                    "No loaded NVIDIA driver detected on Linux.");
+                    "NVIDIA GPU detected, but CUDAExecutionProvider is not usable in the loaded ONNX Runtime "
+                    + "(it needs a CUDA-enabled build and the CUDA libraries).");
         }
 
         if (isWindows && allowNativeCudaTensorRtOnWindows)
@@ -344,7 +356,7 @@ public sealed class OnnxExecutionProviderDiscovery : IExecutionProviderDiscovery
         {
             return linuxTensorRtAvailable
                 ? new(ExecutionProviderKind.TensorRt, true,
-                    "NVIDIA driver and libnvinfer detected; TensorRT availability is verified at session bootstrap.")
+                    "NVIDIA driver, libnvinfer and TensorrtExecutionProvider are usable.")
                 : new(ExecutionProviderKind.TensorRt, false,
                     ResolveLinuxTensorRtUnavailableDetail(isLinux: true, linuxNvidiaDriverLoaded));
         }
@@ -395,7 +407,7 @@ public sealed class OnnxExecutionProviderDiscovery : IExecutionProviderDiscovery
         }
 
         return linuxNvidiaDriverLoaded
-            ? "libnvinfer not found; TensorRT native EP is unavailable."
+            ? "libnvinfer not found or TensorrtExecutionProvider is not usable; TensorRT native EP is unavailable."
             : "No loaded NVIDIA driver detected on Linux; TensorRT native EP is unavailable.";
     }
 

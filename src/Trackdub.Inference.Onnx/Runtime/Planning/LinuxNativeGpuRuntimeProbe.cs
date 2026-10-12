@@ -1,3 +1,7 @@
+#if LINML
+using LinML.Contracts;
+using Trackdub.Inference.Onnx.ExecutionProviders.LinMl;
+#endif
 using Trackdub.Inference.Onnx.Migraphx;
 
 namespace Trackdub.Inference.Onnx.Runtime.Planning;
@@ -17,8 +21,9 @@ public interface ILinuxNativeGpuRuntimeProbe
 
 public sealed class LinuxNativeGpuRuntimeProbe : ILinuxNativeGpuRuntimeProbe
 {
+    // WSL2 exposes the GPU through /dev/dxg instead of /proc/driver/nvidia.
     public bool IsNvidiaDriverLoaded() =>
-        Directory.Exists("/proc/driver/nvidia/gpus");
+        Directory.Exists("/proc/driver/nvidia/gpus") || LinuxWsl.HasNvidiaGpuPassthrough();
 
     public bool IsAmdGpuPresent()
     {
@@ -63,9 +68,27 @@ public sealed class LinuxNativeGpuRuntimeProbe : ILinuxNativeGpuRuntimeProbe
         return false;
     }
 
-    public bool IsNativeTensorRtAvailable() => NativeTensorRtLibraryProbe.IsNativeTensorRtAvailable();
+    // On Linux the native TensorRT route needs both libnvinfer and a usable TensorrtExecutionProvider.
+    public bool IsNativeTensorRtAvailable()
+    {
+        if (!NativeTensorRtLibraryProbe.IsNativeTensorRtAvailable())
+        {
+            return false;
+        }
 
-    public bool IsCudaOrtProviderAvailable() => CudaOrtProbe.IsCudaProviderListed();
+#if LINML
+        return LinMlBuiltInProviders.IsReady(ProviderId.Tensorrt);
+#else
+        return true;
+#endif
+    }
+
+    public bool IsCudaOrtProviderAvailable() =>
+#if LINML
+        LinMlBuiltInProviders.IsReady(ProviderId.Cuda);
+#else
+        CudaOrtProbe.IsCudaProviderListed();
+#endif
 
     public bool IsMigraphxOrtProviderAvailable() =>
         MigraphxOrtProbe.IsProviderListed();

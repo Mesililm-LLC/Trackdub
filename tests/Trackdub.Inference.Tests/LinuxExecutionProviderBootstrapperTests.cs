@@ -207,6 +207,34 @@ public sealed class LinuxExecutionProviderBootstrapperTests
     }
 
     [Fact]
+    public async Task Cuda_falls_back_to_Cpu_when_the_driver_is_loaded_but_the_Cuda_provider_is_not_usable_Async()
+    {
+        var bootstrapper = Make(
+            openVinoAvailable: false,
+            new StubLinuxNativeGpuRuntimeProbe(nvidiaDriverLoaded: true, nativeTensorRtAvailable: false, cudaOrtProviderAvailable: false));
+
+        var result = await bootstrapper.BootstrapAsync(ExecutionProviderKind.Cuda, allowDownloads: false, default);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(ExecutionProviderKind.Cpu, result.SelectedProvider);
+        Assert.Contains("CUDAExecutionProvider", result.FailureReason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TensorRt_falls_back_to_Cpu_when_neither_TensorRt_nor_Cuda_is_usable_Async()
+    {
+        var bootstrapper = Make(
+            openVinoAvailable: false,
+            new StubLinuxNativeGpuRuntimeProbe(nvidiaDriverLoaded: true, nativeTensorRtAvailable: false, cudaOrtProviderAvailable: false));
+
+        var result = await bootstrapper.BootstrapAsync(ExecutionProviderKind.TensorRt, allowDownloads: false, default);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(ExecutionProviderKind.Cpu, result.SelectedProvider);
+        Assert.Contains("libnvinfer", result.FailureReason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task TensorRt_falls_back_to_Cuda_when_nvidia_driver_exists_without_libnvinfer_Async()
     {
         var bootstrapper = Make(

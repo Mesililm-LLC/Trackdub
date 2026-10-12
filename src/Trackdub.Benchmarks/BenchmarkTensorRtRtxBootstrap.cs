@@ -66,7 +66,10 @@ internal static class BenchmarkTensorRtRtxBootstrap
                     result.Succeeded,
                     result.InstallDirectory,
                     result.FailureDetail);
-            });
+            },
+            isLicenseAccepted: async cancellationToken =>
+                (await settingsService.LoadAsync(cancellationToken).ConfigureAwait(false))
+                    .NvidiaTensorRtRtxLicenseAccepted);
     }
 
     private static TrtRtxEpBundleInstaller CreateBundleInstaller(

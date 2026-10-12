@@ -96,8 +96,8 @@
       },
       "LinML.Contracts": {
         "type": "Transitive",
-        "resolved": "0.2.0",
-        "contentHash": "uRu5E6O7I48qI41YzGPdpk/bhtzIX5OeMOdcD+/VQLmm15MpU7Ha4O/m8bkNGiJPWGcvZEFZa3TUt5111vm6Rw=="
+        "resolved": "0.4.1",
+        "contentHash": "PvnZpYH02RcUf1rZx7o/8+Ru9OZIqwgW30CYJz4ZhRZ4s1CowXJ0Og1ENo19Tu4AJTaqfqZAbHhqp/tqREpsaw=="
       },
       "Lucene.Net": {
         "type": "Transitive",
@@ -404,7 +404,7 @@
       "trackdub.inference.onnx": {
         "type": "Project",
         "dependencies": {
-          "LinML.Catalog": "[0.2.0, )",
+          "LinML.Catalog": "[0.4.1, )",
           "MathNet.Numerics": "[5.0.0, )",
           "Microsoft.ML.OnnxRuntime": "[1.31.0, )",
           "Microsoft.ML.OnnxRuntime.Gpu": "[1.31.0, )",
@@ -488,11 +488,11 @@
       },
       "LinML.Catalog": {
         "type": "CentralTransitive",
-        "requested": "[0.2.0, )",
-        "resolved": "0.2.0",
-        "contentHash": "AFOCwwzOmI4oGXv7nlfA8sCnrVhLpj+pc/eanjUacrqH+jyudsQ6Qt742/VB8OuTIjnDiweVIn9vFjGoLXVKyg==",
+        "requested": "[0.4.1, )",
+        "resolved": "0.4.1",
+        "contentHash": "fvwPT/no8Wfsq51DXggVZgm0yAJpx666WLF1E39eY8fqUEId6FcxZ8nGBsxKx5MHdMhudVFmUn8fVALRPP6nAQ==",
         "dependencies": {
-          "LinML.Contracts": "0.2.0",
+          "LinML.Contracts": "0.4.1",
           "Microsoft.ML.OnnxRuntime.Managed": "1.31.0"
         }
       },

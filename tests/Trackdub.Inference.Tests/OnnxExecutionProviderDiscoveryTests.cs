@@ -27,6 +27,37 @@ public sealed class OnnxExecutionProviderDiscoveryTests
     }
 
     [Fact]
+    public async Task DiscoverAsync_LinuxWithLoadedNvidiaDriverButNoNvidiaPciDevice_TreatsTheGpuAsNvidia()
+    {
+        // WSL2 passthrough: the hardware profile lists a Microsoft virtual adapter, not the NVIDIA GPU.
+        var discovery = new OnnxExecutionProviderDiscovery(
+            new StubOpenVinoProvider(false),
+            new StubLinuxNativeGpuRuntimeProbe(nvidiaDriverLoaded: true, nativeTensorRtAvailable: false));
+
+        IReadOnlyList<ExecutionProviderAvailability> availabilities = await discovery.DiscoverAsync(
+            new HardwareProfile("linux", "x64", HasGpu: true, GpuDescription: "Microsoft Corporation Device 008e"),
+            CancellationToken.None);
+
+        Assert.True(availabilities.Single(a => a.Provider == ExecutionProviderKind.Cuda).IsAvailable);
+    }
+
+    [Fact]
+    public async Task DiscoverAsync_LinuxWithNvidiaDriverButUnusableCudaProvider_ReportsCudaUnavailable()
+    {
+        var discovery = new OnnxExecutionProviderDiscovery(
+            new StubOpenVinoProvider(false),
+            new StubLinuxNativeGpuRuntimeProbe(nvidiaDriverLoaded: true, nativeTensorRtAvailable: false, cudaOrtProviderAvailable: false));
+
+        IReadOnlyList<ExecutionProviderAvailability> availabilities = await discovery.DiscoverAsync(
+            new HardwareProfile("linux", "x64", HasGpu: true, GpuDescription: "NVIDIA RTX 4090"),
+            CancellationToken.None);
+
+        ExecutionProviderAvailability cuda = availabilities.Single(a => a.Provider == ExecutionProviderKind.Cuda);
+        Assert.False(cuda.IsAvailable);
+        Assert.Contains("not usable", cuda.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task DiscoverAsync_LinuxWithNvidiaDriverAndTensorRt_ReportsTensorRtAvailable()
     {
         var discovery = new OnnxExecutionProviderDiscovery(
@@ -375,7 +406,8 @@ public sealed class OnnxExecutionProviderDiscoveryTests
     private sealed class StubLinuxNativeGpuRuntimeProbe(
         bool nvidiaDriverLoaded,
         bool nativeTensorRtAvailable,
-        bool amdGpuPresent = false)
+        bool amdGpuPresent = false,
+        bool cudaOrtProviderAvailable = true)
         : ILinuxNativeGpuRuntimeProbe
     {
         public bool IsNvidiaDriverLoaded() => nvidiaDriverLoaded;
@@ -384,7 +416,7 @@ public sealed class OnnxExecutionProviderDiscoveryTests
 
         public bool IsNativeTensorRtAvailable() => nativeTensorRtAvailable;
 
-        public bool IsCudaOrtProviderAvailable() => true;
+        public bool IsCudaOrtProviderAvailable() => cudaOrtProviderAvailable;
 
         public bool IsMigraphxOrtProviderAvailable() => false;
     }

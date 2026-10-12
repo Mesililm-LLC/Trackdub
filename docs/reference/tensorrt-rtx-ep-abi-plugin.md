@@ -80,6 +80,17 @@ Trackdub ships the EP ABI plugin through a pinned manifest, not the Windows ML c
 - **In-app install:** Model Manager **Install** calls `ITrtRtxEpInstaller` after `NvidiaTensorRtRtx` license acceptance, persists `StudioSettings.TensorRtRtxPluginDirectory`, then registers via `ITensorRtRtxProviderBootstrap`.
 - **Inference bootstrap:** registers an already-installed bundle only; it **never** downloads the EP bundle (same policy as WinML catalog EPs during session bootstrap).
 
+## Linux: LinML catalog route
+
+On Linux the plugin is not installed from the manifest bundle. `LinMlTensorRtRtxBootstrap`
+prepares NVIDIA's pinned EP ABI wheel through `LinML.Catalog` (vendored under
+`~/.local/linml-deps`), after the NVIDIA hardware and license gates; Model Manager **Install**
+and `trackdub providers trt-rtx install --accept-license` skip the bundle download and call
+the bootstrap with downloads allowed. `StudioSettings.TensorRtRtxPluginDirectory` and
+`TRACKDUB_TRT_RTX_EP_DIR` still take precedence when they point at a complete plugin
+directory. On WSL2 it registers LinML's patched plugin when that is vendored (the stock one
+exposes no device there). Windows is unchanged. Details: [gpu-execution-providers.md](gpu-execution-providers.md#tensorrt-rtx-on-linux).
+
 ## Download policy (install vs session)
 
 | Path | May download TRT RTX EP bundle? |

@@ -40,14 +40,16 @@ public sealed class GpuRuntimeInstallOrchestrator(
     {
         ArgumentNullException.ThrowIfNull(progress);
 
-        // Linux installs only the LinML catalog's plugin EPs: OpenVINO and MIGraphX.
+        // Linux installs only the LinML catalog's plugin EPs: OpenVINO, MIGraphX and TensorRT RTX.
         if (!OperatingSystem.IsWindows()
             && !(OperatingSystem.IsLinux()
-                && runtimeKind is StarterPackGpuRuntimeKind.IntelOpenVino or StarterPackGpuRuntimeKind.AmdMigraphx))
+                && runtimeKind is StarterPackGpuRuntimeKind.IntelOpenVino
+                    or StarterPackGpuRuntimeKind.AmdMigraphx
+                    or StarterPackGpuRuntimeKind.NvidiaTensorRtRtx))
         {
             return new GpuRuntimeInstallResult(
                 Succeeded: false,
-                FailureDetail: "GPU runtime install is only available on Windows (and Intel OpenVINO or AMD MIGraphX on Linux).");
+                FailureDetail: "GPU runtime install is only available on Windows (and Intel OpenVINO, AMD MIGraphX or NVIDIA TensorRT RTX on Linux).");
         }
 
         return runtimeKind switch
