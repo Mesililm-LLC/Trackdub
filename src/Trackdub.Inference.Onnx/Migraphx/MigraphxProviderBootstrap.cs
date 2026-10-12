@@ -13,10 +13,11 @@ public sealed class MigraphxProviderBootstrap : IMigraphxProviderBootstrap
 
     public async Task<MigraphxBootstrapResult> EnsureRegisteredAsync(
         bool allowProviderDownloads,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<double>? progress = null)
     {
         MigraphxReadinessReport report = await _probe
-            .ProbeAsync(allowProviderDownloads, cancellationToken)
+            .ProbeAsync(allowProviderDownloads, cancellationToken, progress)
             .ConfigureAwait(false);
 
         if (report.IsReady)

@@ -10,7 +10,8 @@ public interface IMigraphxRuntimeReadinessService
 {
     Task<MigraphxRuntimeReadinessSnapshot> ProbeAsync(
         bool allowProviderDownloads,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        IProgress<double>? progress = null);
 }
 
 public sealed record MigraphxRuntimeReadinessSnapshot(

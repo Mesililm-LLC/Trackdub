@@ -10,7 +10,8 @@ public interface IGpuRuntimeInstallOrchestrator
     Task<GpuRuntimeInstallResult> InstallAsync(
         StarterPackGpuRuntimeKind runtimeKind,
         IProgress<string> progress,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        IProgress<double>? percentProgress = null);
 }
 
 public sealed record GpuRuntimeInstallResult(
