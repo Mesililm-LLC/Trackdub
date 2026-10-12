@@ -1533,10 +1533,8 @@ internal static class OnnxExecutionSessionFactory
             ExecutionProviderKind.OpenVinoCatalog => CreateOpenVinoCatalogSelection(options),
             ExecutionProviderKind.Qnn => CreateQnnSelection(options),
             ExecutionProviderKind.VitisAi => CreateVitisAiSelection(options),
-#if LINUX || WINDOWS
-            ExecutionProviderKind.Cuda => CreateCudaSelection(options),
-            ExecutionProviderKind.TensorRt => CreateTensorRtSelection(options),
-#endif
+            ExecutionProviderKind.Cuda when !OperatingSystem.IsMacOS() => CreateCudaSelection(options),
+            ExecutionProviderKind.TensorRt when !OperatingSystem.IsMacOS() => CreateTensorRtSelection(options),
 #if LINML
             ExecutionProviderKind.OpenVino when OperatingSystem.IsLinux() => CreateLinuxOpenVinoSelection(options),
 #endif
@@ -1605,7 +1603,6 @@ internal static class OnnxExecutionSessionFactory
         return new SessionOptionsSelection(options, ExecutionProviderKind.CoreMl);
     }
 
-#if LINUX || WINDOWS
     private static SessionOptionsSelection CreateCudaSelection(SessionOptions options)
     {
         options.AppendExecutionProvider_CUDA(deviceId: 0);
@@ -1617,7 +1614,6 @@ internal static class OnnxExecutionSessionFactory
         options.AppendExecutionProvider_Tensorrt(deviceId: 0);
         return new SessionOptionsSelection(options, ExecutionProviderKind.TensorRt);
     }
-#endif
 
 #if LINML
     [System.Runtime.Versioning.SupportedOSPlatform("linux")]
@@ -2246,11 +2242,7 @@ internal static class OnnxExecutionSessionFactory
             or ExecutionProviderKind.Migraphx;
 
     private static bool IsNativeGpuProvider(ExecutionProviderKind provider) =>
-#if LINUX || WINDOWS
-        provider is ExecutionProviderKind.Cuda or ExecutionProviderKind.TensorRt;
-#else
-        false;
-#endif
+        !OperatingSystem.IsMacOS() && provider is (ExecutionProviderKind.Cuda or ExecutionProviderKind.TensorRt);
 
     internal static bool ShouldUseCatalogDevicePolicy(
         WindowsMlExecutionDevicePolicy devicePolicy,
@@ -2284,16 +2276,22 @@ internal static class OnnxExecutionSessionFactory
         }
     }
 
-    private static IExecutionProviderBootstrapper GetPlatformBootstrapper()
+    internal static IExecutionProviderBootstrapper GetPlatformBootstrapper()
     {
 #if WINDOWS
         return new ExecutionProviders.Windows.WindowsExecutionProviderBootstrapper();
-#elif MACOS
-        return new ExecutionProviders.Mac.MacExecutionProviderBootstrapper();
-#elif LINUX
-        return new ExecutionProviders.Linux.LinuxExecutionProviderBootstrapper(
-            NullOpenVinoAvailabilityProvider.Instance);
 #else
+        if (OperatingSystem.IsMacOSVersionAtLeast(10, 15))
+        {
+            return new ExecutionProviders.Mac.MacExecutionProviderBootstrapper();
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+            return new ExecutionProviders.Linux.LinuxExecutionProviderBootstrapper(
+                NullOpenVinoAvailabilityProvider.Instance);
+        }
+
         return new ExecutionProviders.PortableExecutionProviderBootstrapper(
             TensorRtRtx.TensorRtRtxProviderBootstrapFactory.CreateWithDefaultInstallPath(
                 Path.Join(

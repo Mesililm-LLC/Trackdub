@@ -38,11 +38,13 @@ public sealed class GpuRuntimeInstallOrchestrator(
     {
         ArgumentNullException.ThrowIfNull(progress);
 
-        if (!OperatingSystem.IsWindows())
+        // Linux installs only the OpenVINO plugin EP, through the LinML catalog.
+        if (!OperatingSystem.IsWindows()
+            && !(OperatingSystem.IsLinux() && runtimeKind is StarterPackGpuRuntimeKind.IntelOpenVino))
         {
             return new GpuRuntimeInstallResult(
                 Succeeded: false,
-                FailureDetail: "GPU runtime install is only available on Windows.");
+                FailureDetail: "GPU runtime install is only available on Windows (and Intel OpenVINO on Linux).");
         }
 
         return runtimeKind switch

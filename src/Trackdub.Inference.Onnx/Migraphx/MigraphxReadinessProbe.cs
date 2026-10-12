@@ -9,9 +9,7 @@ public sealed class MigraphxReadinessProbe : IMigraphxReadinessProbe
 #if WINDOWS
     private readonly WindowsMlMigraphxCatalogService _windowsCatalog = new();
 #endif
-#if LINUX
     private readonly ILinuxNativeGpuRuntimeProbe _linuxRuntimeProbe = new LinuxNativeGpuRuntimeProbe();
-#endif
 
     public async Task<MigraphxReadinessReport> ProbeAsync(
         bool allowProviderDownloads,
@@ -26,12 +24,10 @@ public sealed class MigraphxReadinessProbe : IMigraphxReadinessProbe
         }
 #endif
 
-#if LINUX
         if (OperatingSystem.IsLinux())
         {
             return ProbeLinux();
         }
-#endif
 
         return new MigraphxReadinessReport(
             ProviderId: string.Empty,
@@ -90,7 +86,6 @@ public sealed class MigraphxReadinessProbe : IMigraphxReadinessProbe
     }
 #endif
 
-#if LINUX
     private MigraphxReadinessReport ProbeLinux()
     {
         const string providerId = MigraphxProviderIds.Rocm;
@@ -124,5 +119,4 @@ public sealed class MigraphxReadinessProbe : IMigraphxReadinessProbe
                 ? "MIGraphXExecutionProvider is listed by ONNX Runtime."
                 : MigraphxProviderConstants.LinuxInstallHint);
     }
-#endif
 }

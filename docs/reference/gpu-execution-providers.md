@@ -14,6 +14,10 @@ on Windows:
 | `net10.0-windows10.0.19041.0` | CPU, TensorRT RTX, **DirectML**, Windows ML catalog EPs (MIGraphX, OpenVINO catalog, QNN, VitisAI) |
 | Linux `net10.0` | CPU, TensorRT RTX, native CUDA/TensorRT (system ORT GPU build), **OpenVINO** (plugin EP via [LinML.Catalog](https://github.com/trackdubllc/LinML)) |
 
+The portable `net10.0` build compiles the Linux and macOS code paths on every build host and
+picks the bootstrapper, device enumerator and native routes with `OperatingSystem.IsLinux()` /
+`IsMacOS()` at run time, so the same artifact behaves the same whichever OS built it.
+
 `OnnxRuntimeBuildCapabilities` encodes this per target framework. Provider
 discovery consults it, so `trackdub providers list` on the portable build reports
 DirectML and the Windows ML catalog EPs as unavailable instead of listing them
@@ -31,8 +35,18 @@ exposes (only the CPU device in OpenVINO CPU-proxy mode). Discovery never downlo
 it registers an installed plugin and reports OpenVINO available only when it exposes
 a usable device. While any OpenVINO device is excluded for a run, the planner treats
 OpenVINO as unavailable, because the catalog append cannot be pinned to a device
-index. There is no in-app install action on Linux yet; the plugin must already be
-under LinML's install root. The standalone OpenVINO runtime component
+index.
+
+Installing on Linux uses the same path as the Windows ML catalog EPs:
+`OpenVinoCatalogReadinessProbe` reports the `LinMlCatalog` route, the runtime
+readiness service offers the install while the plugin is missing or its download
+failed, `StarterPackGpuSetupAdvisor` proposes `IntelOpenVino` on Intel hardware, and
+`GpuRuntimeInstallOrchestrator` dispatches it to `OpenVinoCatalogEpInstaller`, which
+downloads, verifies and registers the pinned plugin through LinML. On Linux these
+offer and accept only `IntelOpenVino`, and only on hardware with an Intel CPU or an
+Intel display/NPU PCI device; other runtime kinds stay Windows-only. The caller obtains Intel license consent first, as on Windows.
+Opt-in check: `TRACKDUB_LINML_OPENVINO_INSTALL_E2E=1 dotnet test
+tests/Trackdub.Composition.Tests -f net10.0 --filter Installer_end_to_end`. The standalone OpenVINO runtime component
 (`libopenvino_c.so`) registers no ORT execution provider and no longer decides
 OpenVINO readiness on Linux.
 

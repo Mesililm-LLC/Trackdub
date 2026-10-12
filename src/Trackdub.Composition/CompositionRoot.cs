@@ -802,14 +802,12 @@ public static class CompositionRoot
                 : null,
             MaxAcceleratorVramMb: maxAcceleratorVramMb);
 
-#if LINUX
     [SupportedOSPlatform("linux")]
     private static IExecutionProviderBootstrapper CreateLinuxExecutionProviderBootstrapper(IServiceProvider sp) =>
         new Trackdub.Inference.Onnx.ExecutionProviders.Linux.LinuxExecutionProviderBootstrapper(
             sp.GetRequiredService<IOpenVinoAvailabilityProvider>(),
             new LinuxNativeGpuRuntimeProbe(),
             sp.GetRequiredService<ITensorRtRtxProviderBootstrap>());
-#endif
 
     private static void AddHardwareRouting(IServiceCollection services)
     {
@@ -837,24 +835,19 @@ public static class CompositionRoot
 
         // IDeviceEnumerator — platform-specific GPU/NPU discovery, singleton. The platform
         // dispatch lives in DeviceEnumeratorFactory so the pre-container callers share it.
-#if LINUX
-#pragma warning disable CA1416 // Linux-only types registered under LINUX compile constant
+        // Resolved only on Linux (below); registering it elsewhere is harmless.
+#pragma warning disable CA1416 // PhysicalSysfsReader is Linux-only and is only resolved on Linux
         services.TryAddSingleton<ISysfsReader, PhysicalSysfsReader>();
 #pragma warning restore CA1416
-#endif
         services.TryAddSingleton<IDeviceEnumerator>(sp =>
-#if LINUX
-#pragma warning disable CA1416 // Linux-only type resolved under LINUX compile constant
-            DeviceEnumeratorFactory.CreateLinux(
-                sp.GetRequiredService<IOpenVinoAvailabilityProvider>(),
-                sp.GetRequiredService<ILoggerFactory>(),
-                sp.GetRequiredService<ISysfsReader>()));
-#pragma warning restore CA1416
-#else
-            DeviceEnumeratorFactory.Create(
-                sp.GetRequiredService<IOpenVinoAvailabilityProvider>(),
-                sp.GetRequiredService<ILoggerFactory>()));
-#endif
+            OperatingSystem.IsLinux()
+                ? DeviceEnumeratorFactory.CreateLinux(
+                    sp.GetRequiredService<IOpenVinoAvailabilityProvider>(),
+                    sp.GetRequiredService<ILoggerFactory>(),
+                    sp.GetRequiredService<ISysfsReader>())
+                : DeviceEnumeratorFactory.Create(
+                    sp.GetRequiredService<IOpenVinoAvailabilityProvider>(),
+                    sp.GetRequiredService<ILoggerFactory>()));
 
         // IProcessGpuMemoryReader — this process's dedicated GPU memory, used both as benchmark
         // evidence and as the shared session pool's accelerator-admission observation. Registered
@@ -880,27 +873,16 @@ public static class CompositionRoot
                     WindowsMlProviderRegistrationPolicy.Shared,
                     sp.GetRequiredService<INativeCudaTensorRtWindowsPolicy>(),
                     sp.GetRequiredService<ITensorRtRtxProviderBootstrap>());
-#elif MACOS
-#pragma warning disable CA1416 // macOS-only types registered under MACOS compile constant
+#else
+            // The portable TFM picks the platform bootstrapper at run time, so the same artifact
+            // behaves the same whichever OS built it.
             IExecutionProviderBootstrapper bootstrapper =
-                new Trackdub.Inference.Onnx.ExecutionProviders.Mac.MacExecutionProviderBootstrapper();
-#pragma warning restore CA1416
-#else
-            IExecutionProviderBootstrapper bootstrapper;
-#if LINUX
-            if (OperatingSystem.IsLinux())
-            {
-                bootstrapper = CreateLinuxExecutionProviderBootstrapper(sp);
-            }
-            else
-            {
-                bootstrapper = new PortableExecutionProviderBootstrapper(
-                    sp.GetRequiredService<ITensorRtRtxProviderBootstrap>());
-            }
-#else
-            bootstrapper = new PortableExecutionProviderBootstrapper(
-                sp.GetRequiredService<ITensorRtRtxProviderBootstrap>());
-#endif
+                OperatingSystem.IsMacOSVersionAtLeast(10, 15)
+                    ? new Trackdub.Inference.Onnx.ExecutionProviders.Mac.MacExecutionProviderBootstrapper()
+                    : OperatingSystem.IsLinux()
+                        ? CreateLinuxExecutionProviderBootstrapper(sp)
+                        : new PortableExecutionProviderBootstrapper(
+                            sp.GetRequiredService<ITensorRtRtxProviderBootstrap>());
 #endif
             OnnxExecutionProviderBootstrapperRegistry.Initialize(
                 bootstrapper,
