@@ -332,7 +332,7 @@ internal sealed class ResidentInferenceHost : IResidentInferenceHost
         IReadOnlyList<ServeTensor> inputs,
         CancellationToken cancellationToken)
     {
-        var inputValues = new List<OrtValue>(inputs.Count);
+        using var inputValues = new DisposableList<OrtValue>(inputs.Count);
         try
         {
             foreach (ServeTensor input in inputs)
@@ -364,11 +364,16 @@ internal sealed class ResidentInferenceHost : IResidentInferenceHost
         {
             throw new OperationCanceledException(cancellationToken);
         }
-        finally
+    }
+
+    private sealed class DisposableList<T>(int capacity) : List<T>(capacity), IDisposable
+        where T : IDisposable
+    {
+        public void Dispose()
         {
-            foreach (OrtValue value in inputValues)
+            foreach (T item in this)
             {
-                value.Dispose();
+                item.Dispose();
             }
         }
     }
