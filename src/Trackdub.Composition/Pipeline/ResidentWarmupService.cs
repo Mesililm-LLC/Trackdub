@@ -139,7 +139,23 @@ public sealed class ResidentWarmupService : IResidentWarmupService
             {
                 throw;
             }
-            catch (Exception ex)
+            catch (InvalidOperationException ex)
+            {
+                outcome = new ResidentProviderBootstrapOutcome(provider, Ready: false, ex.Message);
+            }
+            catch (NotSupportedException ex)
+            {
+                outcome = new ResidentProviderBootstrapOutcome(provider, Ready: false, ex.Message);
+            }
+            catch (DllNotFoundException ex)
+            {
+                outcome = new ResidentProviderBootstrapOutcome(provider, Ready: false, ex.Message);
+            }
+            catch (TypeLoadException ex)
+            {
+                outcome = new ResidentProviderBootstrapOutcome(provider, Ready: false, ex.Message);
+            }
+            catch (BadImageFormatException ex)
             {
                 outcome = new ResidentProviderBootstrapOutcome(provider, Ready: false, ex.Message);
             }
