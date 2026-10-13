@@ -321,3 +321,6 @@ __pycache__/
 /workers/supervisor/target
 
 e2e-*-log.txt
+
+# Snapdragon QNN smoke scratch (venv, generated model, results)
+tools/provider-smoke/.qnn-smoke/

@@ -38,7 +38,7 @@ public static class BenchmarkConsole
         writer.WriteLine("  --model <path-or-scope>  ONNX model path or scoped model reference under ./models.");
         writer.WriteLine($"  --scope {TrtRtxSmokeCatalog.ScopeName}  Run bundled starter-pack TRT RTX smoke targets (skips models not cached locally).");
         writer.WriteLine("  --output <path>     Output report path. Defaults to benchmark-report.json in the current directory.");
-        writer.WriteLine("  --provider <name>   Provider preference: cpu, auto, dml, migraphx, or trt-rtx. Defaults to cpu.");
+        writer.WriteLine("  --provider <name>   Provider preference: cpu, auto, dml, migraphx, qnn, or trt-rtx. Defaults to cpu.");
         writer.WriteLine("  --windows-ml-device-policy <name>  Windows ML EP device policy for catalog GPU runs. Defaults to explicit when omitted.");
         writer.WriteLine("  --runs <n>          Planned measured run count. Defaults to 5.");
         writer.WriteLine("  --variant <name>    Run a specific variant for the selected model reference.");

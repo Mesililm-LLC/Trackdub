@@ -243,6 +243,7 @@ public sealed class HardwareProfilerService(
             BenchmarkProviderPreference.Migraphx => "migraphx",
             BenchmarkProviderPreference.Cuda => "cuda",
             BenchmarkProviderPreference.TensorRt => "tensorrt",
+            BenchmarkProviderPreference.Qnn => "qnn",
             _ => throw new ArgumentOutOfRangeException(nameof(preference), preference, "Unknown provider preference.")
         };
 

@@ -7,8 +7,8 @@ Internal checklist for Intel OpenVINO, Qualcomm QNN, AMD MIGraphX, and AMD Vitis
 | Path | Enum | When used |
 |------|------|-----------|
 | Standalone OpenVINO | `ExecutionProviderKind.OpenVino` | Linux; optional Windows install via component downloader (`Infrastructure`). |
-| WinML catalog OpenVINO (stub) | `ExecutionProviderKind.OpenVinoCatalog` | Future Windows catalog append; **not** the same as standalone OpenVINO. |
-| WinML catalog QNN (stub) | `ExecutionProviderKind.Qnn` | Future Snapdragon / NPU catalog EP on Windows. |
+| WinML catalog OpenVINO | `ExecutionProviderKind.OpenVinoCatalog` | Windows catalog append (`TryAppendOpenVinoCatalogProvider`); **not** the same as standalone OpenVINO. |
+| WinML catalog QNN | `ExecutionProviderKind.Qnn` | Snapdragon / NPU catalog EP on Windows (`TryAppendQnnProvider`, NPU then GPU device preference). Falls back to CPU if append fails. |
 
 Do not duplicate “GPU ready” semantics between standalone OpenVINO install state and catalog registration.
 
@@ -18,8 +18,8 @@ Do not duplicate “GPU ready” semantics between standalone OpenVINO install s
 |---------|----------|
 | Catalog provider name constants | `Trackdub.Inference.Onnx/WindowsMl/WindowsMlCatalogProviderIds.cs` |
 | Registration / bootstrap | `WindowsMlProviderRegistrationPolicy.cs`, `WindowsMlExecutionProviderBootstrapper.Windows.cs` |
-| Discovery | `OnnxExecutionProviderDiscovery.cs` — stub kinds return **unavailable** |
-| Session append | `OnnxExecutionSessionFactory.cs` — `NotSupportedException` until smoke path exists |
+| Discovery | `OnnxExecutionProviderDiscovery.cs` — QNN uses `QnnCatalogReadinessProbe`; reports unavailable until the catalog EP is registered |
+| Session append | `OnnxExecutionSessionFactory.cs` `CreateQnnSelection` → `WinMlCatalogSessionOptionsExtensions.AppendQnnOrFallback` (`src/Trackdub.Inference.Onnx/WinMlCatalog/`) |
 | Milestone probe order | `StageRuntimeRequirements.cs` — **unchanged in 5c** |
 
 Stub marker: `#TODO(phase-5-catalog-ep)` in code; reference this doc and [ADR-0002 Phase 5](../decisions/ADR-0002-windows-ml-provider-strategy.md).
@@ -34,7 +34,31 @@ dotnet run --project src/Trackdub.Benchmarks.DevHost -f net10.0-windows10.0.1904
 dotnet run --project src/Trackdub.Benchmarks.DevHost -f net10.0-windows10.0.19041.0 -- --model <model-id> --windows-ml-device-policy PreferNpu
 ```
 
-When QNN / catalog OpenVINO CLI aliases exist, add matrix rows here. For TRT RTX smoke commands, use the plugin doc instead of this catalog checklist.
+For TRT RTX smoke commands, use the plugin doc instead of this catalog checklist.
+
+## QNN on a Snapdragon (Windows on ARM) host
+
+The Snapdragon box is `win-arm64`. Build or publish with `-r win-arm64` so the Windows ML native DLLs (`onnxruntime.dll`, `Microsoft.Windows.AI.MachineLearning.dll`, `DirectML.dll`) come from `runtimes/win-arm64`; a build with no runtime identifier puts x64 binaries at the output root. A cross-build from an x64 PC works (verified: the `win-arm64` output has ARM64 natives), but nothing here has been run on Snapdragon hardware.
+
+1. **EP only, no Trackdub (seconds).** `tools/provider-smoke/Run-QnnSmoke.ps1` sets up an ARM64 Python venv with `onnxruntime-qnn`, generates a tiny model, and runs `cpu,qnn`. This tests the ORT QNN wheel and the NPU/driver, not Trackdub's catalog path. See `tools/provider-smoke/README.md` for `ok` / `fallback` / `fail` / `absent`.
+2. **Readiness and install through Trackdub.**
+
+   ```powershell
+   trackdub providers qnn status
+   trackdub providers qnn install --accept-license
+   trackdub providers qnn status
+   ```
+
+   `install` refuses without the Qualcomm license flag (persisted in studio settings, same pattern as `providers trt-rtx install`). `status` exits non-zero until the catalog EP is registered.
+3. **Benchmark through Trackdub's QNN route.**
+
+   ```powershell
+   dotnet run --project src/Trackdub.Benchmarks.DevHost -f net10.0-windows10.0.19041.0 -r win-arm64 -- --model <model-id> --provider qnn
+   ```
+
+   `--provider qnn` is an explicit route (`CreateQnnSession` → `AppendQnnOrFallback`) and fails rather than silently falling back to CPU when QNN is not visible to ONNX Runtime. The benchmark host does not download the EP; run step 2 first.
+
+Record the **actual EP** reported by the run in [windows-ml-stage-provider-matrix.md](windows-ml-stage-provider-matrix.md) and the Snapdragon matrix row below.
 
 ## Matrix rows to add (when hardware exists)
 
