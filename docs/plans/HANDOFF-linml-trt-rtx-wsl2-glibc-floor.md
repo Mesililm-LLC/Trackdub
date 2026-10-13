@@ -61,7 +61,7 @@ objdump -T libonnxruntime_providers_nv_tensorrt_rtx.so | grep -o 'GLIBCXX_[0-9.]
 
 1. `objdump` on the new library shows `GLIBC_` max <= 2.35 (and `GLIBCXX_` max <= 3.4.30).
 2. In a fresh `ubuntu:24.04` container (`--gpus all`, Docker Desktop on Windows) and in an `ubuntu:22.04` container, with the stock wheel and the new build vendored,
-   `ExecutionProviderCatalog.GetDefault().Find(ProviderId.TensorrtRtx)!.EnsureReadyAsync(new EnsureOptions(true))` returns `Downloaded` then `Ready` with
+   Two explicit calls to `ExecutionProviderCatalog.GetDefault().Find(ProviderId.TensorrtRtx)!.EnsureReadyAsync(new EnsureOptions(true))` return `Downloaded` and then `Ready`, respectively, with
    `Devices.Count >= 1`, and `tests/fixtures/model.onnx` returns `[11, 22, 13, 24, 15, 26]`. No restart, no env vars.
 3. A host that previously installed `0.4.0-wsl2p1` ends up using `p2`.
 4. `ScriptPinAgreementTests` and the rest of the suite stay green; bare-metal and non-WSL behaviour is unchanged.
