@@ -48,7 +48,7 @@ RUN apt-get update \
     && mkdir --parents /usr/local/cuda/lib \
     && groupadd --system --gid 10001 trackdub \
     && useradd --system --uid 10001 --gid trackdub --create-home --home-dir /home/trackdub trackdub \
-    && mkdir --parents /data/models /data/projects /work/input /work/output /work/tmp /logs \
+    && mkdir --parents /data/models /data/projects /work/input /work/output /work/tmp /logs /home/trackdub/.local/linml-deps \
     && chown --recursive trackdub:trackdub /app /data /work /logs /home/trackdub
 
 ENV DOTNET_EnableDiagnostics=0 \
@@ -60,6 +60,7 @@ ENV DOTNET_EnableDiagnostics=0 \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
     ONNX_PROVIDER=cuda \
+    ESPEAK_DATA_PATH=/usr/lib/x86_64-linux-gnu \
     TMPDIR=/work/tmp
 
 COPY --from=cuda-runtime /usr/local/cuda-13.0/targets/x86_64-linux/lib/ /usr/local/cuda/lib/
@@ -70,5 +71,5 @@ COPY --from=build --chown=trackdub:trackdub /app/publish ./
 COPY --from=build --chown=trackdub:trackdub /src/src/Trackdub.Inference/Runtime/ModelManifest/bundled-models.manifest.json ./src/Trackdub.Inference/Runtime/ModelManifest/bundled-models.manifest.json
 
 USER trackdub
-ENTRYPOINT ["dotnet", "Trackdub.Cli.dll"]
+ENTRYPOINT ["dotnet", "Trackdub.Cli.dll", "--model-directory", "/data/models"]
 CMD ["doctor"]

@@ -29,10 +29,11 @@ services:
       - ./docker/input:/work/input
       - ./docker/output:/work/output
       - trackdub-logs:/logs
+      - trackdub-linml:/home/trackdub/.local/linml-deps
     stdin_open: true
     tty: true
     healthcheck:
-      test: ["CMD", "dotnet", "Trackdub.Cli.dll", "doctor", "--json"]
+      test: ["CMD", "dotnet", "Trackdub.Cli.dll", "--model-directory", "/data/models", "doctor", "--json"]
       interval: 30s
       timeout: 15s
       retries: 3
@@ -41,3 +42,4 @@ services:
 volumes:
   trackdub-data:
   trackdub-logs:
+  trackdub-linml:
