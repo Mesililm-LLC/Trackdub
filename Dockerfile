@@ -54,8 +54,7 @@ RUN apt-get update \
 ENV DOTNET_EnableDiagnostics=0 \
     DOTNET_TieredCompilation=1 \
     DOTNET_TieredCompilationQuickJit=1 \
-    DATABASE_PATH=/data/trackdub.db \
-    MODELS_CACHE_DIR=/data/models \
+    TRACKDUB_DATA_ROOT=/data \
     AUTO_DOWNLOAD_MODELS=false \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
