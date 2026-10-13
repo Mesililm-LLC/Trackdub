@@ -47,6 +47,16 @@ python tools/provider-smoke/smoke_execution_providers.py \
   `best_ms`/`mean_ms` are recorded per provider when status is `ok` or
   `fallback`.
 
+## Snapdragon quick start
+
+On a Windows-on-ARM host with ARM64 Python:
+
+```powershell
+tools\provider-smoke\Run-QnnSmoke.ps1
+```
+
+It creates a venv under `tools/provider-smoke/.qnn-smoke` (gitignored), installs `onnxruntime-qnn`, generates a tiny MatMul+Relu model unless you pass `-Model`, and runs `cpu,qnn`. This checks the ORT QNN wheel and the Hexagon NPU, not Trackdub's Windows ML catalog route (`trackdub providers qnn status`).
+
 ## Wheel variants
 
 Each ORT EP ships in a separate wheel, and several are mutually exclusive —

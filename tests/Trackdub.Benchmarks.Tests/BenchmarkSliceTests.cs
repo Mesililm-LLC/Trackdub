@@ -251,6 +251,17 @@ public sealed class BenchmarkOptionsTests
     }
 
     [Fact]
+    public void TryParse_ParsesQnnProvider()
+    {
+        var args = new[] { "--model", ".\\model.onnx", "--provider", "qnn" };
+
+        var success = BenchmarkOptions.TryParse(args, TextWriter.Null, out var options);
+
+        Assert.True(success);
+        Assert.Equal(BenchmarkProviderPreference.Qnn, options.ProviderPreference);
+    }
+
+    [Fact]
     public void TryParse_WhenWindowsMlDevicePolicyUnknown_ReturnsFalse()
     {
         var error = new StringWriter();

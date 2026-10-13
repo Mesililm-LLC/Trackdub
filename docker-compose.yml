@@ -16,7 +16,10 @@ services:
       TRACKDUB_ACCEPT_NVIDIA_TENSORRT_RTX_LICENSE: "${TRACKDUB_ACCEPT_NVIDIA_TENSORRT_RTX_LICENSE:-}"
     gpus: all
     init: true
-    restart: on-failure:5
+    # One-shot CLI container: run workloads with `docker compose run --rm trackdub <command>`.
+    # The image's default command (`doctor`) exits, so there is no long-running process to
+    # restart or health-check.
+    restart: "no"
     stop_grace_period: 30s
     security_opt:
       - no-new-privileges:true
@@ -27,19 +30,14 @@ services:
     volumes:
       - trackdub-data:/data
       - ./docker/input:/work/input
-      - ./docker/output:/work/output
+      - trackdub-output:/work/output
       - trackdub-logs:/logs
       - trackdub-linml:/home/trackdub/.local/linml-deps
     stdin_open: true
     tty: true
-    healthcheck:
-      test: ["CMD", "dotnet", "Trackdub.Cli.dll", "--model-directory", "/data/models", "doctor", "--json"]
-      interval: 30s
-      timeout: 15s
-      retries: 3
-      start_period: 20s
 
 volumes:
   trackdub-data:
   trackdub-logs:
   trackdub-linml:
+  trackdub-output:

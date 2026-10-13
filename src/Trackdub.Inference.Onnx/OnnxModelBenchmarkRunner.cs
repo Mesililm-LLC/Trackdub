@@ -156,6 +156,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             BenchmarkProviderPreference.Migraphx => ExecutionProviderKind.Migraphx,
             BenchmarkProviderPreference.Cuda => ExecutionProviderKind.Cuda,
             BenchmarkProviderPreference.TensorRt => ExecutionProviderKind.TensorRt,
+            BenchmarkProviderPreference.Qnn => ExecutionProviderKind.Qnn,
             BenchmarkProviderPreference.Auto => ExecutionProviderKind.DirectMl,
             _ => throw new ArgumentOutOfRangeException(nameof(preference), preference, "Unknown provider preference.")
         };
@@ -421,6 +422,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             BenchmarkProviderPreference.Migraphx => CreateMigraphxSession(modelPath, notes),
             BenchmarkProviderPreference.Cuda => CreateNativeCudaSession(modelPath, notes),
             BenchmarkProviderPreference.TensorRt => CreateNativeTensorRtSession(modelPath, notes),
+            BenchmarkProviderPreference.Qnn => CreateQnnSession(modelPath, notes),
             BenchmarkProviderPreference.Auto => CreateAutoSession(modelPath, notes),
             _ => throw new ArgumentOutOfRangeException(nameof(preference), preference, "Unknown provider preference.")
         };
@@ -491,6 +493,55 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         }
 
         return new InferenceSession(modelPath, options);
+    }
+
+    private static BenchmarkSessionLease CreateQnnSession(string modelPath, ICollection<string> notes)
+    {
+        notes.Add(GetCatalogGpuRouteNote(
+            BenchmarkProviderPreference.Qnn,
+            "explicit WinML catalog QNN execution provider."));
+        var session = CreateQnnInferenceSession(modelPath, notes);
+        string selectedProviderLabel = ResolveBenchmarkEffectiveProviderLabel(session, BenchmarkProviderPreference.Qnn);
+        return new BenchmarkSessionLease(session, "qnn", selectedProviderLabel);
+    }
+
+    private static InferenceSession CreateQnnInferenceSession(string modelPath, ICollection<string> notes)
+    {
+        const BenchmarkProviderPreference preference = BenchmarkProviderPreference.Qnn;
+        using SessionOptions options = CreateSessionOptions(preference);
+        if (ShouldUseCatalogDevicePolicyForPreference(preference))
+        {
+            notes.Add("Selected provider: catalog device policy (ORT auto-selects among registered catalog EPs).");
+        }
+        else
+        {
+            ExecutionProviderKind selectedProvider = WinMlCatalog.WinMlCatalogSessionOptionsExtensions.AppendQnnOrFallback(options);
+            if (selectedProvider is not ExecutionProviderKind.Qnn)
+            {
+                throw new InvalidOperationException(
+                    "QNN execution provider is not visible to ONNX Runtime; refusing CPU fallback for explicit qnn benchmark.");
+            }
+
+            notes.Add($"Selected provider: {FormatExecutionProvider(selectedProvider)}.");
+        }
+
+        var session = new InferenceSession(modelPath, options);
+        try
+        {
+            string effectiveProviderLabel = ResolveBenchmarkEffectiveProviderLabel(session, preference);
+            if (!string.Equals(effectiveProviderLabel, "qnn", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Explicit qnn benchmark resolved to '{effectiveProviderLabel}'; refusing to report it as qnn.");
+            }
+
+            return session;
+        }
+        catch
+        {
+            session.Dispose();
+            throw;
+        }
     }
 
     private static BenchmarkSessionLease CreateNativeCudaSession(string modelPath, ICollection<string> notes)
@@ -681,6 +732,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             BenchmarkProviderPreference.Migraphx => "migraphx",
             BenchmarkProviderPreference.Cuda => "cuda",
             BenchmarkProviderPreference.TensorRt => "tensorrt",
+            BenchmarkProviderPreference.Qnn => "qnn",
             _ => throw new ArgumentOutOfRangeException(nameof(preference), preference, "Unknown provider preference.")
         };
 
@@ -1290,6 +1342,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             BenchmarkProviderPreference.Migraphx => CreateMigraphxWhisperSessionLease(encoderModelPath, decoderModelPath, notes),
             BenchmarkProviderPreference.Cuda => CreateNativeCudaWhisperSessionLease(encoderModelPath, decoderModelPath, notes),
             BenchmarkProviderPreference.TensorRt => CreateNativeTensorRtWhisperSessionLease(encoderModelPath, decoderModelPath, notes),
+            BenchmarkProviderPreference.Qnn => CreateQnnWhisperSessionLease(encoderModelPath, decoderModelPath, notes),
             BenchmarkProviderPreference.Auto => CreateAutoWhisperSessionLease(encoderModelPath, decoderModelPath, notes),
             _ => throw new ArgumentOutOfRangeException(nameof(preference), preference, "Unknown provider preference.")
         };
@@ -1307,6 +1360,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             BenchmarkProviderPreference.Migraphx => CreateMigraphxOpusSessionLease(encoderModelPath, decoderModelPath, notes),
             BenchmarkProviderPreference.Cuda => CreateNativeCudaOpusSessionLease(encoderModelPath, decoderModelPath, notes),
             BenchmarkProviderPreference.TensorRt => CreateNativeTensorRtOpusSessionLease(encoderModelPath, decoderModelPath, notes),
+            BenchmarkProviderPreference.Qnn => CreateQnnOpusSessionLease(encoderModelPath, decoderModelPath, notes),
             BenchmarkProviderPreference.Auto => CreateAutoOpusSessionLease(encoderModelPath, decoderModelPath, notes),
             _ => throw new ArgumentOutOfRangeException(nameof(preference), preference, "Unknown provider preference.")
         };
@@ -1396,6 +1450,19 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             "migraphx");
     }
 
+    private static WhisperSessionLease CreateQnnWhisperSessionLease(
+        string encoderModelPath,
+        string decoderModelPath,
+        ICollection<string> notes)
+    {
+        notes.Add("Provider route: explicit WinML catalog QNN execution provider.");
+        return new WhisperSessionLease(
+            CreateQnnInferenceSession(encoderModelPath, notes),
+            CreateQnnInferenceSession(decoderModelPath, notes),
+            "qnn",
+            "qnn");
+    }
+
     private static WhisperSessionLease CreateAutoWhisperSessionLease(
         string encoderModelPath,
         string decoderModelPath,
@@ -1480,6 +1547,19 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             CreateMigraphxInferenceSession(decoderModelPath, notes),
             "migraphx",
             "migraphx");
+    }
+
+    private static OpusSessionLease CreateQnnOpusSessionLease(
+        string encoderModelPath,
+        string decoderModelPath,
+        ICollection<string> notes)
+    {
+        notes.Add("Provider route: explicit WinML catalog QNN execution provider.");
+        return new OpusSessionLease(
+            CreateQnnInferenceSession(encoderModelPath, notes),
+            CreateQnnInferenceSession(decoderModelPath, notes),
+            "qnn",
+            "qnn");
     }
 
     private static OpusSessionLease CreateNativeCudaOpusSessionLease(
