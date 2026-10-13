@@ -44,7 +44,8 @@ public enum BenchmarkProviderPreference
     TensorRtRtx = 3,
     Migraphx = 4,
     Cuda = 5,
-    TensorRt = 6
+    TensorRt = 6,
+    Qnn = 7
 }
 
 public enum BenchmarkStatus

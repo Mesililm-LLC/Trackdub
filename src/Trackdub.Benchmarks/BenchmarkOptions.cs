@@ -91,7 +91,7 @@ public sealed record BenchmarkOptions(
 
                     if (!TryParseProviderPreference(providerText, out providerPreference))
                     {
-                        errorWriter.WriteLine($"Unknown provider '{providerText}'. Expected auto, cpu, dml, cuda, tensorrt, migraphx, or trt-rtx.");
+                        errorWriter.WriteLine($"Unknown provider '{providerText}'. Expected auto, cpu, dml, cuda, tensorrt, migraphx, qnn, or trt-rtx.");
                         options = DefaultWithHelp();
                         return false;
                     }

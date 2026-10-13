@@ -1,0 +1,54 @@
+# Git and editor metadata
+.git
+.gitignore
+.gitattributes
+
+# .NET build output and local state
+**/bin/
+**/obj/
+**/TestResults/
+.vs/
+.vscode/
+
+# Local caches and tooling state
+.pytest_cache/
+.serena/
+.remember/
+.qoder/
+.claude/
+.cursor/
+.opencode/
+.agents/
+
+# Media, models, databases, logs, and secrets
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/models/
+**/cache/
+**/logs/
+**/*.mp4
+**/*.mov
+**/*.wav
+**/*.onnx
+.env
+.env.*
+!.env.example
+
+# Documentation and repository-only material are not required for the CLI image
+docs/
+assets/
+resources/
+tests/
+tools/
+tools/**
+!tools/
+!tools/olive/
+!tools/olive/prune_attention_outputs.py
+
+runtime/**
+!runtime/trt-rtx-ep.manifest.json
+
+# Generated native-build artifacts; retain only the MSBuild target required by the Docker build
+build/**
+!build/Trackdub.NativePair.targets
