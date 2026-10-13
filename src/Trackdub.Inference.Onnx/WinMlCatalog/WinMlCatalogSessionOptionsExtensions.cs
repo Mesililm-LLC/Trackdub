@@ -38,6 +38,47 @@ internal static class WinMlCatalogSessionOptionsExtensions
     public static ExecutionProviderKind AppendVitisAiOrFallback(SessionOptions options) =>
         TryAppendVitisAiProvider(options, out _) ? ExecutionProviderKind.VitisAi : ExecutionProviderKind.Cpu;
 
+#if WINDOWS
+    public static bool TryRegisterInstalledQnnProvider(out string? failureReason)
+    {
+        failureReason = null;
+        try
+        {
+            Microsoft.Windows.AI.MachineLearning.ExecutionProvider? provider =
+                Microsoft.Windows.AI.MachineLearning.ExecutionProviderCatalog.GetDefault()
+                    .FindAllProviders()
+                    .FirstOrDefault(candidate => string.Equals(
+                        candidate.Name,
+                        QnnProviderConstants.OrtExecutionProviderName,
+                        StringComparison.Ordinal));
+            if (provider is null)
+            {
+                failureReason = $"{QnnProviderConstants.OrtExecutionProviderName} is not installed.";
+                return false;
+            }
+
+            if (!provider.TryRegister())
+            {
+                failureReason = $"TryRegister failed for {QnnProviderConstants.OrtExecutionProviderName}.";
+                return false;
+            }
+
+            if (!QnnOrtProbe.IsProviderListed())
+            {
+                failureReason = "QNN registered with the catalog but is not listed by ONNX Runtime.";
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            failureReason = ex.Message;
+            return false;
+        }
+    }
+#endif
+
     private static bool TryAppendCatalogProvider(
         SessionOptions options,
         string ortExecutionProviderName,

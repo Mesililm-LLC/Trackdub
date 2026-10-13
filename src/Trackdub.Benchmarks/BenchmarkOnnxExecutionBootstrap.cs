@@ -14,6 +14,16 @@ public static class BenchmarkOnnxExecutionBootstrap
     public static void ConfigureExecution(BenchmarkOptions options)
     {
         ConfigureExecution(options.WindowsMlDevicePolicyKey);
+#if WINDOWS
+        if (options.ProviderPreference is BenchmarkProviderPreference.Qnn
+            && !Trackdub.Inference.Onnx.WinMlCatalog.QnnBenchmarkRegistration
+                .TryRegisterInstalledProvider(out string? failureReason))
+        {
+            throw new InvalidOperationException(
+                $"QNN execution provider could not be registered from the installed catalog; " +
+                $"install QNN before running the benchmark. {failureReason}");
+        }
+#endif
     }
 
     public static void ConfigureExecution(string? windowsMlDevicePolicyKey)
