@@ -525,7 +525,23 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             notes.Add($"Selected provider: {FormatExecutionProvider(selectedProvider)}.");
         }
 
-        return new InferenceSession(modelPath, options);
+        var session = new InferenceSession(modelPath, options);
+        try
+        {
+            string effectiveProviderLabel = ResolveBenchmarkEffectiveProviderLabel(session, preference);
+            if (!string.Equals(effectiveProviderLabel, "qnn", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Explicit qnn benchmark resolved to '{effectiveProviderLabel}'; refusing to report it as qnn.");
+            }
+
+            return session;
+        }
+        catch
+        {
+            session.Dispose();
+            throw;
+        }
     }
 
     private static BenchmarkSessionLease CreateNativeCudaSession(string modelPath, ICollection<string> notes)

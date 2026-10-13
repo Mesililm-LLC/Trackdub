@@ -27,7 +27,7 @@ services:
     volumes:
       - trackdub-data:/data
       - ./docker/input:/work/input
-      - ./docker/output:/work/output
+      - trackdub-output:/work/output
       - trackdub-logs:/logs
       - trackdub-linml:/home/trackdub/.local/linml-deps
     stdin_open: true
@@ -43,3 +43,4 @@ volumes:
   trackdub-data:
   trackdub-logs:
   trackdub-linml:
+  trackdub-output:

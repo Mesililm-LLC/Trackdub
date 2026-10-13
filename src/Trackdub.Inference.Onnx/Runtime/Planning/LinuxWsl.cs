@@ -41,6 +41,6 @@ internal static class LinuxWsl
 
     internal static bool HasNvidiaGpuPassthrough(Func<string, bool> fileExists) =>
         OperatingSystem.IsLinux()
-        && (fileExists(GpuPassthroughDevice) || NvidiaCudaDriverLibraries.Any(fileExists))
+        && fileExists(GpuPassthroughDevice)
         && NvidiaCudaDriverLibraries.Any(fileExists);
 }

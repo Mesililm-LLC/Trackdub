@@ -27,7 +27,19 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$machine = (& $Python -c "import platform; print(platform.machine())").Trim()
+function Invoke-Checked {
+    param([string]$Description, [scriptblock]$Command)
+    & $Command
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Description failed (exit code $LASTEXITCODE)."
+    }
+}
+
+$machine = & $Python -c "import platform; print(platform.machine())"
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not run '$Python' (exit code $LASTEXITCODE)."
+}
+$machine = $machine.Trim()
 Write-Host "Python machine: $machine"
 if ($machine -ne 'ARM64') {
     throw "Python reports '$machine'; onnxruntime-qnn needs an ARM64 Python on the Snapdragon host."
@@ -36,11 +48,11 @@ if ($machine -ne 'ARM64') {
 New-Item -ItemType Directory -Force -Path $Workdir | Out-Null
 $venv = Join-Path $Workdir 'venv'
 if (-not (Test-Path (Join-Path $venv 'Scripts\python.exe'))) {
-    & $Python -m venv $venv
+    Invoke-Checked 'Creating the venv' { & $Python -m venv $venv }
 }
 $venvPython = Join-Path $venv 'Scripts\python.exe'
-& $venvPython -m pip install --quiet --upgrade pip
-& $venvPython -m pip install --quiet onnxruntime-qnn numpy onnx
+Invoke-Checked 'Upgrading pip' { & $venvPython -m pip install --quiet --upgrade pip }
+Invoke-Checked 'Installing onnxruntime-qnn' { & $venvPython -m pip install --quiet onnxruntime-qnn numpy onnx }
 
 if (-not $Model) {
     $Model = Join-Path $Workdir 'tiny-matmul.onnx'
@@ -68,7 +80,7 @@ model.ir_version = 8
 onnx.checker.check_model(model)
 onnx.save(model, sys.argv[1])
 '@ | Set-Content -Path $generator -Encoding utf8
-    & $venvPython $generator $Model
+    Invoke-Checked 'Generating the tiny model' { & $venvPython $generator $Model }
     Write-Host "Generated $Model"
 }
 
@@ -80,5 +92,5 @@ $harnessArgs = @(
 )
 if ($Feed) { $harnessArgs += @('--feed', $Feed) }
 
-& $venvPython @harnessArgs
+Invoke-Checked 'The provider smoke harness' { & $venvPython @harnessArgs }
 Write-Host "Results written to $Results"
