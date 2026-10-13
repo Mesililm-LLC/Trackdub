@@ -8,7 +8,8 @@ namespace Trackdub.Cli.Commands;
 
 /// <summary>
 /// <c>providers list</c> plus <c>providers trt-rtx status|install|smoke</c> for EP discoverability,
-/// the TensorRT RTX EP ABI plugin installer, and starter-pack smoke tests.
+/// the TensorRT RTX EP ABI plugin installer, and starter-pack smoke tests, and
+/// <c>providers qnn status|install</c> for the Qualcomm QNN Windows ML catalog EP.
 /// </summary>
 internal static class ProvidersCommand
 {
@@ -22,6 +23,8 @@ internal static class ProvidersCommand
               trackdub providers trt-rtx status
               trackdub providers trt-rtx install --accept-license
               trackdub providers trt-rtx smoke
+              trackdub providers qnn status
+              trackdub providers qnn install --accept-license
             """);
 
         providersCommand.Add(CreateListCommand());
@@ -32,8 +35,78 @@ internal static class ProvidersCommand
         trtRtxCommand.Add(CreateSmokeCommand());
         trtRtxCommand.Add(CreateVerifyCommand());
         providersCommand.Add(trtRtxCommand);
+        providersCommand.Add(CreateQnnCommand());
 
         return providersCommand;
+    }
+
+    private static Command CreateQnnCommand()
+    {
+        var qnnCommand = new Command("qnn", "Qualcomm QNN Windows ML catalog EP (Snapdragon NPU).");
+
+        var statusCommand = new Command("status", """
+            Probe QNN catalog EP readiness without downloading.
+
+            Examples:
+              trackdub providers qnn status
+            """);
+        statusCommand.SetAction(async (ParseResult parseResult, CancellationToken cancellationToken) =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            TrackdubSessionFactory? factory = CliParseHelpers.TryBuildFactory(parseResult, out int buildExitCode);
+            if (factory is null)
+            {
+                return buildExitCode;
+            }
+
+            using (factory)
+            {
+                return await QnnProvidersHandler
+                    .StatusAsync(factory, Console.Out, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        });
+
+        var acceptLicenseOption = new Option<bool>("--accept-license")
+        {
+            Description =
+                "Persist Qualcomm QNN license acceptance in studio settings before install (required unless already accepted in Model Manager)",
+            DefaultValueFactory = _ => false,
+        };
+
+        var installCommand = new Command("install", """
+            Download (when allowed), register, and probe the QNN Windows ML catalog EP.
+
+            Examples:
+              trackdub providers qnn install --accept-license
+            """)
+        {
+            acceptLicenseOption,
+        };
+        installCommand.SetAction(async (ParseResult parseResult, CancellationToken cancellationToken) =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            bool acceptLicense = parseResult.GetValue(acceptLicenseOption);
+
+            TrackdubSessionFactory? factory = CliParseHelpers.TryBuildFactory(parseResult, out int buildExitCode);
+            if (factory is null)
+            {
+                return buildExitCode;
+            }
+
+            using (factory)
+            {
+                return await QnnProvidersHandler
+                    .InstallAsync(factory, acceptLicense, Console.Out, Console.Error, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        });
+
+        qnnCommand.Add(statusCommand);
+        qnnCommand.Add(installCommand);
+        return qnnCommand;
     }
 
     private static Command CreateListCommand()

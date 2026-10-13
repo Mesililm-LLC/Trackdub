@@ -3,10 +3,15 @@ namespace Trackdub.Inference.Onnx.Runtime.Planning;
 /// <summary>WSL detection by file probes only, so it is safe to call on any OS.</summary>
 internal static class LinuxWsl
 {
-    // WSL2 has no /proc/driver/nvidia: the Windows driver reaches Linux through /dev/dxg, and the
-    // CUDA driver library is projected into /usr/lib/wsl/lib.
+    // WSL2 exposes /dev/dxg and /usr/lib/wsl/lib/libcuda.so.1. Docker's NVIDIA runtime may instead
+    // expose the same driver library under /usr/lib/x86_64-linux-gnu. Accept both layouts.
     private const string GpuPassthroughDevice = "/dev/dxg";
-    private const string WslCudaDriverLibrary = "/usr/lib/wsl/lib/libcuda.so.1";
+    private static readonly string[] NvidiaCudaDriverLibraries =
+    [
+        "/usr/lib/wsl/lib/libcuda.so.1",
+        "/usr/lib/x86_64-linux-gnu/libcuda.so.1",
+        "/lib/x86_64-linux-gnu/libcuda.so.1"
+    ];
 
     public static bool IsWsl() =>
         IsWsl(File.Exists, static path => File.ReadAllText(path));
@@ -35,5 +40,7 @@ internal static class LinuxWsl
     public static bool HasNvidiaGpuPassthrough() => HasNvidiaGpuPassthrough(File.Exists);
 
     internal static bool HasNvidiaGpuPassthrough(Func<string, bool> fileExists) =>
-        OperatingSystem.IsLinux() && fileExists(GpuPassthroughDevice) && fileExists(WslCudaDriverLibrary);
+        OperatingSystem.IsLinux()
+        && fileExists(GpuPassthroughDevice)
+        && NvidiaCudaDriverLibraries.Any(fileExists);
 }

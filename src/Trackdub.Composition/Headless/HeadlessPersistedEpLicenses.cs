@@ -65,6 +65,24 @@ public static class HeadlessPersistedEpLicenses
             .ConfigureAwait(false);
     }
 
+    public static async Task PersistQualcommQnnAcceptanceAsync(
+        IAppStoragePaths storagePaths,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(storagePaths);
+        JsonStudioSettingsService disk = CreateDiskStore(storagePaths);
+        StudioSettings current = await disk.LoadAsync(cancellationToken).ConfigureAwait(false);
+        if (current.QualcommQnnLicenseAccepted)
+        {
+            return;
+        }
+
+        await disk.SaveAsync(
+                current with { QualcommQnnLicenseAccepted = true },
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     private static JsonStudioSettingsService CreateDiskStore(IAppStoragePaths storagePaths) =>
         new(storagePaths);
 }
