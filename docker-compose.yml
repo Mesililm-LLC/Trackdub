@@ -9,7 +9,7 @@ services:
     environment:
       DATABASE_PATH: /data/trackdub.db
       MODELS_CACHE_DIR: /data/models
-      AUTO_DOWNLOAD_MODELS: "false"
+      AUTO_DOWNLOAD_MODELS: "${AUTO_DOWNLOAD_MODELS:-false}"
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       ONNX_PROVIDER: cuda
