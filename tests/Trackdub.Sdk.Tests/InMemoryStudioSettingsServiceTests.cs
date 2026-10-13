@@ -47,6 +47,26 @@ public sealed class InMemoryStudioSettingsServiceTests
         Assert.Empty(settings.HardwareOverrides!);
     }
 
+    [Theory]
+    [InlineData("1", true)]
+    [InlineData("true", true)]
+    [InlineData("YES", true)]
+    [InlineData("0", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public async Task LoadAsync_accepts_nvidia_trt_rtx_license_from_environment(string? value, bool expected)
+    {
+        var service = new InMemoryStudioSettingsService(
+            new HeadlessTrackdubOptions(),
+            persistedSettings: null,
+            getEnvironmentVariable: name =>
+                name == InMemoryStudioSettingsService.AcceptNvidiaTensorRtRtxLicenseEnvironmentVariable ? value : null);
+
+        StudioSettings settings = await service.LoadAsync(CancellationToken.None);
+
+        Assert.Equal(expected, settings.NvidiaTensorRtRtxLicenseAccepted);
+    }
+
     [Fact]
     public async Task LoadAsync_preserves_nvidia_afx_settings_from_persisted_settings()
     {

@@ -13,6 +13,7 @@ services:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       ONNX_PROVIDER: cuda
+      TRACKDUB_ACCEPT_NVIDIA_TENSORRT_RTX_LICENSE: "${TRACKDUB_ACCEPT_NVIDIA_TENSORRT_RTX_LICENSE:-}"
     gpus: all
     init: true
     restart: on-failure:5

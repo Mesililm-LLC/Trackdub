@@ -37,12 +37,15 @@ RUN dotnet publish src/Trackdub.Cli/Trackdub.Cli.csproj \
     /p:DebugType=None \
     /p:DebugSymbols=false
 
+FROM nvidia/cuda:13.0.0-cudnn-runtime-ubuntu24.04 AS cuda-runtime
+
 FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends --yes ca-certificates ffmpeg libgomp1 libstdc++6 \
+    && apt-get install --no-install-recommends --yes ca-certificates espeak-ng ffmpeg libgomp1 libstdc++6 \
     && rm -rf /var/lib/apt/lists/* \
+    && mkdir --parents /usr/local/cuda/lib \
     && groupadd --system --gid 10001 trackdub \
     && useradd --system --uid 10001 --gid trackdub --create-home --home-dir /home/trackdub trackdub \
     && mkdir --parents /data/models /data/projects /work/input /work/output /work/tmp /logs \
@@ -58,6 +61,10 @@ ENV DOTNET_EnableDiagnostics=0 \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
     ONNX_PROVIDER=cuda \
     TMPDIR=/work/tmp
+
+COPY --from=cuda-runtime /usr/local/cuda-13.0/targets/x86_64-linux/lib/ /usr/local/cuda/lib/
+COPY --from=cuda-runtime /usr/lib/x86_64-linux-gnu/libcudnn*.so* /usr/local/cuda/lib/
+RUN printf '/usr/local/cuda/lib\n' > /etc/ld.so.conf.d/cuda.conf && ldconfig
 
 COPY --from=build --chown=trackdub:trackdub /app/publish ./
 COPY --from=build --chown=trackdub:trackdub /src/src/Trackdub.Inference/Runtime/ModelManifest/bundled-models.manifest.json ./src/Trackdub.Inference/Runtime/ModelManifest/bundled-models.manifest.json

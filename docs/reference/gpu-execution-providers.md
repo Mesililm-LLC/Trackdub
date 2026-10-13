@@ -98,6 +98,14 @@ bootstrapper and the session factory are unchanged. The plugin is vendored under
 - **License gate.** The catalog downloads the wheel from PyPI with no license step, so the
   bootstrap allows a download only when `NvidiaTensorRtRtxLicenseAccepted` is set. Without
   it the install reports "NVIDIA TensorRT RTX license not accepted".
+- **Headless and container acceptance.** `trackdub providers trt-rtx install --accept-license`
+  persists the flag to the studio settings on disk. Set
+  `TRACKDUB_ACCEPT_NVIDIA_TENSORRT_RTX_LICENSE=1` (also `true` or `yes`) to accept for one
+  process without writing settings, for example `docker run -e
+  TRACKDUB_ACCEPT_NVIDIA_TENSORRT_RTX_LICENSE=1 ... providers trt-rtx install`. Only set it
+  after reviewing NVIDIA's license terms; the Docker image does not set it. In a container the
+  plugin lands under the user's home (`~/.local/linml-deps`, `/home/trackdub` in the image),
+  so mount a volume there if it should survive `docker run --rm`.
 - **Downloads stay explicit.** Session bootstrap, readiness and doctor pass
   `allowProviderDownloads: false`; `TrtRtxEpInstaller` (Model Manager, `trackdub providers
   trt-rtx install --accept-license`) is the only caller that downloads, and on Linux it skips
