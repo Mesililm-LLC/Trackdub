@@ -101,14 +101,12 @@ public sealed class InMemoryStudioSettingsService : IStudioSettingsService
             }
 
             foreach (string normalizedToken in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                         .Select(token => token.ToLowerInvariant()))
+                         .Select(token => token.ToLowerInvariant())
+                         .Where(normalizedToken => !merged.ContainsKey(normalizedToken)))
             {
                 // Environment grants are a fallback: an explicit persisted value (including a
                 // revocation) wins, matching CloudEgressConsentService.HasConsentAsync semantics.
-                if (!merged.ContainsKey(normalizedToken))
-                {
-                    merged[normalizedToken] = true;
-                }
+                merged[normalizedToken] = true;
             }
         }
 
