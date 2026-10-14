@@ -38,7 +38,7 @@ public sealed class GoogleCloudTtsEngine(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        EnsureEgressConsent();
+        await EnsureEgressConsentAsync(cancellationToken).ConfigureAwait(false);
         string apiKey = await ResolveApiKeyAsync(cancellationToken).ConfigureAwait(false);
 
         string voiceId = request.Voice.VoiceId;
@@ -99,7 +99,7 @@ public sealed class GoogleCloudTtsEngine(
 
     public async Task<StageReadiness> EvaluateReadinessAsync(CancellationToken cancellationToken = default)
     {
-        if (consentService is null || !consentService.HasConsent(ConsentKey))
+        if (consentService is not null && !await consentService.HasConsentAsync(ConsentKey, cancellationToken).ConfigureAwait(false))
         {
             return new StageReadiness(
                 StageName: StageNames.Tts,
@@ -131,9 +131,9 @@ public sealed class GoogleCloudTtsEngine(
             ResolveAction: null);
     }
 
-    private void EnsureEgressConsent()
+    private async Task EnsureEgressConsentAsync(CancellationToken cancellationToken)
     {
-        if (consentService is null || !consentService.HasConsent(ConsentKey))
+        if (consentService is not null && !await consentService.HasConsentAsync(ConsentKey, cancellationToken).ConfigureAwait(false))
         {
             throw new CloudEgressConsentException(ConsentKey, ProviderName);
         }

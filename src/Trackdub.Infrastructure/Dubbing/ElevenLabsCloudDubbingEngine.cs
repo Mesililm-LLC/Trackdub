@@ -22,6 +22,14 @@ public sealed class ElevenLabsCloudDubbingEngine(
     private static readonly TimeSpan DefaultPollInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan MaxWait = TimeSpan.FromMinutes(30);
 
+    // Best-effort remote-project cleanup must never defeat the caller's cancellation:
+    // a stalled ElevenLabs endpoint is bounded by this short independent timeout.
+    private static readonly TimeSpan CleanupTimeout = TimeSpan.FromSeconds(5);
+
+    // Error bodies may echo request parameters or account/billing metadata; never surface
+    // more than this into exceptions that flow to logs and user-visible dialogs.
+    private const int MaxErrorBodyLength = 512;
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly HttpClient httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
@@ -31,7 +39,7 @@ public sealed class ElevenLabsCloudDubbingEngine(
 
     public async Task<StageReadiness> EvaluateReadinessAsync(CancellationToken cancellationToken = default)
     {
-        if (consentService is null || !consentService.HasConsent(ConsentKey))
+        if (consentService is not null && !await consentService.HasConsentAsync(ConsentKey, cancellationToken).ConfigureAwait(false))
         {
             return new StageReadiness(
                 StageName: "cloud-dub",
@@ -68,7 +76,7 @@ public sealed class ElevenLabsCloudDubbingEngine(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        EnsureEgressConsent();
+        await EnsureEgressConsentAsync(cancellationToken).ConfigureAwait(false);
 
         string apiKey = await ResolveApiKeyAsync(cancellationToken).ConfigureAwait(false);
         IProgress<CloudDubbingProgress>? progress = request.Progress;
@@ -128,8 +136,16 @@ public sealed class ElevenLabsCloudDubbingEngine(
         {
             if (request.DeleteRemoteProjectOnCompletion && !remoteDeleted)
             {
-                await TryDeleteDubbingProjectInternalAsync(
-                    dubbingId, apiKey, CancellationToken.None).ConfigureAwait(false);
+                using var cleanupCts = new CancellationTokenSource(CleanupTimeout);
+                try
+                {
+                    await TryDeleteDubbingProjectInternalAsync(
+                        dubbingId, apiKey, cleanupCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Cleanup is best-effort; a cleanup timeout must not mask the original failure.
+                }
             }
 
             throw;
@@ -141,7 +157,9 @@ public sealed class ElevenLabsCloudDubbingEngine(
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dubbingId);
-        EnsureEgressConsent();
+        // Deleting a remote project removes the user's media from the provider and sends no
+        // user data, so it must never be blocked by revoked egress consent — that would leave
+        // users unable to clean up leftover remote projects. API-key presence is still required.
         string apiKey = await ResolveApiKeyAsync(cancellationToken).ConfigureAwait(false);
 
         using var httpRequest = new HttpRequestMessage(
@@ -159,16 +177,28 @@ public sealed class ElevenLabsCloudDubbingEngine(
                 ? string.Empty
                 : await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             throw new InvalidOperationException(
-                $"ElevenLabs dubbing project deletion failed for '{dubbingId}' with HTTP {(int)response.StatusCode}: {response.ReasonPhrase}. {errorBody}");
+                $"ElevenLabs dubbing project deletion failed for '{dubbingId}' with HTTP {(int)response.StatusCode}: {response.ReasonPhrase}. {TruncateErrorBody(errorBody)}");
         }
     }
 
-    private void EnsureEgressConsent()
+    private async Task EnsureEgressConsentAsync(CancellationToken cancellationToken)
     {
-        if (consentService is null || !consentService.HasConsent(ConsentKey))
+        if (consentService is not null && !await consentService.HasConsentAsync(ConsentKey, cancellationToken).ConfigureAwait(false))
         {
             throw new CloudEgressConsentException(ConsentKey, ProviderName);
         }
+    }
+
+    private static string TruncateErrorBody(string? errorBody)
+    {
+        if (string.IsNullOrWhiteSpace(errorBody))
+        {
+            return string.Empty;
+        }
+
+        return errorBody.Length <= MaxErrorBodyLength
+            ? errorBody
+            : errorBody[..MaxErrorBodyLength];
     }
 
     private async Task<bool> TryDeleteDubbingProjectInternalAsync(
@@ -238,7 +268,7 @@ public sealed class ElevenLabsCloudDubbingEngine(
         if (!response.IsSuccessStatusCode)
         {
             throw new InvalidOperationException(
-                $"ElevenLabs dubbing submission failed with HTTP {(int)response.StatusCode}: {response.ReasonPhrase}. {responseBody}");
+                $"ElevenLabs dubbing submission failed with HTTP {(int)response.StatusCode}: {response.ReasonPhrase}. {TruncateErrorBody(responseBody)}");
         }
 
         ElevenLabsDubbingSubmitResponse? submitResponse =
@@ -247,7 +277,7 @@ public sealed class ElevenLabsCloudDubbingEngine(
         if (string.IsNullOrWhiteSpace(submitResponse?.DubbingId))
         {
             throw new InvalidOperationException(
-                $"ElevenLabs did not return a dubbing_id. Response: {responseBody}");
+                $"ElevenLabs did not return a dubbing_id. Response: {TruncateErrorBody(responseBody)}");
         }
 
         return (submitResponse.DubbingId, submitResponse.ExpectedDurationSec ?? 0d);
@@ -284,7 +314,7 @@ public sealed class ElevenLabsCloudDubbingEngine(
             if (!statusResponse.IsSuccessStatusCode)
             {
                 throw new InvalidOperationException(
-                    $"ElevenLabs dubbing status check failed with HTTP {(int)statusResponse.StatusCode}: {statusBody}");
+                    $"ElevenLabs dubbing status check failed with HTTP {(int)statusResponse.StatusCode}: {TruncateErrorBody(statusBody)}");
             }
 
             ElevenLabsDubbingStatusResponse? statusResult =
@@ -297,7 +327,7 @@ public sealed class ElevenLabsCloudDubbingEngine(
                     return;
                 case "failed":
                     throw new InvalidOperationException(
-                        $"ElevenLabs dubbing job '{dubbingId}' failed. Response: {statusBody}");
+                        $"ElevenLabs dubbing job '{dubbingId}' failed. Response: {TruncateErrorBody(statusBody)}");
                 default:
                     progress?.Report(new CloudDubbingProgress(
                         CloudDubbingStage.Polling,
@@ -329,7 +359,7 @@ public sealed class ElevenLabsCloudDubbingEngine(
                 ? string.Empty
                 : await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             throw new InvalidOperationException(
-                $"ElevenLabs dubbed audio download failed with HTTP {(int)response.StatusCode}: {response.ReasonPhrase}. {errorBody}");
+                $"ElevenLabs dubbed audio download failed with HTTP {(int)response.StatusCode}: {response.ReasonPhrase}. {TruncateErrorBody(errorBody)}");
         }
 
         return await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);

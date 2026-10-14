@@ -13,28 +13,25 @@ public sealed class FakeCloudEgressConsentService : ICloudEgressConsentService
     public FakeCloudEgressConsentService(bool defaultConsented = false, params string[] initialConsentedKeys)
     {
         _defaultConsented = defaultConsented;
-        foreach (string key in initialConsentedKeys)
+        foreach (string key in initialConsentedKeys.Where(static key => !string.IsNullOrWhiteSpace(key)))
         {
-            if (!string.IsNullOrWhiteSpace(key))
-            {
-                _consents[key.Trim().ToLowerInvariant()] = true;
-            }
+            _consents[key.Trim().ToLowerInvariant()] = true;
         }
     }
 
-    public bool HasConsent(string consentKey)
+    public Task<bool> HasConsentAsync(string consentKey, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(consentKey))
         {
-            return false;
+            return Task.FromResult(false);
         }
 
         if (_consents.TryGetValue(consentKey.Trim().ToLowerInvariant(), out bool consented))
         {
-            return consented;
+            return Task.FromResult(consented);
         }
 
-        return _defaultConsented;
+        return Task.FromResult(_defaultConsented);
     }
 
     public IReadOnlyList<string> GetRequiredConsentKeys(string stageName, string? modelAlias) =>

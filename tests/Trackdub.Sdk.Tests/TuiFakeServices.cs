@@ -70,7 +70,8 @@ internal sealed class FakePipelineReadinessService : IPipelineReadinessService
         CancellationToken cancellationToken = default,
         string? sourceLanguageCode = null,
         string? targetLanguageCode = null,
-        bool validateRuntime = true) =>
+        bool validateRuntime = true,
+        IReadOnlyDictionary<string, bool>? explicitEgressConsents = null) =>
         Task.FromResult(PipelineReadinessReport.Empty);
 
     public void InvalidateCache(IReadOnlyList<RuntimeStage>? stages = null)

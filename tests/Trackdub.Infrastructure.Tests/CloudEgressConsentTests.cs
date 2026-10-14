@@ -22,32 +22,32 @@ public sealed class CloudEgressConsentTests
         var settingsService = new FakeStudioSettingsService();
         var consentService = new CloudEgressConsentService(settingsService, _ => null);
 
-        Assert.False(consentService.HasConsent(CloudEgressConsentKeys.AudioGemini));
-        Assert.False(consentService.HasConsent(CloudEgressConsentKeys.TextGemini));
-        Assert.False(consentService.HasConsent(""));
+        Assert.False(await consentService.HasConsentAsync(CloudEgressConsentKeys.AudioGemini));
+        Assert.False(await consentService.HasConsentAsync(CloudEgressConsentKeys.TextGemini));
+        Assert.False(await consentService.HasConsentAsync(""));
 
         await consentService.SetConsentAsync(CloudEgressConsentKeys.AudioGemini, true, TestContext.Current.CancellationToken);
 
-        Assert.True(consentService.HasConsent(CloudEgressConsentKeys.AudioGemini));
-        Assert.True(consentService.HasConsent(" AUDIO:GEMINI "));
+        Assert.True(await consentService.HasConsentAsync(CloudEgressConsentKeys.AudioGemini));
+        Assert.True(await consentService.HasConsentAsync(" AUDIO:GEMINI "));
         // Audio consent for Gemini must not grant text consent for Gemini
-        Assert.False(consentService.HasConsent(CloudEgressConsentKeys.TextGemini));
+        Assert.False(await consentService.HasConsentAsync(CloudEgressConsentKeys.TextGemini));
 
         StudioSettings persisted = await settingsService.LoadAsync(TestContext.Current.CancellationToken);
         Assert.NotNull(persisted.CloudEgressConsents);
         Assert.True(persisted.CloudEgressConsents![CloudEgressConsentKeys.AudioGemini]);
 
         await consentService.SetConsentAsync(CloudEgressConsentKeys.AudioGemini, false, TestContext.Current.CancellationToken);
-        Assert.False(consentService.HasConsent(CloudEgressConsentKeys.AudioGemini));
+        Assert.False(await consentService.HasConsentAsync(CloudEgressConsentKeys.AudioGemini));
     }
 
     [Fact]
-    public void CloudEgressConsentService_audio_and_text_and_media_consents_are_independent()
+    public async Task CloudEgressConsentService_audio_and_text_and_media_consents_are_independent()
     {
         var settingsService = new FakeStudioSettingsService();
         var consentService = new CloudEgressConsentService(settingsService, _ => null);
 
-        settingsService.SaveAsync(
+        await settingsService.SaveAsync(
             StudioSettings.Default with
             {
                 CloudEgressConsents = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
@@ -57,16 +57,16 @@ public sealed class CloudEgressConsentTests
                     [CloudEgressConsentKeys.TextElevenLabs] = true,
                 }
             },
-            CancellationToken.None).GetAwaiter().GetResult();
+            TestContext.Current.CancellationToken);
 
-        Assert.True(consentService.HasConsent(CloudEgressConsentKeys.TextOpenAi));
-        Assert.False(consentService.HasConsent(CloudEgressConsentKeys.AudioOpenAi));
+        Assert.True(await consentService.HasConsentAsync(CloudEgressConsentKeys.TextOpenAi));
+        Assert.False(await consentService.HasConsentAsync(CloudEgressConsentKeys.AudioOpenAi));
 
-        Assert.True(consentService.HasConsent(CloudEgressConsentKeys.TextGemini));
-        Assert.False(consentService.HasConsent(CloudEgressConsentKeys.AudioGemini));
+        Assert.True(await consentService.HasConsentAsync(CloudEgressConsentKeys.TextGemini));
+        Assert.False(await consentService.HasConsentAsync(CloudEgressConsentKeys.AudioGemini));
 
-        Assert.True(consentService.HasConsent(CloudEgressConsentKeys.TextElevenLabs));
-        Assert.False(consentService.HasConsent(CloudEgressConsentKeys.MediaElevenLabs));
+        Assert.True(await consentService.HasConsentAsync(CloudEgressConsentKeys.TextElevenLabs));
+        Assert.False(await consentService.HasConsentAsync(CloudEgressConsentKeys.MediaElevenLabs));
     }
 
     [Theory]
@@ -94,7 +94,7 @@ public sealed class CloudEgressConsentTests
     }
 
     [Fact]
-    public void CloudEgressConsentService_honors_environment_variable_override()
+    public async Task CloudEgressConsentService_honors_environment_variable_override()
     {
         var consentService = new CloudEgressConsentService(
             new FakeStudioSettingsService(),
@@ -102,9 +102,9 @@ public sealed class CloudEgressConsentTests
                 ? "audio:gemini, text:deepl"
                 : null);
 
-        Assert.True(consentService.HasConsent(CloudEgressConsentKeys.AudioGemini));
-        Assert.True(consentService.HasConsent(CloudEgressConsentKeys.TextDeepL));
-        Assert.False(consentService.HasConsent(CloudEgressConsentKeys.MediaElevenLabs));
+        Assert.True(await consentService.HasConsentAsync(CloudEgressConsentKeys.AudioGemini));
+        Assert.True(await consentService.HasConsentAsync(CloudEgressConsentKeys.TextDeepL));
+        Assert.False(await consentService.HasConsentAsync(CloudEgressConsentKeys.MediaElevenLabs));
     }
 
     [Fact]
@@ -266,7 +266,7 @@ public sealed class CloudEgressConsentTests
 
         await Assert.ThrowsAsync<CloudEgressConsentException>(() =>
             engine.RefineAsync(
-                new TextRefinementRequest([new TextRefinementInputSegment(0, 0, 1.0, "raw text")], "en"),
+                new TextRefinementRequest([new TextRefinementInputSegment(0, 0, 1.0, "raw text")], SourceLanguage: "en"),
                 TestContext.Current.CancellationToken));
         Assert.Equal(0, handler.CallCount);
 
@@ -275,7 +275,7 @@ public sealed class CloudEgressConsentTests
         Assert.Equal(ReadinessState.Ready, readyState.Status);
 
         IReadOnlyList<RefinedTextSegment> refined = await engine.RefineAsync(
-            new TextRefinementRequest([new TextRefinementInputSegment(0, 0, 1.0, "raw text")], "en"),
+            new TextRefinementRequest([new TextRefinementInputSegment(0, 0, 1.0, "raw text")], SourceLanguage: "en"),
             TestContext.Current.CancellationToken);
 
         Assert.Single(refined);
@@ -457,6 +457,52 @@ public sealed class CloudEgressConsentTests
             elevenLabsTts.SynthesizeAsync(new TtsSynthesisRequest("Hi", "en", new VoiceCatalogEntry("v1", "en", "neutral", "V1")), TestContext.Current.CancellationToken));
         await Assert.ThrowsAsync<CloudEgressConsentException>(() =>
             googleTts.SynthesizeAsync(new TtsSynthesisRequest("Hi", "en", new VoiceCatalogEntry("en-US-Standard-A", "en-US", "neutral", "A")), TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task SessionCloudEgressConsentOverlay_grants_explicit_keys_for_this_run_only()
+    {
+        var settingsService = new FakeStudioSettingsService();
+        var baseConsent = new CloudEgressConsentService(settingsService, _ => null);
+        var explicitKeys = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
+        {
+            [CloudEgressConsentKeys.AudioOpenAi] = true
+        };
+        var overlay = new SessionCloudEgressConsentOverlay(baseConsent, explicitKeys);
+
+        // Explicit key granted through the overlay only.
+        Assert.True(await overlay.HasConsentAsync(CloudEgressConsentKeys.AudioOpenAi));
+        Assert.False(await overlay.HasConsentAsync(CloudEgressConsentKeys.TextGemini));
+
+        // The shared consent store was not mutated — a later run without the option is still blocked.
+        Assert.False(await baseConsent.HasConsentAsync(CloudEgressConsentKeys.AudioOpenAi));
+        StudioSettings persisted = await settingsService.LoadAsync(TestContext.Current.CancellationToken);
+        Assert.Empty(persisted.CloudEgressConsents!);
+    }
+
+    [Fact]
+    public async Task SessionCloudEgressConsentOverlay_without_explicit_keys_delegates_to_persisted_consent()
+    {
+        var settingsService = new FakeStudioSettingsService();
+        var baseConsent = new CloudEgressConsentService(settingsService, _ => null);
+        await baseConsent.SetConsentAsync(CloudEgressConsentKeys.TextGemini, true, TestContext.Current.CancellationToken);
+
+        var overlay = new SessionCloudEgressConsentOverlay(baseConsent, sessionConsents: null);
+        Assert.True(await overlay.HasConsentAsync(CloudEgressConsentKeys.TextGemini));
+        Assert.False(await overlay.HasConsentAsync(CloudEgressConsentKeys.AudioGemini));
+    }
+
+    [Fact]
+    public async Task SessionCloudEgressConsentOverlay_SetConsentAsync_delegates_to_persisted_store()
+    {
+        var settingsService = new FakeStudioSettingsService();
+        var baseConsent = new CloudEgressConsentService(settingsService, _ => null);
+        var overlay = new SessionCloudEgressConsentOverlay(baseConsent, sessionConsents: null);
+
+        await overlay.SetConsentAsync(CloudEgressConsentKeys.TextDeepL, true, TestContext.Current.CancellationToken);
+
+        Assert.True(await overlay.HasConsentAsync(CloudEgressConsentKeys.TextDeepL));
+        Assert.True(await baseConsent.HasConsentAsync(CloudEgressConsentKeys.TextDeepL));
     }
 
     private static StringContent JsonContent(string json) =>

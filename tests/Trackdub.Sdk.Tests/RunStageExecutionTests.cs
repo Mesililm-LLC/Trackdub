@@ -479,7 +479,8 @@ public sealed class RunStageExecutionTests : IDisposable
             CancellationToken cancellationToken = default,
             string? sourceLanguageCode = null,
             string? targetLanguageCode = null,
-            bool validateRuntime = true) =>
+            bool validateRuntime = true,
+            IReadOnlyDictionary<string, bool>? explicitEgressConsents = null) =>
             Task.FromResult(new PipelineReadinessReport(enabledStages
                 .Select(stage => new StageReadiness(
                     StageName: StageNameFor(stage),

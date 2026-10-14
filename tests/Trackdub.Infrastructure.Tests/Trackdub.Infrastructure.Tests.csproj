@@ -36,6 +36,7 @@
   <ItemGroup>
     <Compile Include="..\Trackdub.TestDoubles\FakeTranslationLanguageRouter.cs" Link="TestDoubles\FakeTranslationLanguageRouter.cs" />
     <Compile Include="..\Trackdub.TestDoubles\FakeStudioSettingsService.cs" Link="TestDoubles\FakeStudioSettingsService.cs" />
+    <Compile Include="..\Trackdub.TestDoubles\FakeCloudEgressConsentService.cs" Link="TestDoubles\FakeCloudEgressConsentService.cs" />
   </ItemGroup>
 
   <ItemGroup>

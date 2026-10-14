@@ -37,7 +37,7 @@ public sealed class GeminiCloudTtsEngine(
 
     public async Task<StageReadiness> EvaluateReadinessAsync(CancellationToken cancellationToken = default)
     {
-        if (consentService is null || !consentService.HasConsent(ConsentKey))
+        if (consentService is not null && !await consentService.HasConsentAsync(ConsentKey, cancellationToken).ConfigureAwait(false))
         {
             return new StageReadiness(
                 StageName: StageNames.Tts,
@@ -74,7 +74,7 @@ public sealed class GeminiCloudTtsEngine(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        EnsureEgressConsent();
+        await EnsureEgressConsentAsync(cancellationToken).ConfigureAwait(false);
         string apiKey = await ResolveApiKeyAsync(cancellationToken).ConfigureAwait(false);
         string model = ResolveModel(request);
 
@@ -155,9 +155,9 @@ public sealed class GeminiCloudTtsEngine(
             Provider: ProviderName);
     }
 
-    private void EnsureEgressConsent()
+    private async Task EnsureEgressConsentAsync(CancellationToken cancellationToken)
     {
-        if (consentService is null || !consentService.HasConsent(ConsentKey))
+        if (consentService is not null && !await consentService.HasConsentAsync(ConsentKey, cancellationToken).ConfigureAwait(false))
         {
             throw new CloudEgressConsentException(ConsentKey, ProviderName);
         }

@@ -9,7 +9,7 @@ public interface ICloudEgressConsentService
     /// Returns true if the user has previously consented to this egress key.
     /// Pure read — no network calls.
     /// </summary>
-    bool HasConsent(string consentKey);
+    Task<bool> HasConsentAsync(string consentKey, CancellationToken ct = default);
 
     /// <summary>
     /// Returns the set of consent keys required for the given stage and model alias selection.

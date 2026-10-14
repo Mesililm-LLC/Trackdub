@@ -39,7 +39,7 @@ public sealed class GeminiCloudTranscriptionEngine(
 
     public async Task<StageReadiness> EvaluateReadinessAsync(CancellationToken cancellationToken = default)
     {
-        if (consentService is null || !consentService.HasConsent(ConsentKey))
+        if (consentService is not null && !await consentService.HasConsentAsync(ConsentKey, cancellationToken).ConfigureAwait(false))
         {
             return new StageReadiness(
                 StageName: StageNames.Asr,
@@ -82,7 +82,7 @@ public sealed class GeminiCloudTranscriptionEngine(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        EnsureEgressConsent();
+        await EnsureEgressConsentAsync(cancellationToken).ConfigureAwait(false);
         string apiKey = await ResolveApiKeyAsync(cancellationToken).ConfigureAwait(false);
 
         byte[] audioBytes = await File.ReadAllBytesAsync(
@@ -179,9 +179,9 @@ public sealed class GeminiCloudTranscriptionEngine(
             .ToArray();
     }
 
-    private void EnsureEgressConsent()
+    private async Task EnsureEgressConsentAsync(CancellationToken cancellationToken)
     {
-        if (consentService is null || !consentService.HasConsent(ConsentKey))
+        if (consentService is not null && !await consentService.HasConsentAsync(ConsentKey, cancellationToken).ConfigureAwait(false))
         {
             throw new CloudEgressConsentException(ConsentKey, ProviderName);
         }

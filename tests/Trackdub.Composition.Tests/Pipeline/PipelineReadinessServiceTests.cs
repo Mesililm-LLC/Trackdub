@@ -538,7 +538,7 @@ public sealed class PipelineReadinessServiceTests
             planner,
             apiKeyProvider,
             new FakeConsentService(),
-            consentService);
+            cloudEgressConsentService: consentService);
 
         var selections = new RuntimeModelSelections(
             AsrModelOverride.GeminiAsr,

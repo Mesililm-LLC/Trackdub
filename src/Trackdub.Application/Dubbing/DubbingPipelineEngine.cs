@@ -8,7 +8,6 @@ using Trackdub.Application.Pipeline;
 using Trackdub.Application.Transcripts;
 using Trackdub.Application.Transcripts.Pipeline;
 using Trackdub.Contracts;
-using Trackdub.Contracts.Cloud;
 using Trackdub.Contracts.Dubbing;
 using Trackdub.Contracts.Benchmarking;
 using Trackdub.Contracts.Licensing;
@@ -114,17 +113,10 @@ public sealed class DubbingPipelineEngine(
                 TryResolveService<IConsentService>(session)?.GrantVoiceCloningConsent();
             }
 
-            if (options.ExplicitCloudEgressConsents is { Count: > 0 } &&
-                TryResolveService<ICloudEgressConsentService>(session) is { } egressConsentService)
-            {
-                foreach (string key in options.ExplicitCloudEgressConsents)
-                {
-                    if (!string.IsNullOrWhiteSpace(key))
-                    {
-                        await egressConsentService.SetConsentAsync(key, true, cancellationToken).ConfigureAwait(false);
-                    }
-                }
-            }
+            // Explicit cloud egress consents are applied as a run-scoped overlay via the
+            // session settings seeded in CreateSessionOrError. They are never written to the
+            // shared consent store, so a later run that omits the option is still gated by
+            // what was actually persisted.
 
             TranscriptProjectState? initialProjectState = null;
 
@@ -292,12 +284,9 @@ public sealed class DubbingPipelineEngine(
         var map = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         if (explicitConsents is not null)
         {
-            foreach (string key in explicitConsents)
+            foreach (string key in explicitConsents.Where(static key => !string.IsNullOrWhiteSpace(key)))
             {
-                if (!string.IsNullOrWhiteSpace(key))
-                {
-                    map[key.Trim().ToLowerInvariant()] = true;
-                }
+                map[key.Trim().ToLowerInvariant()] = true;
             }
         }
 
@@ -921,7 +910,8 @@ public sealed class DubbingPipelineEngine(
                 state,
                 cancellationToken,
                 options.SourceLanguageCode,
-                options.TargetLanguageCode)
+                options.TargetLanguageCode,
+                explicitEgressConsents: BuildExplicitCloudEgressConsents(options.ExplicitCloudEgressConsents))
             .ConfigureAwait(false);
 
         // Provision downloadable models upfront via the host's interaction surface.
@@ -994,7 +984,8 @@ public sealed class DubbingPipelineEngine(
                     state,
                     cancellationToken,
                     options.SourceLanguageCode,
-                    options.TargetLanguageCode)
+                    options.TargetLanguageCode,
+                    explicitEgressConsents: BuildExplicitCloudEgressConsents(options.ExplicitCloudEgressConsents))
                 .ConfigureAwait(false);
         }
 

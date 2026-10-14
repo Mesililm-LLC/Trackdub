@@ -40,7 +40,7 @@ public sealed class OpenAiCloudTranscriptionEngine(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        EnsureEgressConsent();
+        await EnsureEgressConsentAsync(cancellationToken).ConfigureAwait(false);
         string apiKey = await ResolveApiKeyAsync(cancellationToken).ConfigureAwait(false);
 
         byte[] audioBytes = await File.ReadAllBytesAsync(
@@ -108,7 +108,7 @@ public sealed class OpenAiCloudTranscriptionEngine(
 
     public async Task<StageReadiness> EvaluateReadinessAsync(CancellationToken cancellationToken = default)
     {
-        if (consentService is null || !consentService.HasConsent(ConsentKey))
+        if (consentService is not null && !await consentService.HasConsentAsync(ConsentKey, cancellationToken).ConfigureAwait(false))
         {
             return new StageReadiness(
                 StageName: StageNames.Asr,
@@ -140,9 +140,9 @@ public sealed class OpenAiCloudTranscriptionEngine(
             ResolveAction: null);
     }
 
-    private void EnsureEgressConsent()
+    private async Task EnsureEgressConsentAsync(CancellationToken cancellationToken)
     {
-        if (consentService is null || !consentService.HasConsent(ConsentKey))
+        if (consentService is not null && !await consentService.HasConsentAsync(ConsentKey, cancellationToken).ConfigureAwait(false))
         {
             throw new CloudEgressConsentException(ConsentKey, ProviderName);
         }

@@ -200,7 +200,8 @@ public sealed class DeepLCloudTranslationEngineTests
 
     private sealed class StaticCloudEgressConsentService(bool consented) : ICloudEgressConsentService
     {
-        public bool HasConsent(string consentKey) => consented && string.Equals(consentKey, CloudEgressConsentKeys.TextDeepL, StringComparison.OrdinalIgnoreCase);
+        public Task<bool> HasConsentAsync(string consentKey, CancellationToken ct = default) =>
+            Task.FromResult(consented && string.Equals(consentKey, CloudEgressConsentKeys.TextDeepL, StringComparison.OrdinalIgnoreCase));
         public IReadOnlyList<string> GetRequiredConsentKeys(string stageName, string? modelAlias) => [CloudEgressConsentKeys.TextDeepL];
         public Task SetConsentAsync(string consentKey, bool value, CancellationToken ct = default) => Task.CompletedTask;
     }

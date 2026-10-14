@@ -1,3 +1,4 @@
+using Trackdub.Application.Cloud;
 using Trackdub.Contracts;
 using Trackdub.Domain;
 
@@ -88,9 +89,12 @@ public sealed class InMemoryStudioSettingsService : IStudioSettingsService
             }
         }
 
-        foreach (string envVar in new[] { "TRACKDUB_CLOUD_EGRESS_CONSENT", "TRACKDUB_CLOUD_EGRESS_CONSENTS" })
+        foreach (string? raw in new[]
         {
-            string? raw = getEnvironmentVariable(envVar);
+            CloudEgressConsentService.ConsentEnvironmentVariable,
+            CloudEgressConsentService.ConsentsEnvironmentVariable,
+        }.Select(getEnvironmentVariable))
+        {
             if (string.IsNullOrWhiteSpace(raw))
             {
                 continue;
@@ -98,7 +102,13 @@ public sealed class InMemoryStudioSettingsService : IStudioSettingsService
 
             foreach (string token in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
-                merged[token.ToLowerInvariant()] = true;
+                // Environment grants are a fallback: an explicit persisted value (including a
+                // revocation) wins, matching CloudEgressConsentService.HasConsentAsync semantics.
+                string normalizedToken = token.ToLowerInvariant();
+                if (!merged.ContainsKey(normalizedToken))
+                {
+                    merged[normalizedToken] = true;
+                }
             }
         }
 

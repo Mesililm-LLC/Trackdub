@@ -87,7 +87,16 @@ public sealed class FakeStudioSettingsService : IStudioSettingsService
     {
         if (consents is null || consents.Count == 0)
         {
-            return new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            // Preserve the instance so StudioSettings record equality (which compares
+            // dictionaries by reference) holds across save/load round-trips.
+            return consents ?? new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        bool alreadyNormalized = consents.Keys.All(key =>
+            !string.IsNullOrWhiteSpace(key) && key == key.Trim().ToLowerInvariant());
+        if (alreadyNormalized)
+        {
+            return consents;
         }
 
         var normalized = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);

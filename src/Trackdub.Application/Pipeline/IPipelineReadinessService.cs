@@ -22,6 +22,11 @@ public interface IPipelineReadinessService
     /// When false, planning stops at file-existence checks and reports Ready only — use
     /// this for UI badge refreshes that must never execute native inference work.
     /// </param>
+    /// <param name="explicitEgressConsents">
+    /// Optional per-run cloud egress consents (e.g. from a headless/CI run's
+    /// <c>ExplicitCloudEgressConsents</c>). Keys present here satisfy the consent gate
+    /// for this evaluation without touching the persisted consent store.
+    /// </param>
     Task<PipelineReadinessReport> EvaluateAsync(
         IReadOnlyList<RuntimeStage> enabledStages,
         RuntimeModelSelections selections,
@@ -29,7 +34,8 @@ public interface IPipelineReadinessService
         CancellationToken cancellationToken = default,
         string? sourceLanguageCode = null,
         string? targetLanguageCode = null,
-        bool validateRuntime = true);
+        bool validateRuntime = true,
+        IReadOnlyDictionary<string, bool>? explicitEgressConsents = null);
 
     /// <summary>
     /// Invalidates the cached evaluation for the given stages, forcing re-evaluation on

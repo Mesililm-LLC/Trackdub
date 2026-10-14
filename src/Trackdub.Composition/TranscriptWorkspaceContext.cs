@@ -26,6 +26,23 @@ public sealed class TranscriptWorkspaceContext : ITranscriptWorkspaceContext
         }
     }
 
+    /// <summary>
+    /// Returns the per-session settings without throwing when the context belongs to a
+    /// bare scope (e.g. root-level readiness evaluation with no session). Returns false
+    /// and a default snapshot when the context has not been initialized.
+    /// </summary>
+    public bool TryGetSettings(out StudioSettings settings)
+    {
+        if (!initialized)
+        {
+            settings = StudioSettings.Default;
+            return false;
+        }
+
+        settings = this.settings!;
+        return true;
+    }
+
     public void Initialize(string projectRootPath, StudioSettings? settings)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(projectRootPath);

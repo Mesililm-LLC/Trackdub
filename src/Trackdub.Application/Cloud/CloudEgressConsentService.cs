@@ -15,6 +15,13 @@ public sealed class CloudEgressConsentService : ICloudEgressConsentService
     private readonly IStudioSettingsService _settingsService;
     private readonly Func<string, string?> _getEnvironmentVariable;
 
+    // Cached settings snapshot so per-segment TTS/ASR/translation calls do not re-read and
+    // re-parse settings.json on every consent check. Invalidated on SetConsentAsync so
+    // newly granted (or revoked) consent is observed immediately. Environment-variable
+    // consent is still evaluated per call, so it needs no invalidation.
+    private StudioSettings? _cachedSettings;
+    private bool _cacheValid;
+
     public CloudEgressConsentService(
         IStudioSettingsService settingsService,
         Func<string, string?>? getEnvironmentVariable = null)
@@ -23,7 +30,7 @@ public sealed class CloudEgressConsentService : ICloudEgressConsentService
         _getEnvironmentVariable = getEnvironmentVariable ?? Environment.GetEnvironmentVariable;
     }
 
-    public bool HasConsent(string consentKey)
+    public async Task<bool> HasConsentAsync(string consentKey, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(consentKey))
         {
@@ -32,11 +39,7 @@ public sealed class CloudEgressConsentService : ICloudEgressConsentService
 
         string normalizedKey = consentKey.Trim().ToLowerInvariant();
 
-        StudioSettings settings = _settingsService
-            .LoadAsync(CancellationToken.None)
-            .ConfigureAwait(false)
-            .GetAwaiter()
-            .GetResult();
+        StudioSettings settings = await GetSettingsAsync(ct).ConfigureAwait(false);
 
         if (settings.CloudEgressConsents is not null)
         {
@@ -55,6 +58,19 @@ public sealed class CloudEgressConsentService : ICloudEgressConsentService
         }
 
         return HasEnvironmentConsent(normalizedKey);
+    }
+
+    private async Task<StudioSettings> GetSettingsAsync(CancellationToken ct)
+    {
+        if (_cacheValid && _cachedSettings is not null)
+        {
+            return _cachedSettings;
+        }
+
+        StudioSettings settings = await _settingsService.LoadAsync(ct).ConfigureAwait(false);
+        _cachedSettings = settings;
+        _cacheValid = true;
+        return settings;
     }
 
     public IReadOnlyList<string> GetRequiredConsentKeys(string stageName, string? modelAlias)
@@ -101,6 +117,8 @@ public sealed class CloudEgressConsentService : ICloudEgressConsentService
 
         updatedConsents[normalizedKey] = consented;
         StudioSettings updated = current with { CloudEgressConsents = updatedConsents };
+        _cachedSettings = null;
+        _cacheValid = false;
         await _settingsService.SaveAsync(updated, ct).ConfigureAwait(false);
     }
 
@@ -166,12 +184,10 @@ public sealed class CloudEgressConsentService : ICloudEgressConsentService
 
     private static IReadOnlyList<string> ResolveTextRefinementConsentKeys(string alias)
     {
+        // Matches RoutedTextRefinementEngine: any alias beginning with "gemini" routes to the
+        // Gemini cloud refinement engine, so readiness and the per-call consent check agree.
         if (string.Equals(alias, "gemini-refinement-cloud", StringComparison.OrdinalIgnoreCase) ||
-            alias.StartsWith("gemini-refinement", StringComparison.OrdinalIgnoreCase) ||
-            alias.StartsWith("gemini-3.8", StringComparison.OrdinalIgnoreCase) ||
-            alias.StartsWith("gemini-3.5", StringComparison.OrdinalIgnoreCase) ||
-            alias.StartsWith("gemini-2.5", StringComparison.OrdinalIgnoreCase) ||
-            alias.StartsWith("gemini-4", StringComparison.OrdinalIgnoreCase))
+            alias.StartsWith("gemini", StringComparison.OrdinalIgnoreCase))
         {
             return [CloudEgressConsentKeys.TextGemini];
         }
@@ -194,9 +210,8 @@ public sealed class CloudEgressConsentService : ICloudEgressConsentService
 
     private bool HasEnvironmentConsent(string normalizedKey)
     {
-        foreach (string variable in new[] { ConsentEnvironmentVariable, ConsentsEnvironmentVariable })
+        foreach (string? raw in new[] { ConsentEnvironmentVariable, ConsentsEnvironmentVariable }.Select(_getEnvironmentVariable))
         {
-            string? raw = _getEnvironmentVariable(variable);
             if (string.IsNullOrWhiteSpace(raw))
             {
                 continue;
