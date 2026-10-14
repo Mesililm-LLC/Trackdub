@@ -42,6 +42,70 @@ public sealed class CloudEgressConsentTests
     }
 
     [Fact]
+    public async Task SetConsentAsync_revocation_save_window_does_not_republish_pre_revocation_snapshot()
+    {
+        // Regression for the save-window race: SetConsentAsync used to invalidate the
+        // cache *before* saving, so a concurrent HasConsentAsync that loaded during the
+        // save window re-cached the pre-revocation snapshot and the revocation went
+        // unobserved until the next consent write.
+        var settingsService = new StallingStudioSettingsService(
+            StudioSettings.Default with
+            {
+                CloudEgressConsents = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [CloudEgressConsentKeys.AudioGemini] = true,
+                },
+            });
+        var consentService = new CloudEgressConsentService(settingsService, _ => null);
+
+        // Warm the cache with the granted-consent snapshot.
+        Assert.True(await consentService.HasConsentAsync(CloudEgressConsentKeys.AudioGemini, TestContext.Current.CancellationToken));
+
+        // Revoke, parking the save so a read can run inside the save window.
+        settingsService.ParkNextSave();
+        Task revokeTask = consentService.SetConsentAsync(CloudEgressConsentKeys.AudioGemini, false, TestContext.Current.CancellationToken);
+        await settingsService.ParkedSaveEntered;
+
+        bool duringSaveWindow = await consentService.HasConsentAsync(CloudEgressConsentKeys.AudioGemini, TestContext.Current.CancellationToken);
+        Assert.True(duringSaveWindow); // in-flight reads may still observe the old consent
+
+        settingsService.ReleaseParkedSave();
+        await revokeTask;
+
+        // The revocation must be visible to the very next read.
+        Assert.False(await consentService.HasConsentAsync(CloudEgressConsentKeys.AudioGemini, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task SetConsentAsync_concurrent_load_straddling_the_save_does_not_publish_a_stale_snapshot()
+    {
+        // Cold cache: a load that starts before the revocation's save lands and finishes
+        // after it must not publish its stale snapshot to the freshly cleared cache.
+        var settingsService = new StallingStudioSettingsService(
+            StudioSettings.Default with
+            {
+                CloudEgressConsents = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [CloudEgressConsentKeys.AudioGemini] = true,
+                },
+            });
+        var consentService = new CloudEgressConsentService(settingsService, _ => null);
+
+        settingsService.ParkNextLoad();
+        Task<bool> inFlightRead = consentService.HasConsentAsync(CloudEgressConsentKeys.AudioGemini, TestContext.Current.CancellationToken);
+        await settingsService.ParkedLoadEntered;
+
+        await consentService.SetConsentAsync(CloudEgressConsentKeys.AudioGemini, false, TestContext.Current.CancellationToken);
+
+        settingsService.ReleaseParkedLoad();
+
+        // The read that straddled the save observed the pre-revocation snapshot ...
+        Assert.True(await inFlightRead);
+        // ... but the next read reflects the durable revocation.
+        Assert.False(await consentService.HasConsentAsync(CloudEgressConsentKeys.AudioGemini, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task CloudEgressConsentService_audio_and_text_and_media_consents_are_independent()
     {
         var settingsService = new FakeStudioSettingsService();
@@ -531,5 +595,58 @@ public sealed class CloudEgressConsentTests
             CallCount++;
             return Task.FromResult(responseFactory(request));
         }
+    }
+
+    private sealed class StallingStudioSettingsService(StudioSettings? initial = null)
+        : IStudioSettingsService
+    {
+        private readonly TaskCompletionSource _parkedLoadEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _parkedLoadGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _parkedSaveEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _parkedSaveGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private volatile bool _parkNextLoad;
+        private volatile bool _parkNextSave;
+        private StudioSettings _settings = initial ?? StudioSettings.Default;
+
+        public Task ParkedLoadEntered => _parkedLoadEntered.Task;
+
+        public Task ParkedSaveEntered => _parkedSaveEntered.Task;
+
+        public void ParkNextLoad() => _parkNextLoad = true;
+
+        public void ParkNextSave() => _parkNextSave = true;
+
+        public void ReleaseParkedLoad() => _parkedLoadGate.TrySetResult();
+
+        public void ReleaseParkedSave() => _parkedSaveGate.TrySetResult();
+
+        public async Task<StudioSettings> LoadAsync(CancellationToken cancellationToken)
+        {
+            StudioSettings snapshot = _settings;
+
+            if (_parkNextLoad)
+            {
+                _parkNextLoad = false;
+                _parkedLoadEntered.TrySetResult();
+                await _parkedLoadGate.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            return snapshot;
+        }
+
+        public async Task SaveAsync(StudioSettings settings, CancellationToken cancellationToken)
+        {
+            if (_parkNextSave)
+            {
+                _parkNextSave = false;
+                _parkedSaveEntered.TrySetResult();
+                await _parkedSaveGate.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            _settings = settings;
+        }
+
+        public Task<StudioSettings> TouchRecentProjectAsync(string projectPath, string projectName, CancellationToken cancellationToken) =>
+            Task.FromResult(_settings);
     }
 }
