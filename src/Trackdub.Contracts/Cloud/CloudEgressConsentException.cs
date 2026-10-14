@@ -11,7 +11,7 @@ public sealed class CloudEgressConsentException : InvalidOperationException
     public string? ProviderName { get; }
 
     public CloudEgressConsentException()
-        : base("Cloud egress has not been consented. Resolve consent in Settings before running this stage.")
+        : base("Cloud egress has not been consented. Grant consent in Settings (desktop app) or set TRACKDUB_CLOUD_EGRESS_CONSENT(S) (headless/CLI) before running this stage.")
     {
     }
 
@@ -26,7 +26,7 @@ public sealed class CloudEgressConsentException : InvalidOperationException
     }
 
     public CloudEgressConsentException(string consentKey, string providerName)
-        : base($"Cloud egress to {providerName} ({consentKey}) has not been consented. Resolve consent in Settings before running this stage.")
+        : base($"Cloud egress to {providerName} ({consentKey}) has not been consented. Grant consent in Settings (desktop app) or set TRACKDUB_CLOUD_EGRESS_CONSENT(S) (headless/CLI) before running this stage.")
     {
         ConsentKey = consentKey;
         ProviderName = providerName;
