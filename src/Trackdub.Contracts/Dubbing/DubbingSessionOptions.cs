@@ -213,4 +213,9 @@ public sealed record DubbingSessionOptions
     /// Optional Windows ML catalog device policy for this run. When null, host settings apply.
     /// </summary>
     public WindowsMlExecutionDevicePolicy? WindowsMlExecutionDevicePolicy { get; init; }
+
+    /// <summary>
+    /// Optional explicit cloud egress consent keys for headless/CI runs (e.g. "audio:openai", "text:deepl").
+    /// </summary>
+    public IReadOnlyList<string>? ExplicitCloudEgressConsents { get; init; }
 }

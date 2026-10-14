@@ -3,18 +3,22 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Cloud;
 using Trackdub.Contracts.Pipeline;
+using Trackdub.Domain.StageRuns;
 
 namespace Trackdub.Infrastructure.Translation;
 
 public sealed class DeepLCloudTranslationEngine(
     HttpClient httpClient,
-    ICloudApiKeyProvider apiKeyProvider)
+    ICloudApiKeyProvider apiKeyProvider,
+    ICloudEgressConsentService? consentService = null)
     : ITranslationEngine, ITranslationExecutionMetadataReporter, IStageRuntimeExecutionReporter
 {
     public const string ProviderKey = "deepl";
     public const string ProviderName = ProviderKey;
     public const string EngineFamilyName = "deepl-cloud";
+    public const string ConsentKey = CloudEgressConsentKeys.TextDeepL;
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -23,6 +27,7 @@ public sealed class DeepLCloudTranslationEngine(
 
     private readonly HttpClient httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
     private readonly ICloudApiKeyProvider apiKeyProvider = apiKeyProvider ?? throw new ArgumentNullException(nameof(apiKeyProvider));
+    private readonly ICloudEgressConsentService? consentService = consentService;
 
     public TranslationExecutionMetadata? LastExecutionMetadata { get; private set; }
 
@@ -33,6 +38,7 @@ public sealed class DeepLCloudTranslationEngine(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        EnsureEgressConsent();
         if (request.Segments.Count == 0)
         {
             return [];
@@ -113,6 +119,48 @@ public sealed class DeepLCloudTranslationEngine(
         new(authKey.Trim().EndsWith(":fx", StringComparison.OrdinalIgnoreCase)
             ? "https://api-free.deepl.com/v2/translate"
             : "https://api.deepl.com/v2/translate");
+
+    public async Task<StageReadiness> EvaluateReadinessAsync(CancellationToken cancellationToken = default)
+    {
+        if (consentService is null || !consentService.HasConsent(ConsentKey))
+        {
+            return new StageReadiness(
+                StageName: StageNames.Translation,
+                Status: ReadinessState.CloudEgressConsentRequired,
+                Detail: $"Cloud egress to {ProviderName} ({ConsentKey}) requires user consent",
+                ModelId: null,
+                ModelAlias: TranslationModelOverrideSettings.DeepLModelAlias,
+                ResolveAction: "grant-egress-consent");
+        }
+
+        string? apiKey = await apiKeyProvider.GetApiKeyAsync(ProviderKey, cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            return new StageReadiness(
+                StageName: StageNames.Translation,
+                Status: ReadinessState.CloudKeyMissing,
+                Detail: $"{ProviderKey} API key is not configured",
+                ModelId: null,
+                ModelAlias: TranslationModelOverrideSettings.DeepLModelAlias,
+                ResolveAction: "set-api-key");
+        }
+
+        return new StageReadiness(
+            StageName: StageNames.Translation,
+            Status: ReadinessState.Ready,
+            Detail: null,
+            ModelId: null,
+            ModelAlias: TranslationModelOverrideSettings.DeepLModelAlias,
+            ResolveAction: null);
+    }
+
+    private void EnsureEgressConsent()
+    {
+        if (consentService is null || !consentService.HasConsent(ConsentKey))
+        {
+            throw new CloudEgressConsentException(ConsentKey, ProviderName);
+        }
+    }
 
     private async Task<string> ResolveAuthKeyAsync(CancellationToken cancellationToken)
     {

@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Cloud;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Infrastructure.Translation;
 
@@ -27,7 +28,8 @@ public sealed class DeepLCloudTranslationEngineTests
         using var httpClient = new HttpClient(handler);
         var engine = new DeepLCloudTranslationEngine(
             httpClient,
-            new StaticCloudApiKeyProvider("test-key:fx"));
+            new StaticCloudApiKeyProvider("test-key:fx"),
+            new StaticCloudEgressConsentService(true));
 
         IReadOnlyList<TranslatedTextSegment> result = await engine.TranslateAsync(
             new TranslationRequest(
@@ -80,7 +82,8 @@ public sealed class DeepLCloudTranslationEngineTests
         using var httpClient = new HttpClient(handler);
         var engine = new DeepLCloudTranslationEngine(
             httpClient,
-            new StaticCloudApiKeyProvider("test-key"));
+            new StaticCloudApiKeyProvider("test-key"),
+            new StaticCloudEgressConsentService(true));
 
         await engine.TranslateAsync(
             new TranslationRequest(
@@ -101,7 +104,8 @@ public sealed class DeepLCloudTranslationEngineTests
         using var httpClient = new HttpClient(handler);
         var engine = new DeepLCloudTranslationEngine(
             httpClient,
-            new StaticCloudApiKeyProvider(null));
+            new StaticCloudApiKeyProvider(null),
+            new StaticCloudEgressConsentService(true));
 
         InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             engine.TranslateAsync(
@@ -125,7 +129,8 @@ public sealed class DeepLCloudTranslationEngineTests
         using var httpClient = new HttpClient(handler);
         var engine = new DeepLCloudTranslationEngine(
             httpClient,
-            new StaticCloudApiKeyProvider("test-key:fx"));
+            new StaticCloudApiKeyProvider("test-key:fx"),
+            new StaticCloudEgressConsentService(true));
 
         InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             engine.TranslateAsync(
@@ -152,7 +157,8 @@ public sealed class DeepLCloudTranslationEngineTests
         using var httpClient = new HttpClient(handler);
         var engine = new DeepLCloudTranslationEngine(
             httpClient,
-            new StaticCloudApiKeyProvider("test-key:fx"));
+            new StaticCloudApiKeyProvider("test-key:fx"),
+            new StaticCloudEgressConsentService(true));
 
         InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             engine.TranslateAsync(
@@ -168,8 +174,36 @@ public sealed class DeepLCloudTranslationEngineTests
         Assert.Contains("1 translation result(s) for 2 input segment(s)", exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task TranslateAsync_without_consent_throws_CloudEgressConsentException_before_network_request()
+    {
+        var handler = new CapturingHandler(_ => throw new InvalidOperationException("Network should not be called."));
+        using var httpClient = new HttpClient(handler);
+        var engine = new DeepLCloudTranslationEngine(
+            httpClient,
+            new StaticCloudApiKeyProvider("test-key:fx"),
+            new StaticCloudEgressConsentService(false));
+
+        await Assert.ThrowsAsync<CloudEgressConsentException>(() =>
+            engine.TranslateAsync(
+                new TranslationRequest(
+                    "en",
+                    "es",
+                    [new TranslationInputSegment(0, 0, 1, "Hello")]),
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(0, handler.CallCount);
+    }
+
     private static StringContent JsonContent(string json) =>
         new(json, Encoding.UTF8, new MediaTypeHeaderValue("application/json"));
+
+    private sealed class StaticCloudEgressConsentService(bool consented) : ICloudEgressConsentService
+    {
+        public bool HasConsent(string consentKey) => consented && string.Equals(consentKey, CloudEgressConsentKeys.TextDeepL, StringComparison.OrdinalIgnoreCase);
+        public IReadOnlyList<string> GetRequiredConsentKeys(string stageName, string? modelAlias) => [CloudEgressConsentKeys.TextDeepL];
+        public Task SetConsentAsync(string consentKey, bool value, CancellationToken ct = default) => Task.CompletedTask;
+    }
 
     private sealed class StaticCloudApiKeyProvider(string? apiKey) : ICloudApiKeyProvider
     {

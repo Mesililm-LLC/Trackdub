@@ -77,8 +77,29 @@ public sealed class FakeStudioSettingsService : IStudioSettingsService
             TtsTiming = NormalizeTtsTiming(settings.TtsTiming),
             TranscriptConfidenceThreshold = NormalizeConfidenceThreshold(settings.TranscriptConfidenceThreshold),
             AsrModelOverride = NormalizeAsrModelOverride(settings.AsrModelOverride),
-            Export = NormalizeExportSettings(settings.Export)
+            Export = NormalizeExportSettings(settings.Export),
+            CloudEgressConsents = NormalizeCloudEgressConsents(settings.CloudEgressConsents)
         };
+    }
+
+    private static IReadOnlyDictionary<string, bool> NormalizeCloudEgressConsents(
+        IReadOnlyDictionary<string, bool>? consents)
+    {
+        if (consents is null || consents.Count == 0)
+        {
+            return new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var normalized = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        foreach ((string key, bool value) in consents)
+        {
+            if (!string.IsNullOrWhiteSpace(key))
+            {
+                normalized[key.Trim().ToLowerInvariant()] = value;
+            }
+        }
+
+        return normalized;
     }
 
     private static TtsTimingSettings NormalizeTtsTiming(TtsTimingSettings? settings)

@@ -1,5 +1,6 @@
 using Trackdub.Contracts;
 using Trackdub.Contracts.ApplicationContracts;
+using Trackdub.Contracts.Cloud;
 using Trackdub.Infrastructure.Settings;
 
 namespace Trackdub.Infrastructure.Tests;
@@ -582,6 +583,40 @@ public sealed class JsonStudioSettingsServiceTests
             Assert.Equal(
                 TtsModelOverrideSettings.OpenAiTtsCloudAlias,
                 loaded.StageModelAliases!["tts"]);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Save_and_load_round_trips_cloud_egress_consents()
+    {
+        string tempRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"));
+        var service = new JsonStudioSettingsService(new TrackdubStoragePaths(tempRoot));
+        var settings = StudioSettings.Default with
+        {
+            CloudEgressConsents = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
+            {
+                [" AUDIO:GEMINI "] = true,
+                [CloudEgressConsentKeys.TextGemini] = false,
+                [CloudEgressConsentKeys.MediaElevenLabs] = true,
+            }
+        };
+
+        try
+        {
+            await service.SaveAsync(settings, TestContext.Current.CancellationToken);
+            StudioSettings loaded = await service.LoadAsync(TestContext.Current.CancellationToken);
+
+            Assert.NotNull(loaded.CloudEgressConsents);
+            Assert.True(loaded.CloudEgressConsents![CloudEgressConsentKeys.AudioGemini]);
+            Assert.False(loaded.CloudEgressConsents[CloudEgressConsentKeys.TextGemini]);
+            Assert.True(loaded.CloudEgressConsents[CloudEgressConsentKeys.MediaElevenLabs]);
         }
         finally
         {

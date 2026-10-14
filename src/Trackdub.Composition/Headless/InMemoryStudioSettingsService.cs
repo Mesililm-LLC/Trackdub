@@ -66,7 +66,43 @@ public sealed class InMemoryStudioSettingsService : IStudioSettingsService
             NvidiaAfxIntensityRatio = persisted.NvidiaAfxIntensityRatio,
             NvidiaAfxLicenseAccepted = persisted.NvidiaAfxLicenseAccepted,
             NvidiaAfxRuntimeDirectory = persisted.NvidiaAfxRuntimeDirectory,
+            CloudEgressConsents = MergeCloudEgressConsents(
+                persisted.CloudEgressConsents,
+                getEnvironmentVariable ?? Environment.GetEnvironmentVariable),
         };
+    }
+
+    private static IReadOnlyDictionary<string, bool> MergeCloudEgressConsents(
+        IReadOnlyDictionary<string, bool>? persistedConsents,
+        Func<string, string?> getEnvironmentVariable)
+    {
+        var merged = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        if (persistedConsents is not null)
+        {
+            foreach ((string key, bool value) in persistedConsents)
+            {
+                if (!string.IsNullOrWhiteSpace(key))
+                {
+                    merged[key.Trim().ToLowerInvariant()] = value;
+                }
+            }
+        }
+
+        foreach (string envVar in new[] { "TRACKDUB_CLOUD_EGRESS_CONSENT", "TRACKDUB_CLOUD_EGRESS_CONSENTS" })
+        {
+            string? raw = getEnvironmentVariable(envVar);
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                continue;
+            }
+
+            foreach (string token in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                merged[token.ToLowerInvariant()] = true;
+            }
+        }
+
+        return merged;
     }
 
     private static bool IsTruthy(string? value) =>

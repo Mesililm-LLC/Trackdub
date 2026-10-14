@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Cloud;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Infrastructure.Tts;
 
@@ -39,7 +40,8 @@ public sealed class GeminiCloudTtsEngineTests
         using var httpClient = new HttpClient(handler);
         var engine = new GeminiCloudTtsEngine(
             httpClient,
-            new StaticCloudApiKeyProvider("test-gemini-key"));
+            new StaticCloudApiKeyProvider("test-gemini-key"),
+            new StaticCloudEgressConsentService(true));
 
         TtsSynthesisResult result = await engine.SynthesizeAsync(
             new TtsSynthesisRequest(
@@ -92,7 +94,8 @@ public sealed class GeminiCloudTtsEngineTests
         using var httpClient = new HttpClient(handler);
         var engine = new GeminiCloudTtsEngine(
             httpClient,
-            new StaticCloudApiKeyProvider("test-gemini-key"));
+            new StaticCloudApiKeyProvider("test-gemini-key"),
+            new StaticCloudEgressConsentService(true));
 
         TtsSynthesisResult result = await engine.SynthesizeAsync(
             new TtsSynthesisRequest(
@@ -113,7 +116,8 @@ public sealed class GeminiCloudTtsEngineTests
         using var httpClient = new HttpClient(new CapturingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)));
         var engine = new GeminiCloudTtsEngine(
             httpClient,
-            new StaticCloudApiKeyProvider(null));
+            new StaticCloudApiKeyProvider(null),
+            new StaticCloudEgressConsentService(true));
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             engine.SynthesizeAsync(
@@ -124,8 +128,36 @@ public sealed class GeminiCloudTtsEngineTests
                 TestContext.Current.CancellationToken));
     }
 
+    [Fact]
+    public async Task SynthesizeAsync_throws_CloudEgressConsentException_when_consent_not_granted()
+    {
+        var handler = new CapturingHandler(_ => throw new InvalidOperationException("Network must not be called without consent."));
+        using var httpClient = new HttpClient(handler);
+        var engine = new GeminiCloudTtsEngine(
+            httpClient,
+            new StaticCloudApiKeyProvider("test-gemini-key"),
+            new StaticCloudEgressConsentService(false));
+
+        await Assert.ThrowsAsync<CloudEgressConsentException>(() =>
+            engine.SynthesizeAsync(
+                new TtsSynthesisRequest(
+                    "Test",
+                    "en",
+                    new VoiceCatalogEntry("Kore", "en", "neutral", "Kore")),
+                TestContext.Current.CancellationToken));
+
+        Assert.Null(handler.RequestUri);
+    }
+
     private static StringContent JsonContent(string json) =>
         new(json, Encoding.UTF8, "application/json");
+
+    private sealed class StaticCloudEgressConsentService(bool consented) : ICloudEgressConsentService
+    {
+        public bool HasConsent(string consentKey) => consented && string.Equals(consentKey, CloudEgressConsentKeys.TextGemini, StringComparison.OrdinalIgnoreCase);
+        public IReadOnlyList<string> GetRequiredConsentKeys(string stageName, string? modelAlias) => [CloudEgressConsentKeys.TextGemini];
+        public Task SetConsentAsync(string consentKey, bool value, CancellationToken ct = default) => Task.CompletedTask;
+    }
 
     private sealed class StaticCloudApiKeyProvider(string? apiKey) : ICloudApiKeyProvider
     {

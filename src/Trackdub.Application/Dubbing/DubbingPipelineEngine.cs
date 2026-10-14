@@ -8,6 +8,7 @@ using Trackdub.Application.Pipeline;
 using Trackdub.Application.Transcripts;
 using Trackdub.Application.Transcripts.Pipeline;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Cloud;
 using Trackdub.Contracts.Dubbing;
 using Trackdub.Contracts.Benchmarking;
 using Trackdub.Contracts.Licensing;
@@ -111,6 +112,18 @@ public sealed class DubbingPipelineEngine(
             if (RequestsVoiceCloning(options))
             {
                 TryResolveService<IConsentService>(session)?.GrantVoiceCloningConsent();
+            }
+
+            if (options.ExplicitCloudEgressConsents is { Count: > 0 } &&
+                TryResolveService<ICloudEgressConsentService>(session) is { } egressConsentService)
+            {
+                foreach (string key in options.ExplicitCloudEgressConsents)
+                {
+                    if (!string.IsNullOrWhiteSpace(key))
+                    {
+                        await egressConsentService.SetConsentAsync(key, true, cancellationToken).ConfigureAwait(false);
+                    }
+                }
             }
 
             TranscriptProjectState? initialProjectState = null;
@@ -273,6 +286,24 @@ public sealed class DubbingPipelineEngine(
         return (effectiveOptions, null);
     }
 
+    private static IReadOnlyDictionary<string, bool> BuildExplicitCloudEgressConsents(
+        IReadOnlyList<string>? explicitConsents)
+    {
+        var map = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        if (explicitConsents is not null)
+        {
+            foreach (string key in explicitConsents)
+            {
+                if (!string.IsNullOrWhiteSpace(key))
+                {
+                    map[key.Trim().ToLowerInvariant()] = true;
+                }
+            }
+        }
+
+        return map;
+    }
+
     private static string EnsureProjectDirectory(DubbingSessionOptions options)
     {
         string projectOutputDirectory = DubbingProjectPaths.ResolveProjectDirectory(
@@ -306,6 +337,7 @@ public sealed class DubbingPipelineEngine(
                 // WinML catalog device policy for this run when the host pinned one.
                 WindowsMlExecutionDevicePolicy = options.WindowsMlExecutionDevicePolicy
                     ?? StudioSettings.Default.WindowsMlExecutionDevicePolicy,
+                CloudEgressConsents = BuildExplicitCloudEgressConsents(options.ExplicitCloudEgressConsents),
             };
             return (_sessionFactory.CreateSession(projectOutputDirectory, sessionSettings), null);
         }
@@ -1027,6 +1059,8 @@ public sealed class DubbingPipelineEngine(
                 $"{s.StageName}: model checksum verification failed — re-download the model",
             ReadinessState.ConsentRequired =>
                 $"{s.StageName}: voice-clone consent required",
+            ReadinessState.CloudEgressConsentRequired =>
+                $"{s.StageName}: {s.Detail ?? "cloud egress consent required. Set TRACKDUB_CLOUD_EGRESS_CONSENT or use the app to consent interactively."}",
             _ =>
                 s.Detail is not null
                     ? $"{s.StageName}: {s.Detail}"

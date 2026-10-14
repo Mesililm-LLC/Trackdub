@@ -2,18 +2,22 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Cloud;
 using Trackdub.Contracts.Pipeline;
+using Trackdub.Domain.StageRuns;
 
 namespace Trackdub.Infrastructure.Tts;
 
 public sealed class GeminiCloudTtsEngine(
     HttpClient httpClient,
-    ICloudApiKeyProvider apiKeyProvider)
+    ICloudApiKeyProvider apiKeyProvider,
+    ICloudEgressConsentService? consentService = null)
     : ITtsEngine, IStageRuntimeExecutionReporter
 {
     public const string ProviderKey = "gemini";
     public const string ProviderName = "gemini";
     public const string EngineFamilyName = "gemini-tts-cloud";
+    public const string ConsentKey = CloudEgressConsentKeys.TextGemini;
 
     public const string DefaultModel = "gemini-3.8-flash-tts";
     public const string LiteModel = "gemini-3.8-flash-lite-tts";
@@ -27,14 +31,50 @@ public sealed class GeminiCloudTtsEngine(
 
     private readonly HttpClient httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
     private readonly ICloudApiKeyProvider apiKeyProvider = apiKeyProvider ?? throw new ArgumentNullException(nameof(apiKeyProvider));
+    private readonly ICloudEgressConsentService? consentService = consentService;
 
     public StageRuntimeExecutionSummary? LastExecutionSummary { get; private set; }
+
+    public async Task<StageReadiness> EvaluateReadinessAsync(CancellationToken cancellationToken = default)
+    {
+        if (consentService is null || !consentService.HasConsent(ConsentKey))
+        {
+            return new StageReadiness(
+                StageName: StageNames.Tts,
+                Status: ReadinessState.CloudEgressConsentRequired,
+                Detail: $"Cloud egress to {ProviderName} ({ConsentKey}) requires user consent",
+                ModelId: null,
+                ModelAlias: TtsModelOverrideSettings.GeminiTtsCloudAlias,
+                ResolveAction: "grant-egress-consent");
+        }
+
+        string? apiKey = await apiKeyProvider.GetApiKeyAsync(ProviderKey, cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            return new StageReadiness(
+                StageName: StageNames.Tts,
+                Status: ReadinessState.CloudKeyMissing,
+                Detail: $"{ProviderKey} API key is not configured",
+                ModelId: null,
+                ModelAlias: TtsModelOverrideSettings.GeminiTtsCloudAlias,
+                ResolveAction: "set-api-key");
+        }
+
+        return new StageReadiness(
+            StageName: StageNames.Tts,
+            Status: ReadinessState.Ready,
+            Detail: null,
+            ModelId: null,
+            ModelAlias: TtsModelOverrideSettings.GeminiTtsCloudAlias,
+            ResolveAction: null);
+    }
 
     public async Task<TtsSynthesisResult> SynthesizeAsync(
         TtsSynthesisRequest request,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        EnsureEgressConsent();
         string apiKey = await ResolveApiKeyAsync(cancellationToken).ConfigureAwait(false);
         string model = ResolveModel(request);
 
@@ -113,6 +153,14 @@ public sealed class GeminiCloudTtsEngine(
             ModelId: model,
             VoiceId: voiceId,
             Provider: ProviderName);
+    }
+
+    private void EnsureEgressConsent()
+    {
+        if (consentService is null || !consentService.HasConsent(ConsentKey))
+        {
+            throw new CloudEgressConsentException(ConsentKey, ProviderName);
+        }
     }
 
     private static string ResolveModel(TtsSynthesisRequest request)

@@ -1,8 +1,10 @@
 using System.Collections.Concurrent;
 using Trackdub.Application.Pipeline;
 using Trackdub.Application.Transcripts;
+using Trackdub.Application.Cloud;
 using Trackdub.Contracts;
 using Trackdub.Contracts.ApplicationContracts;
+using Trackdub.Contracts.Cloud;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Domain;
 using Trackdub.Domain.StageRuns;
@@ -23,9 +25,29 @@ public sealed class PipelineReadinessService(
     IConsentService consentService,
     IRuntimePlanningPreferences? runtimePlanningPreferences = null,
     int? maxConcurrentStageEvaluations = null,
-    TimeSpan? stageEvaluationTimeout = null)
+    TimeSpan? stageEvaluationTimeout = null,
+    ICloudEgressConsentService? cloudEgressConsentService = null)
     : IPipelineReadinessService
 {
+    public PipelineReadinessService(
+        IRuntimePlanner runtimePlanner,
+        ICloudApiKeyProvider cloudApiKeyProvider,
+        IConsentService consentService,
+        ICloudEgressConsentService cloudEgressConsentService,
+        IRuntimePlanningPreferences? runtimePlanningPreferences = null,
+        int? maxConcurrentStageEvaluations = null,
+        TimeSpan? stageEvaluationTimeout = null)
+        : this(
+            runtimePlanner,
+            cloudApiKeyProvider,
+            consentService,
+            runtimePlanningPreferences,
+            maxConcurrentStageEvaluations,
+            stageEvaluationTimeout,
+            cloudEgressConsentService)
+    {
+    }
+
     private readonly IRuntimePlanner _runtimePlanner =
         runtimePlanner ?? throw new ArgumentNullException(nameof(runtimePlanner));
     private readonly ICloudApiKeyProvider _cloudApiKeyProvider =
@@ -33,6 +55,7 @@ public sealed class PipelineReadinessService(
     private readonly IConsentService _consentService =
         consentService ?? throw new ArgumentNullException(nameof(consentService));
     private readonly IRuntimePlanningPreferences? _runtimePlanningPreferences = runtimePlanningPreferences;
+    private readonly ICloudEgressConsentService? _cloudEgressConsentService = cloudEgressConsentService;
 
     // Readiness smoke tests cold-load full ONNX graphs. Cap parallel stage checks so a
     // multi-stage sweep overlaps load work without stampeding GPU/RAM admission.
@@ -219,11 +242,16 @@ public sealed class PipelineReadinessService(
             planningRequest.PreferredModelVariantAlias,
             preferredModelTier, selections.GetSelectionIntent(stage));
 
+        if (IsCloudAlias(stage, modelAlias))
+        {
+            StageReadiness cloudReadiness = await EvaluateCloudStageAsync(stage, modelAlias!, cancellationToken)
+                .ConfigureAwait(false);
+            return ApplyVoiceCloneConsent(stage, state, cloudReadiness);
+        }
+
         if (!_cache.TryGetValue(cacheKey, out StageReadiness? readiness))
         {
-            readiness = IsCloudAlias(stage, modelAlias)
-                ? await EvaluateCloudStageAsync(stage, modelAlias!, cancellationToken).ConfigureAwait(false)
-                : await EvaluateLocalStageAsync(
+            readiness = await EvaluateLocalStageAsync(
                     planningRequest,
                     stage,
                     preferredModelTier,
@@ -295,7 +323,25 @@ public sealed class PipelineReadinessService(
         string modelAlias,
         CancellationToken cancellationToken)
     {
+        string stageName = StageNameFor(stage);
         string providerKey = CloudProviderKey(modelAlias);
+        IReadOnlyList<string> requiredConsentKeys = _cloudEgressConsentService is not null
+            ? _cloudEgressConsentService.GetRequiredConsentKeys(stageName, modelAlias)
+            : ResolveDefaultConsentKeys(stage, providerKey);
+
+        string? missingConsentKey = requiredConsentKeys.FirstOrDefault(
+            key => _cloudEgressConsentService is null || !_cloudEgressConsentService.HasConsent(key));
+        if (missingConsentKey is not null)
+        {
+            return new StageReadiness(
+                StageName: stageName,
+                Status: ReadinessState.CloudEgressConsentRequired,
+                Detail: $"Cloud egress to {providerKey} ({missingConsentKey}) requires user consent",
+                ModelId: null,
+                ModelAlias: modelAlias,
+                ResolveAction: "grant-egress-consent");
+        }
+
         string? apiKey = await _cloudApiKeyProvider
             .GetApiKeyAsync(providerKey, cancellationToken)
             .ConfigureAwait(false);
@@ -303,7 +349,7 @@ public sealed class PipelineReadinessService(
         if (string.IsNullOrWhiteSpace(apiKey))
         {
             return new StageReadiness(
-                StageName: StageNameFor(stage),
+                StageName: stageName,
                 Status: ReadinessState.CloudKeyMissing,
                 Detail: $"{providerKey} API key is not configured",
                 ModelId: null,
@@ -312,13 +358,22 @@ public sealed class PipelineReadinessService(
         }
 
         return new StageReadiness(
-            StageName: StageNameFor(stage),
+            StageName: stageName,
             Status: ReadinessState.Ready,
             Detail: null,
             ModelId: null,
             ModelAlias: modelAlias,
             ResolveAction: null);
     }
+
+    private static IReadOnlyList<string> ResolveDefaultConsentKeys(RuntimeStage stage, string providerKey) =>
+        stage switch
+        {
+            RuntimeStage.Asr => [CloudEgressConsentKeys.Build(EgressType.Audio, providerKey)],
+            RuntimeStage.Translation or RuntimeStage.Tts or RuntimeStage.TextRefinement =>
+                [CloudEgressConsentKeys.Build(EgressType.Text, providerKey)],
+            _ => [CloudEgressConsentKeys.Build(EgressType.Media, providerKey)],
+        };
 
     // ── Local stage evaluation ─────────────────────────────────────────────────
 

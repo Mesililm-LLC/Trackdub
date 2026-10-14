@@ -3,18 +3,22 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Cloud;
 using Trackdub.Contracts.Pipeline;
+using Trackdub.Domain.StageRuns;
 
 namespace Trackdub.Infrastructure.Tts;
 
 public sealed class ElevenLabsCloudTtsEngine(
     HttpClient httpClient,
-    ICloudApiKeyProvider apiKeyProvider)
+    ICloudApiKeyProvider apiKeyProvider,
+    ICloudEgressConsentService? consentService = null)
     : ITtsEngine, IStageRuntimeExecutionReporter
 {
     public const string ProviderKey = "elevenlabs";
     public const string ProviderName = "elevenlabs";
     public const string EngineFamilyName = "elevenlabs-tts-cloud";
+    public const string ConsentKey = CloudEgressConsentKeys.TextElevenLabs;
 
     private const string ApiBase = "https://api.elevenlabs.io/v1";
     private const string DefaultModel = "eleven_multilingual_v2";
@@ -27,6 +31,7 @@ public sealed class ElevenLabsCloudTtsEngine(
 
     private readonly HttpClient httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
     private readonly ICloudApiKeyProvider apiKeyProvider = apiKeyProvider ?? throw new ArgumentNullException(nameof(apiKeyProvider));
+    private readonly ICloudEgressConsentService? consentService = consentService;
 
     public StageRuntimeExecutionSummary? LastExecutionSummary { get; private set; }
 
@@ -35,6 +40,7 @@ public sealed class ElevenLabsCloudTtsEngine(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        EnsureEgressConsent();
         string apiKey = await ResolveApiKeyAsync(cancellationToken).ConfigureAwait(false);
 
         string voiceId = request.Voice.VoiceId;
@@ -84,6 +90,48 @@ public sealed class ElevenLabsCloudTtsEngine(
             ModelId: DefaultModel,
             VoiceId: voiceId,
             Provider: ProviderName);
+    }
+
+    public async Task<StageReadiness> EvaluateReadinessAsync(CancellationToken cancellationToken = default)
+    {
+        if (consentService is null || !consentService.HasConsent(ConsentKey))
+        {
+            return new StageReadiness(
+                StageName: StageNames.Tts,
+                Status: ReadinessState.CloudEgressConsentRequired,
+                Detail: $"Cloud egress to {ProviderName} ({ConsentKey}) requires user consent",
+                ModelId: null,
+                ModelAlias: TtsModelOverrideSettings.ElevenLabsCloudAlias,
+                ResolveAction: "grant-egress-consent");
+        }
+
+        string? apiKey = await apiKeyProvider.GetApiKeyAsync(ProviderKey, cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            return new StageReadiness(
+                StageName: StageNames.Tts,
+                Status: ReadinessState.CloudKeyMissing,
+                Detail: $"{ProviderKey} API key is not configured",
+                ModelId: null,
+                ModelAlias: TtsModelOverrideSettings.ElevenLabsCloudAlias,
+                ResolveAction: "set-api-key");
+        }
+
+        return new StageReadiness(
+            StageName: StageNames.Tts,
+            Status: ReadinessState.Ready,
+            Detail: null,
+            ModelId: null,
+            ModelAlias: TtsModelOverrideSettings.ElevenLabsCloudAlias,
+            ResolveAction: null);
+    }
+
+    private void EnsureEgressConsent()
+    {
+        if (consentService is null || !consentService.HasConsent(ConsentKey))
+        {
+            throw new CloudEgressConsentException(ConsentKey, ProviderName);
+        }
     }
 
     private async Task<string> ResolveApiKeyAsync(CancellationToken cancellationToken)

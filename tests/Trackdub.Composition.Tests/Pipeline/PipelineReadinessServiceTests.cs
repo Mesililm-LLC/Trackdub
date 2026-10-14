@@ -2,6 +2,7 @@ using Trackdub.Application.Projects;
 using Trackdub.Application.Transcripts;
 using Trackdub.Composition.Pipeline;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Cloud;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Domain;
 using Trackdub.Domain.Media;
@@ -523,6 +524,74 @@ public sealed class PipelineReadinessServiceTests
         Assert.Contains("timed out", timedOut.Detail, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(ReadinessState.Ready, report.Stages[2].Status);
         Assert.False(report.IsRunReady);
+    }
+
+    [Fact]
+    public async Task EvaluateAsync_returns_CloudEgressConsentRequired_before_CloudKeyMissing_and_Ready_after_consent_and_key()
+    {
+        var planner = new FakeRuntimePlanner();
+        var consentService = new FakeCloudEgressConsentService(defaultConsented: false);
+        string? configuredApiKey = null;
+        var apiKeyProvider = new DelegateCloudApiKeyProvider(_ => configuredApiKey);
+
+        var service = new PipelineReadinessService(
+            planner,
+            apiKeyProvider,
+            new FakeConsentService(),
+            consentService);
+
+        var selections = new RuntimeModelSelections(
+            AsrModelOverride.GeminiAsr,
+            IsDevBuild: false,
+            HardwareOverrides: new Dictionary<string, ExecutionProviderKind>(),
+            AsrModelAlias: AsrModelOverrideSettings.GeminiAsrCloudAlias,
+            TranslationModelAlias: TranslationModelOverrideSettings.GeminiTranslationCloudAlias,
+            TtsModelAlias: TtsModelOverrideSettings.GeminiTtsCloudAlias);
+
+        // 1. Neither consent nor API key: CloudEgressConsentRequired takes precedence
+        PipelineReadinessReport unconsentedReport = await service.EvaluateAsync(
+            [RuntimeStage.Asr, RuntimeStage.Translation, RuntimeStage.Tts],
+            selections,
+            state: null,
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.All(unconsentedReport.Stages, stage =>
+        {
+            Assert.Equal(ReadinessState.CloudEgressConsentRequired, stage.Status);
+            Assert.Equal("grant-egress-consent", stage.ResolveAction);
+            Assert.True(stage.Status.IsBlocking());
+        });
+
+        // 2. Grant text:gemini only: Translation and TTS move to CloudKeyMissing, ASR stays CloudEgressConsentRequired
+        consentService.Grant(CloudEgressConsentKeys.TextGemini);
+        PipelineReadinessReport partialConsentReport = await service.EvaluateAsync(
+            [RuntimeStage.Asr, RuntimeStage.Translation, RuntimeStage.Tts],
+            selections,
+            state: null,
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(ReadinessState.CloudEgressConsentRequired, partialConsentReport.Stages[0].Status);
+        Assert.Equal(ReadinessState.CloudKeyMissing, partialConsentReport.Stages[1].Status);
+        Assert.Equal(ReadinessState.CloudKeyMissing, partialConsentReport.Stages[2].Status);
+
+        // 3. Grant audio:gemini and set API key: all three stages become Ready
+        consentService.Grant(CloudEgressConsentKeys.AudioGemini);
+        configuredApiKey = "gemini-test-key";
+
+        PipelineReadinessReport readyReport = await service.EvaluateAsync(
+            [RuntimeStage.Asr, RuntimeStage.Translation, RuntimeStage.Tts],
+            selections,
+            state: null,
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.All(readyReport.Stages, stage => Assert.Equal(ReadinessState.Ready, stage.Status));
+        Assert.True(readyReport.IsRunReady);
+    }
+
+    private sealed class DelegateCloudApiKeyProvider(Func<string, string?> resolver) : ICloudApiKeyProvider
+    {
+        public Task<string?> GetApiKeyAsync(string providerKey, CancellationToken cancellationToken) =>
+            Task.FromResult(resolver(providerKey));
     }
 
     private static string StageNameForTest(RuntimeStage stage) => stage switch
