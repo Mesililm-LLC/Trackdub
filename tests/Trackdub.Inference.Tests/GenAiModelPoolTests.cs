@@ -14,6 +14,8 @@ namespace Trackdub.Inference.Tests;
 /// </summary>
 public class GenAiModelPoolTests
 {
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
+
     private static InferenceSessionPool NewAdmissionPool(
         long hostBudgetMb = 100, long acceleratorBudgetMb = 100) =>
         new(maxSessions: 8, memoryBudgetMb: acceleratorBudgetMb, hostMemoryBudgetMb: hostBudgetMb);
@@ -525,34 +527,34 @@ public class GenAiModelPoolTests
         using var admission = NewAdmissionPool();
         var capture = new BenchmarkPhaseCapture();
         using IDisposable? activation = BenchmarkPhaseCapture.Activate(capture);
-        var factoryReady = new TaskCompletionSource();
-        var created = new List<FakeGenAiModelResource>();
+        var factoryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var factoryReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var pool = new GenAiModelPool(
             admission,
             async (_, _) =>
             {
-                var resource = new FakeGenAiModelResource();
-                lock (created)
-                {
-                    created.Add(resource);
-                }
-                await factoryReady.Task;
-                return resource;
+                factoryStarted.SetResult();
+                await factoryReady.Task.ConfigureAwait(false);
+                return new FakeGenAiModelResource();
             });
         var key = Key("ctr2");
 
         Task<GenAiModelLease> creator = pool.GetLeaseAsync(key, CancellationToken.None);
-        Assert.True(SpinWait.SpinUntil(() => created.Count == 1, TimeSpan.FromSeconds(5)));
+        await factoryStarted.Task.WaitAsync(HangGuard);
 
         // Waiter arrives mid-create: its request is a miss at arrival and must stay one miss.
+        // The miss is recorded before the waiter's first await (the creator holds the create
+        // gate), so it is observable as soon as GetLeaseAsync returns.
         Task<GenAiModelLease> waiter = pool.GetLeaseAsync(key, CancellationToken.None);
-        Assert.True(SpinWait.SpinUntil(
-            () => capture.SnapshotCounters().GetValueOrDefault("genAiModelMiss") == 2,
-            TimeSpan.FromSeconds(5)));
+        Assert.False(waiter.IsCompleted);
+        Assert.Equal(2L, capture.SnapshotCounters().GetValueOrDefault("genAiModelMiss"));
+
+        // Completing the factory resumes the pool on thread-pool continuations, so these are
+        // hang guards sized for a saturated CI runner, not timing assertions.
         factoryReady.SetResult();
-        using GenAiModelLease first = await creator.WaitAsync(TimeSpan.FromSeconds(5));
+        using GenAiModelLease first = await creator.WaitAsync(HangGuard);
         first.Dispose();
-        using GenAiModelLease second = await waiter.WaitAsync(TimeSpan.FromSeconds(5));
+        using GenAiModelLease second = await waiter.WaitAsync(HangGuard);
 
         IReadOnlyDictionary<string, long> counts = capture.SnapshotCounters();
         Assert.Equal(1L, counts["genAiModelCreate"]);
