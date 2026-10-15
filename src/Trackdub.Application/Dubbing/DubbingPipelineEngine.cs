@@ -326,6 +326,9 @@ public sealed class DubbingPipelineEngine(
                 // WinML catalog device policy for this run when the host pinned one.
                 WindowsMlExecutionDevicePolicy = options.WindowsMlExecutionDevicePolicy
                     ?? StudioSettings.Default.WindowsMlExecutionDevicePolicy,
+                // Seeds SessionCloudEgressConsentOverlay for this run. Engine consent
+                // checks read it from the session; it is not written to the shared store.
+                CloudEgressConsents = BuildExplicitCloudEgressConsents(options.ExplicitCloudEgressConsents),
             };
             return (_sessionFactory.CreateSession(projectOutputDirectory, sessionSettings), null);
         }

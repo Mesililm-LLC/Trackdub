@@ -89,6 +89,34 @@ public sealed class RunStageExecutionTests : IDisposable
     }
 
     [Fact]
+    public async Task ExecuteAsync_ExplicitCloudEgressConsents_AreSeededOnSessionSettings()
+    {
+        string tempDir = CreateTempProjectDir();
+        string projectDir = Path.Join(tempDir, "created.trackdub");
+        string mediaPath = Path.Join(tempDir, "media.mp4");
+        await File.WriteAllBytesAsync(mediaPath, [0x00]);
+        var sessionFactory = new ThrowingSessionFactory();
+        var engine = new DubbingPipelineEngine(sessionFactory);
+
+        await engine.ExecuteAsync(new DubbingSessionOptions
+        {
+            SourceMediaPath = mediaPath,
+            ProjectOutputDirectory = projectDir,
+            TargetLanguageCode = string.Empty,
+            StageFilter = [StageNames.Asr],
+            ExplicitCloudEgressConsents = ["audio:gemini", " TEXT:OPENAI "],
+        });
+
+        StudioSettings? settings = sessionFactory.LastSettings;
+        Assert.NotNull(settings);
+        IReadOnlyDictionary<string, bool>? consents = settings.CloudEgressConsents;
+        Assert.NotNull(consents);
+        Assert.True(consents["audio:gemini"]);
+        Assert.True(consents["text:openai"]);
+        Assert.False(consents.ContainsKey(" TEXT:OPENAI "));
+    }
+
+    [Fact]
     public async Task ExecuteAsync_PreFlightFailure_PersistsExecutionSnapshot()
     {
         string tempDir = CreateTempProjectDir();
@@ -576,9 +604,12 @@ public sealed class RunStageExecutionTests : IDisposable
     {
         public int CreateSessionCalls { get; private set; }
 
+        public StudioSettings? LastSettings { get; private set; }
+
         public IDubbingSession CreateSession(string projectRootPath, StudioSettings? settings = null)
         {
             CreateSessionCalls++;
+            LastSettings = settings;
             throw new InvalidOperationException("Session creation sentinel.");
         }
 
