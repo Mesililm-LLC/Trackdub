@@ -18,9 +18,12 @@ public sealed class CloudEgressConsentService : ICloudEgressConsentService
     // Cached settings snapshot so per-segment TTS/ASR/translation calls do not re-read and
     // re-parse settings.json on every consent check. Invalidated after SetConsentAsync's
     // durable save completes so newly granted (or revoked) consent is observed on the
-    // next read, and the epoch bump stops a load that straddles a save from re-publishing
-    // the stale pre-save snapshot. Environment-variable consent is still evaluated per
-    // call, so it needs no invalidation.
+    // next read. The epoch is captured before the load, then compared and published under
+    // _cacheGate; SetConsentAsync bumps the epoch and clears the cache under the same
+    // gate. Settings I/O stays outside the gate, so a load that straddles a save cannot
+    // publish its pre-save snapshot after the cache was cleared. Environment-variable
+    // consent is still evaluated per call, so it needs no invalidation.
+    private readonly object _cacheGate = new();
     private volatile StudioSettings? _cachedSettings;
     private long _cacheEpoch;
 
@@ -70,15 +73,18 @@ public sealed class CloudEgressConsentService : ICloudEgressConsentService
             return cached;
         }
 
-        // Capture the cache epoch before loading: a SetConsentAsync whose save completes
-        // while this load is in flight bumps the epoch, so the pre-save snapshot this call
-        // may have read is never published to the cache (it would otherwise stick until
-        // the next consent write).
-        long epochBeforeLoad = Interlocked.Read(ref _cacheEpoch);
+        // Capture the cache epoch before loading. The comparison and publication share
+        // _cacheGate with SetConsentAsync's epoch bump and cache clear, so a revocation
+        // that lands while this load is in flight cannot lose the race between the check
+        // and the assignment. Settings I/O stays outside the gate.
+        long epochBeforeLoad = Volatile.Read(ref _cacheEpoch);
         StudioSettings settings = await _settingsService.LoadAsync(ct).ConfigureAwait(false);
-        if (Interlocked.Read(ref _cacheEpoch) == epochBeforeLoad)
+        lock (_cacheGate)
         {
-            _cachedSettings = settings;
+            if (Volatile.Read(ref _cacheEpoch) == epochBeforeLoad)
+            {
+                _cachedSettings = settings;
+            }
         }
 
         return settings;
@@ -132,9 +138,14 @@ public sealed class CloudEgressConsentService : ICloudEgressConsentService
         // Invalidate only after the durable save lands: clearing first would let a
         // concurrent HasConsentAsync re-cache the pre-update snapshot during the save
         // window, delaying a revocation's privacy-critical "stop uploading" outcome.
+        // The epoch bump and cache clear are one critical section so a straddling load
+        // cannot publish the snapshot it already read after this clear.
         await _settingsService.SaveAsync(updated, ct).ConfigureAwait(false);
-        Interlocked.Increment(ref _cacheEpoch);
-        _cachedSettings = null;
+        lock (_cacheGate)
+        {
+            Interlocked.Increment(ref _cacheEpoch);
+            _cachedSettings = null;
+        }
     }
 
     private static IReadOnlyList<string> ResolveAsrConsentKeys(string alias)
