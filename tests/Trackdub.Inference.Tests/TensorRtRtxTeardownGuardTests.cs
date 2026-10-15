@@ -258,24 +258,24 @@ public sealed class TensorRtRtxTeardownGuardTests : IDisposable
                 "default",
                 ExecutionProviderKind.TensorRTRtx,
                 "encoder_model.onnx",
-                DeviceId: 0,
-                GraphRole: "encoder");
+                deviceId: 0,
+                graphRole: "encoder");
             var failedTrtDecoderKey = new SessionPoolKey(
                 "whisper-onnx",
                 "whisper-large-v3",
                 "default",
                 ExecutionProviderKind.TensorRTRtx,
                 "decoder_model.onnx",
-                DeviceId: 0,
-                GraphRole: "decoder");
+                deviceId: 0,
+                graphRole: "decoder");
             var cpuKey = new SessionPoolKey(
                 "whisper-onnx",
                 "whisper-large-v3",
                 "default",
                 ExecutionProviderKind.Cpu,
                 "encoder_model.onnx",
-                DeviceId: null,
-                GraphRole: "encoder");
+                deviceId: null,
+                graphRole: "encoder");
 
             using (SessionLease trtLease = await pool.GetLeaseAsync(
                 trtKey,

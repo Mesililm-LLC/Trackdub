@@ -1038,7 +1038,7 @@ internal static class OnnxExecutionSessionFactory
                     && !cancellationToken.IsCancellationRequested
                     && IsRecoverableTrtFallbackInitFailure(ex))
                 {
-                    await pool.EvictModelAsync(engineFamily).ConfigureAwait(false);
+                    await pool.EvictModelAsync(engineFamily, cancellationToken: cancellationToken).ConfigureAwait(false);
                     abandonedReason = MergeFallbackReasons(
                         abandonedReason,
                         $"{FormatProviderLabel(attemptProvider)} Whisper session init failed ({SummarizeExceptionMessage(ex)}); "

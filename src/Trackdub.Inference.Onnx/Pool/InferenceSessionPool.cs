@@ -1873,7 +1873,8 @@ internal sealed class InferenceSessionPool : IDisposable
     /// <returns>The number of entries that were evicted and disposed.</returns>
     public async Task<int> EvictModelAsync(
         string engineFamily,
-        string? modelId = null)
+        string? modelId = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(engineFamily);
         ObjectDisposedException.ThrowIf(disposed, this);
@@ -1881,7 +1882,7 @@ internal sealed class InferenceSessionPool : IDisposable
         List<PoolEntry> toDispose = new();
         int count = 0;
 
-        await creationLock.WaitAsync().ConfigureAwait(false);
+        await creationLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ObjectDisposedException.ThrowIf(disposed, this);

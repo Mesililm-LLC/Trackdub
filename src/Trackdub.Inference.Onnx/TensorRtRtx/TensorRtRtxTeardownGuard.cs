@@ -95,6 +95,10 @@ internal static class TensorRtRtxTeardownGuard
         session.Dispose();
     }
 
-    /// <summary>Clears the poisoned flag. Test seam only.</summary>
-    internal static void ResetForTests() => Volatile.Write(ref poisoned, 0);
+    /// <summary>Clears the poisoned flag and session tracking. Test seam only.</summary>
+    internal static void ResetForTests()
+    {
+        Volatile.Write(ref poisoned, 0);
+        TrackedSessions.Clear();
+    }
 }
