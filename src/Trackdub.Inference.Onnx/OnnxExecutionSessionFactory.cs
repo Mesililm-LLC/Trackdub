@@ -238,15 +238,25 @@ internal static class OnnxExecutionSessionFactory
         Func<string, SessionOptions, InferenceSession>? sessionFactory)
     {
         // Atomic bundle (audit §3A): never hold the encoder lease while blocked on the decoder.
-        // Lease order in the bundle is caller order (encoder, decoder).
+        // Lease order in the bundle is caller order (encoder, decoder). Each graph reports its
+        // placement at creation: if the decoder then fails, a CPU-placed encoder must not stay
+        // tracked as TensorRT-RTX, or a poisoned runtime would skip its disposal and leak it.
         SessionLeaseBundle bundle = await pool.GetLeaseBundleAsync(
             [
                 new SessionLeaseRequest(
                     encoderKey,
-                    ct => Task.FromResult(CreateSession(encoderModelPath, selections.Encoder.Options, sessionFactory, ct, selections.Encoder.SelectedProvider, bootstrap.DevicePolicy))),
+                    ct => Task.FromResult(CreateSession(encoderModelPath, selections.Encoder.Options, sessionFactory, ct, selections.Encoder.SelectedProvider, bootstrap.DevicePolicy)),
+                    session => ResolveEffectiveProviderKindFromSession(
+                        session,
+                        selections.Encoder.SelectedProvider,
+                        ShouldUseCatalogDevicePolicy(bootstrap.DevicePolicy, selections.Encoder.SelectedProvider))),
                 new SessionLeaseRequest(
                     decoderKey,
-                    ct => Task.FromResult(CreateSession(decoderModelPath, selections.Decoder.Options, sessionFactory, ct, selections.Decoder.SelectedProvider, bootstrap.DevicePolicy))),
+                    ct => Task.FromResult(CreateSession(decoderModelPath, selections.Decoder.Options, sessionFactory, ct, selections.Decoder.SelectedProvider, bootstrap.DevicePolicy)),
+                    session => ResolveEffectiveProviderKindFromSession(
+                        session,
+                        selections.Decoder.SelectedProvider,
+                        ShouldUseCatalogDevicePolicy(bootstrap.DevicePolicy, selections.Decoder.SelectedProvider))),
             ],
             cancellationToken).ConfigureAwait(false);
 
@@ -257,6 +267,8 @@ internal static class OnnxExecutionSessionFactory
                 bundle.LeaseAt(0).Session, bundle.LeaseAt(1).Session);
             CpuExecutionAdmission.Shared.RegisterSession(bundle.LeaseAt(0).Session, metadata.EncoderProvider);
             CpuExecutionAdmission.Shared.RegisterSession(bundle.LeaseAt(1).Session, metadata.DecoderProvider);
+            TensorRtRtxTeardownGuard.ReconcileTracking(bundle.LeaseAt(0).Session, metadata.EncoderProvider);
+            TensorRtRtxTeardownGuard.ReconcileTracking(bundle.LeaseAt(1).Session, metadata.DecoderProvider);
             return new DualPooledLeasePair(
                 bundle,
                 bootstrap.RequestedProviderLabel,
@@ -350,15 +362,25 @@ internal static class OnnxExecutionSessionFactory
             : modelPath;
         // Without a current artifact, a large graph's engine build is captured as one, so the next
         // process loads engines instead of rebuilding them (minutes for multi-GB models).
-        InferenceSession session =
-            sessionFactory is null &&
-            trtOptions is not null &&
-            string.Equals(loadPath, modelPath, StringComparison.Ordinal) &&
-            EpContext.EpContextCapture.ShouldCapture(modelPath)
-                ? EpContext.EpContextCapture.CreateSession(modelPath, options, trtOptions, static (path, o) => new InferenceSession(path, o))
-                : sessionFactory is null
-                    ? new InferenceSession(loadPath, options)
-                    : sessionFactory(loadPath, options);
+        InferenceSession session;
+        try
+        {
+            session =
+                sessionFactory is null &&
+                trtOptions is not null &&
+                string.Equals(loadPath, modelPath, StringComparison.Ordinal) &&
+                EpContext.EpContextCapture.ShouldCapture(modelPath)
+                    ? EpContext.EpContextCapture.CreateSession(modelPath, options, trtOptions, static (path, o) => new InferenceSession(path, o))
+                    : sessionFactory is null
+                        ? new InferenceSession(loadPath, options)
+                        : sessionFactory(loadPath, options);
+        }
+        catch (Exception ex) when (selectedProvider is ExecutionProviderKind.TensorRTRtx)
+        {
+            TensorRtRtxTeardownGuard.MarkPoisonedIfCudaOutOfMemory(ex);
+            throw;
+        }
+
         if (selectedProvider is ExecutionProviderKind.TensorRTRtx)
         {
             TensorRtRtxTeardownGuard.Track(session);
@@ -844,6 +866,7 @@ internal static class OnnxExecutionSessionFactory
                             session,
                             selection.SelectedProvider,
                             useCatalogDevicePolicy);
+                        TensorRtRtxTeardownGuard.ReconcileTracking(session, placed);
                         return Task.FromResult(new CreatedPoolSession(session, placed));
                     },
                     cancellationToken)
@@ -857,6 +880,7 @@ internal static class OnnxExecutionSessionFactory
             string? epFallbackReason = BuildSessionOptionsFallbackReason(provider, effectiveProvider, leaseSelection);
             string? bootstrapDetail = FormatBootstrapDetail(bootstrapResult.Detail, epFallbackReason);
             CpuExecutionAdmission.Shared.RegisterSession(poolLease.Session, effectiveProvider);
+            TensorRtRtxTeardownGuard.ReconcileTracking(poolLease.Session, effectiveProvider);
 
             return new SingleSessionLease(poolLease.Session, requestedProvider, selectedProvider, bootstrapDetail)
             {
@@ -972,7 +996,8 @@ internal static class OnnxExecutionSessionFactory
         string? variant = null,
         IReadOnlyDictionary<string, string>? additionalTrtEncoderOptions = null,
         IReadOnlyDictionary<string, string>? additionalTrtDecoderOptions = null,
-        Func<string, SessionOptions, InferenceSession>? sessionFactory = null)
+        Func<string, SessionOptions, InferenceSession>? sessionFactory = null,
+        bool allowTrtInitFallback = true)
     {
         ArgumentNullException.ThrowIfNull(engineFamily);
         pool ??= InferenceSessionPool.Shared;
@@ -987,7 +1012,7 @@ internal static class OnnxExecutionSessionFactory
         // errors) after the pre-flight passed. Walk the same DirectML (Windows) then CPU chain the
         // single-session path uses, recording why each provider was abandoned.
         List<ExecutionProviderKind> attempts = [selectedProviderKind];
-        if (selectedProviderKind is ExecutionProviderKind.TensorRTRtx)
+        if (allowTrtInitFallback && selectedProviderKind is ExecutionProviderKind.TensorRTRtx)
         {
             attempts.AddRange(EnumerateTrtInitFallbackProviders());
         }
@@ -1012,16 +1037,38 @@ internal static class OnnxExecutionSessionFactory
                     DecoderPoolLease = pair.DecoderLease
                 };
             }
-            catch (Exception ex) when (
-                attempt < attempts.Count - 1
-                && !cancellationToken.IsCancellationRequested
-                && IsRecoverableTrtFallbackInitFailure(ex))
+            catch (Exception ex)
             {
-                TensorRtRtxTeardownGuard.MarkPoisonedIfCudaOutOfMemory(ex);
-                abandonedReason = MergeFallbackReasons(
-                    abandonedReason,
-                    $"{FormatProviderLabel(attemptProvider)} Whisper session init failed ({SummarizeExceptionMessage(ex)}); "
-                    + $"fell back to {FormatProviderLabel(attempts[attempt + 1])}.");
+                if (attemptProvider is ExecutionProviderKind.TensorRTRtx)
+                {
+                    TensorRtRtxTeardownGuard.MarkPoisonedIfCudaOutOfMemory(ex);
+                }
+
+                if (attempt < attempts.Count - 1
+                    && !cancellationToken.IsCancellationRequested
+                    && IsRecoverableTrtFallbackInitFailure(ex))
+                {
+                    try
+                    {
+                        await pool.EvictModelAsync(engineFamily, cancellationToken: cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception evictionFailure) when (evictionFailure is not OperationCanceledException)
+                    {
+                        // A failed eviction must not abort the fallback chain or replace the init failure.
+                        _logger?.LogWarning(
+                            evictionFailure,
+                            "Evicting {EngineFamily} after a failed {Provider} Whisper init failed; continuing fallback.",
+                            engineFamily,
+                            FormatProviderLabel(attemptProvider));
+                    }
+                    abandonedReason = MergeFallbackReasons(
+                        abandonedReason,
+                        $"{FormatProviderLabel(attemptProvider)} Whisper session init failed ({SummarizeExceptionMessage(ex)}); "
+                        + $"fell back to {FormatProviderLabel(attempts[attempt + 1])}.");
+                    continue;
+                }
+
+                throw;
             }
         }
     }
@@ -1193,6 +1240,9 @@ internal static class OnnxExecutionSessionFactory
             CpuExecutionAdmission.Shared.RegisterSession(encoderPoolLease.Session, encoderEffective);
             CpuExecutionAdmission.Shared.RegisterSession(decoderInitPoolLease.Session, decoderInitEffective);
             CpuExecutionAdmission.Shared.RegisterSession(decoderStepPoolLease.Session, decoderStepEffective);
+            TensorRtRtxTeardownGuard.ReconcileTracking(encoderPoolLease.Session, encoderEffective);
+            TensorRtRtxTeardownGuard.ReconcileTracking(decoderInitPoolLease.Session, decoderInitEffective);
+            TensorRtRtxTeardownGuard.ReconcileTracking(decoderStepPoolLease.Session, decoderStepEffective);
             return new Qwen3AsrSessionLease(
                 encoderPoolLease.Session,
                 decoderInitPoolLease.Session,
@@ -1338,6 +1388,10 @@ internal static class OnnxExecutionSessionFactory
             CpuExecutionAdmission.Shared.RegisterSession(vaeEncPoolLease.Session, vaeEncEffective);
             CpuExecutionAdmission.Shared.RegisterSession(vaeDecPoolLease.Session, vaeDecEffective);
             CpuExecutionAdmission.Shared.RegisterSession(whisperPoolLease.Session, whisperEffective);
+            TensorRtRtxTeardownGuard.ReconcileTracking(unetPoolLease.Session, unetEffective);
+            TensorRtRtxTeardownGuard.ReconcileTracking(vaeEncPoolLease.Session, vaeEncEffective);
+            TensorRtRtxTeardownGuard.ReconcileTracking(vaeDecPoolLease.Session, vaeDecEffective);
+            TensorRtRtxTeardownGuard.ReconcileTracking(whisperPoolLease.Session, whisperEffective);
             return new LatentSyncSessionLease(
                 unetPoolLease.Session,
                 vaeEncPoolLease.Session,
@@ -2452,9 +2506,32 @@ internal static class OnnxExecutionSessionFactory
                 return;
             }
 
-            EncoderPoolLease?.Dispose();
-            DecoderInitPoolLease?.Dispose();
-            DecoderStepPoolLease?.Dispose();
+            if (EncoderPoolLease is not null)
+            {
+                EncoderPoolLease.Dispose();
+            }
+            else
+            {
+                TensorRtRtxTeardownGuard.DisposeSafely(EncoderSession);
+            }
+
+            if (DecoderInitPoolLease is not null)
+            {
+                DecoderInitPoolLease.Dispose();
+            }
+            else
+            {
+                TensorRtRtxTeardownGuard.DisposeSafely(DecoderInitSession);
+            }
+
+            if (DecoderStepPoolLease is not null)
+            {
+                DecoderStepPoolLease.Dispose();
+            }
+            else
+            {
+                TensorRtRtxTeardownGuard.DisposeSafely(DecoderStepSession);
+            }
         }
     }
 
@@ -2481,10 +2558,41 @@ internal static class OnnxExecutionSessionFactory
                 return;
             }
 
-            UNetPoolLease?.Dispose();
-            VaeEncoderPoolLease?.Dispose();
-            VaeDecoderPoolLease?.Dispose();
-            WhisperEncoderPoolLease?.Dispose();
+            if (UNetPoolLease is not null)
+            {
+                UNetPoolLease.Dispose();
+            }
+            else
+            {
+                TensorRtRtxTeardownGuard.DisposeSafely(UNetSession);
+            }
+
+            if (VaeEncoderPoolLease is not null)
+            {
+                VaeEncoderPoolLease.Dispose();
+            }
+            else
+            {
+                TensorRtRtxTeardownGuard.DisposeSafely(VaeEncoderSession);
+            }
+
+            if (VaeDecoderPoolLease is not null)
+            {
+                VaeDecoderPoolLease.Dispose();
+            }
+            else
+            {
+                TensorRtRtxTeardownGuard.DisposeSafely(VaeDecoderSession);
+            }
+
+            if (WhisperEncoderPoolLease is not null)
+            {
+                WhisperEncoderPoolLease.Dispose();
+            }
+            else
+            {
+                TensorRtRtxTeardownGuard.DisposeSafely(WhisperEncoderSession);
+            }
         }
     }
 
@@ -2500,8 +2608,23 @@ internal static class OnnxExecutionSessionFactory
 
         public void Dispose()
         {
-            EncoderPoolLease?.Dispose();
-            DecoderJointPoolLease?.Dispose();
+            if (EncoderPoolLease is not null)
+            {
+                EncoderPoolLease.Dispose();
+            }
+            else
+            {
+                TensorRtRtxTeardownGuard.DisposeSafely(EncoderSession);
+            }
+
+            if (DecoderJointPoolLease is not null)
+            {
+                DecoderJointPoolLease.Dispose();
+            }
+            else
+            {
+                TensorRtRtxTeardownGuard.DisposeSafely(DecoderJointSession);
+            }
         }
     }
 
