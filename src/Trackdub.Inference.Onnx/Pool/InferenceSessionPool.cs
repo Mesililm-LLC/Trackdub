@@ -838,9 +838,18 @@ internal sealed class InferenceSessionPool : IDisposable
                         created = await factory(cancellationToken).ConfigureAwait(false);
                     session = created.Session;
                     createdProvider = created.Provider;
+                    if (createdProvider is ExecutionProviderKind.TensorRTRtx)
+                    {
+                        TensorRtRtxTeardownGuard.Track(session);
+                    }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    if (key.Provider is ExecutionProviderKind.TensorRTRtx)
+                    {
+                        TensorRtRtxTeardownGuard.MarkPoisonedIfCudaOutOfMemory(ex);
+                    }
+
                     if (reserved)
                     {
                         // Always release reservation on factory failure to prevent a reservation leak

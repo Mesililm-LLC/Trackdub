@@ -3,6 +3,7 @@ using Trackdub.Contracts;
 using Trackdub.Domain;
 using Trackdub.Inference.Onnx.Madlad;
 using Trackdub.Inference.Onnx.Runtime.Planning;
+using Trackdub.Inference.Onnx.TensorRtRtx;
 using Trackdub.Inference.Runtime.Planning;
 using Trackdub.Inference.Runtime.TensorRtRtx;
 #if WINDOWS
@@ -165,16 +166,30 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
             WindowsMlOnnxRuntimeNativeResolver.EnsureInitialized();
 #endif
             using SessionOptions options = new();
-            OnnxExecutionSessionFactory.AppendTensorRtRtxOrFallbackProvider(options, modelTrtOptions);
+            ExecutionProviderKind selectedProvider =
+                OnnxExecutionSessionFactory.AppendTensorRtRtxOrFallbackProvider(options, modelTrtOptions);
             options.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING;
-            using var session = new InferenceSession(modelPath, options);
-            stopwatch.Stop();
-            failureReason = null;
-            return stopwatch.Elapsed.TotalMilliseconds;
+            InferenceSession session = new(modelPath, options);
+            if (selectedProvider is ExecutionProviderKind.TensorRTRtx)
+            {
+                TensorRtRtxTeardownGuard.Track(session);
+            }
+
+            try
+            {
+                stopwatch.Stop();
+                failureReason = null;
+                return stopwatch.Elapsed.TotalMilliseconds;
+            }
+            finally
+            {
+                TensorRtRtxTeardownGuard.DisposeSafely(session);
+            }
         }
         catch (Exception ex) when (ex is OnnxRuntimeException or InvalidOperationException or DllNotFoundException or EntryPointNotFoundException)
         {
             stopwatch.Stop();
+            TensorRtRtxTeardownGuard.MarkPoisonedIfCudaOutOfMemory(ex);
             failureReason = ex.Message;
             return stopwatch.Elapsed.TotalMilliseconds;
         }

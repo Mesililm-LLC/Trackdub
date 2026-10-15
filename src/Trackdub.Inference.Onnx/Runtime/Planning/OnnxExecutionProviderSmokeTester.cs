@@ -274,23 +274,43 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
             ?? throw new InvalidOperationException("Whisper smoke test could not resolve model root.");
         int melBins = WhisperOnnxAudioTranscriptionEngine.ReadMelBins(modelRootPath);
         // Pooled with the same family/TRT profiles WhisperOnnxAudioTranscriptionEngine uses.
-        using OnnxExecutionSessionFactory.WhisperSessionLease sessionLease = await OnnxExecutionSessionFactory
-            .CreatePooledWhisperAsync(
-                WhisperOnnxAudioTranscriptionEngine.EngineFamilyName,
-                encoderModelPath,
-                decoderModelPath,
-                provider,
-                cancellationToken,
-                additionalTrtEncoderOptions: WhisperOnnxAudioTranscriptionEngine.BuildTrtEncoderOptions(melBins))
-            .ConfigureAwait(false);
-        EnsureSelectedProviderMatchesRequested(provider, sessionLease.SelectedProvider);
+        // Production planning excludes whisper-onnx from TensorRT families, while staged Olive
+        // validation and explicit smoke probes remain evaluable with automatic downgrade and
+        // guarded eviction on failure so a partial TRT-RTX OOM never leaves a poisoned entry behind.
+        try
+        {
+            using OnnxExecutionSessionFactory.WhisperSessionLease sessionLease = await OnnxExecutionSessionFactory
+                .CreatePooledWhisperAsync(
+                    WhisperOnnxAudioTranscriptionEngine.EngineFamilyName,
+                    encoderModelPath,
+                    decoderModelPath,
+                    provider,
+                    cancellationToken,
+                    additionalTrtEncoderOptions: WhisperOnnxAudioTranscriptionEngine.BuildTrtEncoderOptions(melBins))
+                .ConfigureAwait(false);
+            try
+            {
+                EnsureSelectedProviderMatchesRequested(provider, sessionLease.SelectedProvider);
+            }
+            catch (InvalidOperationException ex)
+            {
+                throw new InvalidOperationException(
+                    $"{ex.Message} Session bootstrap: {sessionLease.BootstrapDetail}",
+                    ex);
+            }
 
-        using var encoderInputs = CreateWhisperEncoderInputs(sessionLease.EncoderSession.InputMetadata, melBins);
-        using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> encoderResults = sessionLease.EncoderSession.RunWithRetry(encoderInputs.Values, maxAttempts: 1, cancellationToken: cancellationToken, provider: provider);
-        Tensor<float> hiddenStates = ResolveWhisperEncoderHiddenStates(encoderResults);
+            using var encoderInputs = CreateWhisperEncoderInputs(sessionLease.EncoderSession.InputMetadata, melBins);
+            using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> encoderResults = sessionLease.EncoderSession.RunWithRetry(encoderInputs.Values, maxAttempts: 1, cancellationToken: cancellationToken, provider: provider);
+            Tensor<float> hiddenStates = ResolveWhisperEncoderHiddenStates(encoderResults);
 
-        using var decoderInputs = CreateWhisperDecoderInputs(hiddenStates);
-        using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> _ = sessionLease.DecoderSession.RunWithRetry(decoderInputs.Values, maxAttempts: 1, cancellationToken: cancellationToken, provider: provider);
+            using var decoderInputs = CreateWhisperDecoderInputs(hiddenStates);
+            using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> _ = sessionLease.DecoderSession.RunWithRetry(decoderInputs.Values, maxAttempts: 1, cancellationToken: cancellationToken, provider: provider);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            await InferenceSessionPool.Shared.EvictModelAsync(WhisperOnnxAudioTranscriptionEngine.EngineFamilyName).ConfigureAwait(false);
+            throw;
+        }
     }
 
     private static Tensor<float> ResolveWhisperEncoderHiddenStates(

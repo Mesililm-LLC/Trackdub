@@ -2,6 +2,7 @@ using Microsoft.ML.OnnxRuntime;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Contracts.Benchmarking;
 using Trackdub.Domain;
+using Trackdub.Inference.Onnx.TensorRtRtx;
 using Trackdub.Inference.Runtime.Planning;
 
 namespace Trackdub.Inference.Onnx.Pool;
@@ -235,8 +236,15 @@ internal static class InferenceRetryPolicy
     private static TimeSpan BackoffFor(int attempt) =>
         DefaultDelays[Math.Min(attempt - 1, DefaultDelays.Length - 1)];
 
-    private static bool IsTransient(OnnxRuntimeException ex, ExecutionProviderKind? provider) =>
-        IsTransientMessage(ex.Message, provider);
+    private static bool IsTransient(OnnxRuntimeException ex, ExecutionProviderKind? provider)
+    {
+        if (provider is ExecutionProviderKind.TensorRTRtx)
+        {
+            TensorRtRtxTeardownGuard.MarkPoisonedIfCudaOutOfMemory(ex);
+        }
+
+        return IsTransientMessage(ex.Message, provider);
+    }
 
     internal static bool IsTransientMessage(string message, ExecutionProviderKind? provider = null)
     {

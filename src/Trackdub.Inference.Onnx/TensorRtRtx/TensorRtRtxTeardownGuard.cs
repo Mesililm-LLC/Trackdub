@@ -34,6 +34,9 @@ internal static class TensorRtRtxTeardownGuard
     /// <summary>Drops a session that was tracked before effective-provider detection placed it elsewhere.</summary>
     internal static void Untrack(InferenceSession session) => TrackedSessions.Remove(session);
 
+    /// <summary><see langword="true"/> when <paramref name="session"/> is currently tracked as a TensorRT-RTX session.</summary>
+    internal static bool IsTracked(InferenceSession session) => TrackedSessions.TryGetValue(session, out _);
+
     /// <summary>
     /// Keeps tracking only when <paramref name="effectiveProvider"/> is TensorRT-RTX.
     /// A CPU or DirectML fallback must still release its native session after a later OOM.
@@ -57,7 +60,8 @@ internal static class TensorRtRtxTeardownGuard
             string message = current.Message;
             if (message.Contains("out of memory", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("cudaErrorMemoryAllocation", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("CUDA_ERROR_OUT_OF_MEMORY", StringComparison.OrdinalIgnoreCase))
+                || message.Contains("CUDA_ERROR_OUT_OF_MEMORY", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("CUDA failure 2", StringComparison.OrdinalIgnoreCase))
             {
                 Volatile.Write(ref poisoned, 1);
                 return true;

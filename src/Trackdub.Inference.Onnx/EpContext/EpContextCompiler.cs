@@ -185,6 +185,7 @@ public sealed class EpContextCompiler
         catch (Exception ex) when (ex is OnnxRuntimeException or InvalidOperationException or IOException or UnauthorizedAccessException or DllNotFoundException or EntryPointNotFoundException)
         {
             stopwatch.Stop();
+            TensorRtRtxTeardownGuard.MarkPoisonedIfCudaOutOfMemory(ex);
             // Publication rolls back its own files; failures before it must preserve old artifacts.
             return new CompileResult(false, null, stopwatch.Elapsed.TotalMilliseconds, ex.Message);
         }
