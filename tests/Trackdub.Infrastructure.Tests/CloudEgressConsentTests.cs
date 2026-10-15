@@ -106,6 +106,31 @@ public sealed class CloudEgressConsentTests
     }
 
     [Fact]
+    public async Task SetConsentAsync_overlapping_grants_keep_both_keys()
+    {
+        var settingsService = new StallingStudioSettingsService();
+        var consentService = new CloudEgressConsentService(settingsService, _ => null);
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+
+        settingsService.ParkNextSave();
+        Task first = consentService.SetConsentAsync(CloudEgressConsentKeys.AudioGemini, true, cancellationToken);
+        await settingsService.ParkedSaveEntered;
+
+        Task second = consentService.SetConsentAsync(CloudEgressConsentKeys.TextGemini, true, cancellationToken);
+        await Task.Delay(100, cancellationToken);
+        Assert.False(second.IsCompleted);
+
+        settingsService.ReleaseParkedSave();
+        await first;
+        await second;
+
+        StudioSettings persisted = await settingsService.LoadAsync(cancellationToken);
+        Assert.NotNull(persisted.CloudEgressConsents);
+        Assert.True(persisted.CloudEgressConsents[CloudEgressConsentKeys.AudioGemini]);
+        Assert.True(persisted.CloudEgressConsents[CloudEgressConsentKeys.TextGemini]);
+    }
+
+    [Fact]
     public async Task CloudEgressConsentService_audio_and_text_and_media_consents_are_independent()
     {
         var settingsService = new FakeStudioSettingsService();

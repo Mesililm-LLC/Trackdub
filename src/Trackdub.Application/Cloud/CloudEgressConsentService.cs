@@ -24,6 +24,7 @@ public sealed class CloudEgressConsentService : ICloudEgressConsentService
     // publish its pre-save snapshot after the cache was cleared. Environment-variable
     // consent is still evaluated per call, so it needs no invalidation.
     private readonly object _cacheGate = new();
+    private readonly SemaphoreSlim _writeGate = new(1, 1);
     private volatile StudioSettings? _cachedSettings;
     private long _cacheEpoch;
 
@@ -119,32 +120,43 @@ public sealed class CloudEgressConsentService : ICloudEgressConsentService
         ArgumentException.ThrowIfNullOrWhiteSpace(consentKey);
         string normalizedKey = consentKey.Trim().ToLowerInvariant();
 
-        StudioSettings current = await _settingsService.LoadAsync(ct).ConfigureAwait(false);
-        var updatedConsents = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-        if (current.CloudEgressConsents is not null)
+        // Serialize the whole load-modify-save. Two overlapping grants would otherwise
+        // each persist the snapshot they loaded and the later save would drop the other key.
+        await _writeGate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            foreach ((string key, bool value) in current.CloudEgressConsents)
+            StudioSettings current = await _settingsService.LoadAsync(ct).ConfigureAwait(false);
+            var updatedConsents = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            if (current.CloudEgressConsents is not null)
             {
-                if (!string.IsNullOrWhiteSpace(key))
+                foreach ((string key, bool value) in current.CloudEgressConsents)
                 {
-                    updatedConsents[key.Trim().ToLowerInvariant()] = value;
+                    if (!string.IsNullOrWhiteSpace(key))
+                    {
+                        updatedConsents[key.Trim().ToLowerInvariant()] = value;
+                    }
                 }
             }
+
+            updatedConsents[normalizedKey] = consented;
+            StudioSettings updated = current with { CloudEgressConsents = updatedConsents };
+
+            // Invalidate only after the durable save lands: clearing first would let a
+            // concurrent HasConsentAsync re-cache the pre-update snapshot during the save
+            // window, delaying a revocation's privacy-critical "stop uploading" outcome.
+            // The epoch bump and cache clear are one critical section so a straddling load
+            // cannot publish the snapshot it already read after this clear. Both stay
+            // inside the write gate so the next writer loads the saved snapshot.
+            await _settingsService.SaveAsync(updated, ct).ConfigureAwait(false);
+            lock (_cacheGate)
+            {
+                Interlocked.Increment(ref _cacheEpoch);
+                _cachedSettings = null;
+            }
         }
-
-        updatedConsents[normalizedKey] = consented;
-        StudioSettings updated = current with { CloudEgressConsents = updatedConsents };
-
-        // Invalidate only after the durable save lands: clearing first would let a
-        // concurrent HasConsentAsync re-cache the pre-update snapshot during the save
-        // window, delaying a revocation's privacy-critical "stop uploading" outcome.
-        // The epoch bump and cache clear are one critical section so a straddling load
-        // cannot publish the snapshot it already read after this clear.
-        await _settingsService.SaveAsync(updated, ct).ConfigureAwait(false);
-        lock (_cacheGate)
+        finally
         {
-            Interlocked.Increment(ref _cacheEpoch);
-            _cachedSettings = null;
+            _writeGate.Release();
         }
     }
 
