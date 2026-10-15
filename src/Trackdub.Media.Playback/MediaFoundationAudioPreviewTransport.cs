@@ -12,10 +12,8 @@ namespace Trackdub.Media.Playback;
 
 public sealed class MediaFoundationAudioPreviewTransport : IAudioPreviewTransport
 {
-    private MediaPlayer? mediaPlayer;
-    private FileStream? audioFile;
-    private IRandomAccessStream? audioStream;
-    private MediaSource? audioSource;
+    private readonly object playbackGate = new();
+    private PreviewSession? current;
     private bool isEnded;
 
     public event EventHandler? Ended;
@@ -23,68 +21,38 @@ public sealed class MediaFoundationAudioPreviewTransport : IAudioPreviewTranspor
     public async Task OpenAsync(string absoluteFilePath, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(absoluteFilePath);
-
-        await StopAsync(ct).ConfigureAwait(false);
-
-        MediaPlayer player = CreatePlayer();
-
-        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        void OnMediaOpened(MediaPlayer sender, object args)
-        {
-            player.MediaOpened -= OnMediaOpened;
-            player.MediaFailed -= OnMediaFailed;
-            tcs.TrySetResult(true);
-        }
-
-        void OnMediaFailed(MediaPlayer sender, MediaPlayerFailedEventArgs args)
-        {
-            player.MediaOpened -= OnMediaOpened;
-            player.MediaFailed -= OnMediaFailed;
-            tcs.TrySetException(new InvalidOperationException(
-                $"Audio preview media failed to open: {args.ErrorMessage} ({args.Error})."));
-        }
-
-        player.MediaOpened += OnMediaOpened;
-        player.MediaFailed += OnMediaFailed;
-
-        using CancellationTokenRegistration reg = ct.Register(() =>
-        {
-            player.MediaOpened -= OnMediaOpened;
-            player.MediaFailed -= OnMediaFailed;
-            tcs.TrySetCanceled(ct);
-        });
-
+        ct.ThrowIfCancellationRequested();
+        PreviewSession session = PreviewSession.Create(absoluteFilePath);
+        using CancellationTokenRegistration reg = ct.Register(() => session.Opened.TrySetCanceled(ct));
         try
         {
-            // Open through .NET: Media Foundation's file-URI resolver rejects valid long paths.
-            audioFile = File.Open(absoluteFilePath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
-            audioStream = audioFile.AsRandomAccessStream();
-            audioSource = MediaSource.CreateFromStream(audioStream, GetContentType(absoluteFilePath));
-            player.Source = audioSource;
-
-            await tcs.Task.ConfigureAwait(false);
-
-            if (player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing)
+            lock (playbackGate)
             {
-                player.Pause();
+                ct.ThrowIfCancellationRequested();
+                DisposePlayer();
+                current = session;
+                session.Player.MediaEnded += MediaPlayer_MediaEnded;
+                session.Player.Source = session.Source;
             }
 
-            player.PlaybackSession.Position = TimeSpan.Zero;
-            isEnded = false;
+            await session.Opened.Task.ConfigureAwait(false);
+            lock (playbackGate)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (!ReferenceEquals(current, session))
+                    throw new OperationCanceledException("Audio preview open was superseded.", ct);
+                if (session.Player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing)
+                    session.Player.Pause();
+                session.Player.PlaybackSession.Position = TimeSpan.Zero;
+                isEnded = false;
+            }
         }
         catch
         {
-            player.MediaOpened -= OnMediaOpened;
-            player.MediaFailed -= OnMediaFailed;
-
-            if (ReferenceEquals(mediaPlayer, player))
+            lock (playbackGate)
             {
-                DisposePlayer();
-            }
-            else
-            {
-                player.Dispose();
+                if (ReferenceEquals(current, session)) DisposePlayer();
+                else session.Dispose();
             }
             throw;
         }
@@ -92,92 +60,83 @@ public sealed class MediaFoundationAudioPreviewTransport : IAudioPreviewTranspor
 
     public Task PlayAsync(CancellationToken ct)
     {
-        isEnded = false;
-        mediaPlayer?.Play();
+        lock (playbackGate)
+        {
+            isEnded = false;
+            current?.Player.Play();
+        }
         return Task.CompletedTask;
     }
 
     public Task PauseAsync(CancellationToken ct)
     {
-        mediaPlayer?.Pause();
+        lock (playbackGate) current?.Player.Pause();
         return Task.CompletedTask;
     }
 
     public Task SeekAsync(TimeSpan position, CancellationToken ct)
     {
-        MediaPlayer? player = mediaPlayer;
-        if (player is not null)
+        lock (playbackGate)
         {
-            player.PlaybackSession.Position = position < TimeSpan.Zero ? TimeSpan.Zero : position;
-            isEnded = false;
+            if (current is { } session)
+            {
+                session.Player.PlaybackSession.Position = position < TimeSpan.Zero ? TimeSpan.Zero : position;
+                isEnded = false;
+            }
         }
-
         return Task.CompletedTask;
     }
 
     public Task StopAsync(CancellationToken ct)
     {
-        DisposePlayer();
+        lock (playbackGate) DisposePlayer();
         return Task.CompletedTask;
     }
 
     public Task<AudioPreviewSnapshot> GetSnapshotAsync(CancellationToken ct)
     {
-        MediaPlayer? player = mediaPlayer;
-        if (player is null)
+        lock (playbackGate)
         {
-            return Task.FromResult(AudioPreviewSnapshot.Empty);
+            if (current is null) return Task.FromResult(AudioPreviewSnapshot.Empty);
+            MediaPlaybackSession session = current.Player.PlaybackSession;
+            TimeSpan position = session.Position;
+            TimeSpan duration = session.NaturalDuration;
+            bool reachedEnd = duration > TimeSpan.Zero && position > TimeSpan.Zero
+                && position >= duration - TimeSpan.FromMilliseconds(250);
+            return Task.FromResult(new AudioPreviewSnapshot(
+                IsLoaded: true,
+                IsPlaying: session.PlaybackState == MediaPlaybackState.Playing,
+                Position: position,
+                Duration: duration,
+                IsEnded: isEnded || reachedEnd,
+                WarningMessage: null));
         }
-
-        MediaPlaybackSession session = player.PlaybackSession;
-        TimeSpan position = session.Position;
-        TimeSpan duration = session.NaturalDuration;
-        TimeSpan endTolerance = TimeSpan.FromMilliseconds(250);
-        bool reachedEnd = duration > TimeSpan.Zero && position > TimeSpan.Zero && position >= duration - endTolerance;
-        bool ended = isEnded || reachedEnd;
-        return Task.FromResult(new AudioPreviewSnapshot(
-            IsLoaded: true,
-            IsPlaying: session.PlaybackState == MediaPlaybackState.Playing,
-            Position: position,
-            Duration: duration,
-            IsEnded: ended,
-            WarningMessage: null));
     }
 
     public void Dispose()
     {
-        DisposePlayer();
+        lock (playbackGate) DisposePlayer();
     }
 
-    private MediaPlayer CreatePlayer()
-    {
-        var player = new MediaPlayer
-        {
-            AutoPlay = false,
-            IsLoopingEnabled = false
-        };
-        player.MediaEnded += MediaPlayer_MediaEnded;
-        mediaPlayer = player;
-        isEnded = false;
-        return player;
-    }
-
+    // All active-session transitions and end-state reads/writes use playbackGate.
     private void DisposePlayer()
     {
-        if (mediaPlayer is not null)
-        {
-            mediaPlayer.MediaEnded -= MediaPlayer_MediaEnded;
-            mediaPlayer.Dispose();
-            mediaPlayer = null;
-        }
-
-        audioSource?.Dispose();
-        audioSource = null;
-        audioStream?.Dispose();
-        audioStream = null;
-        audioFile?.Dispose();
-        audioFile = null;
+        PreviewSession? previous = current;
+        current = null;
         isEnded = false;
+        if (previous is null) return;
+        previous.Player.MediaEnded -= MediaPlayer_MediaEnded;
+        previous.Dispose();
+    }
+
+    private void MediaPlayer_MediaEnded(MediaPlayer sender, object args)
+    {
+        lock (playbackGate)
+        {
+            if (!ReferenceEquals(current?.Player, sender)) return;
+            isEnded = true;
+        }
+        Ended?.Invoke(this, EventArgs.Empty);
     }
 
     private static string GetContentType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
@@ -193,10 +152,86 @@ public sealed class MediaFoundationAudioPreviewTransport : IAudioPreviewTranspor
         _ => "application/octet-stream"
     };
 
-    private void MediaPlayer_MediaEnded(MediaPlayer sender, object args)
+    // Each open owns its handles even after a newer request replaces the active session.
+    private sealed class PreviewSession : IDisposable
     {
-        isEnded = true;
-        Ended?.Invoke(this, EventArgs.Empty);
+        private readonly FileStream file;
+        private readonly IRandomAccessStream stream;
+        private int disposed;
+
+        private PreviewSession(MediaPlayer player, MediaSource source, IRandomAccessStream stream, FileStream file)
+        {
+            Player = player;
+            Source = source;
+            this.stream = stream;
+            this.file = file;
+            player.MediaOpened += OnOpened;
+            player.MediaFailed += OnFailed;
+        }
+
+        public MediaPlayer Player { get; }
+        public MediaSource Source { get; }
+        public TaskCompletionSource<bool> Opened { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public static PreviewSession Create(string path)
+        {
+            // The file-URI resolver rejects valid long paths; .NET stream opening does not.
+            FileStream file = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            IRandomAccessStream? stream = null;
+            MediaSource? source = null;
+            MediaPlayer? player = null;
+            try
+            {
+                stream = file.AsRandomAccessStream();
+                source = MediaSource.CreateFromStream(stream, GetContentType(path));
+                player = new MediaPlayer { AutoPlay = false, IsLoopingEnabled = false };
+                return new PreviewSession(player, source, stream, file);
+            }
+            catch
+            {
+                player?.Dispose();
+                source?.Dispose();
+                stream?.Dispose();
+                file.Dispose();
+                throw;
+            }
+        }
+
+        private void OnOpened(MediaPlayer sender, object args)
+        {
+            DetachOpenEvents();
+            Opened.TrySetResult(true);
+        }
+
+        private void OnFailed(MediaPlayer sender, MediaPlayerFailedEventArgs args)
+        {
+            DetachOpenEvents();
+            Opened.TrySetException(new InvalidOperationException(
+                $"Audio preview media failed to open: {args.ErrorMessage} ({args.Error})."));
+        }
+
+        private void DetachOpenEvents()
+        {
+            Player.MediaOpened -= OnOpened;
+            Player.MediaFailed -= OnFailed;
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+            Opened.TrySetCanceled();
+            DetachOpenEvents();
+            try { Player.Dispose(); }
+            finally
+            {
+                try { Source.Dispose(); }
+                finally
+                {
+                    try { stream.Dispose(); }
+                    finally { file.Dispose(); }
+                }
+            }
+        }
     }
 }
 
