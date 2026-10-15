@@ -22,15 +22,22 @@ public sealed class MediaFoundationAudioPreviewTransport : IAudioPreviewTranspor
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(absoluteFilePath);
         ct.ThrowIfCancellationRequested();
-        PreviewSession session = PreviewSession.Create(absoluteFilePath);
+        PreviewSession session;
+        lock (playbackGate)
+        {
+            ct.ThrowIfCancellationRequested();
+            DisposePlayer();
+            session = PreviewSession.Create(absoluteFilePath);
+            current = session;
+        }
         using CancellationTokenRegistration reg = ct.Register(() => session.Opened.TrySetCanceled(ct));
         try
         {
             lock (playbackGate)
             {
                 ct.ThrowIfCancellationRequested();
-                DisposePlayer();
-                current = session;
+                if (!ReferenceEquals(current, session))
+                    throw new OperationCanceledException("Audio preview open was superseded.", ct);
                 session.Player.MediaEnded += MediaPlayer_MediaEnded;
                 session.Player.Source = session.Source;
             }
