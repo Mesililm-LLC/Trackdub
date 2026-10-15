@@ -3,6 +3,7 @@ using Trackdub.Contracts;
 #if WINDOWS
 using Windows.Media.Core;
 using Windows.Media.Playback;
+using Windows.Storage.Streams;
 #endif
 
 namespace Trackdub.Media.Playback;
@@ -12,6 +13,9 @@ namespace Trackdub.Media.Playback;
 public sealed class MediaFoundationAudioPreviewTransport : IAudioPreviewTransport
 {
     private MediaPlayer? mediaPlayer;
+    private FileStream? audioFile;
+    private IRandomAccessStream? audioStream;
+    private MediaSource? audioSource;
     private bool isEnded;
 
     public event EventHandler? Ended;
@@ -53,7 +57,11 @@ public sealed class MediaFoundationAudioPreviewTransport : IAudioPreviewTranspor
 
         try
         {
-            player.Source = MediaSource.CreateFromUri(new Uri(absoluteFilePath, UriKind.Absolute));
+            // Open through .NET: Media Foundation's file-URI resolver rejects valid long paths.
+            audioFile = File.Open(absoluteFilePath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            audioStream = audioFile.AsRandomAccessStream();
+            audioSource = MediaSource.CreateFromStream(audioStream, GetContentType(absoluteFilePath));
+            player.Source = audioSource;
 
             await tcs.Task.ConfigureAwait(false);
 
@@ -72,10 +80,12 @@ public sealed class MediaFoundationAudioPreviewTransport : IAudioPreviewTranspor
 
             if (ReferenceEquals(mediaPlayer, player))
             {
-                mediaPlayer = null;
+                DisposePlayer();
             }
-
-            player.Dispose();
+            else
+            {
+                player.Dispose();
+            }
             throw;
         }
     }
@@ -161,8 +171,27 @@ public sealed class MediaFoundationAudioPreviewTransport : IAudioPreviewTranspor
             mediaPlayer = null;
         }
 
+        audioSource?.Dispose();
+        audioSource = null;
+        audioStream?.Dispose();
+        audioStream = null;
+        audioFile?.Dispose();
+        audioFile = null;
         isEnded = false;
     }
+
+    private static string GetContentType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+    {
+        ".wav" or ".wave" => "audio/wav",
+        ".mp3" => "audio/mpeg",
+        ".flac" => "audio/flac",
+        ".ogg" or ".opus" => "audio/ogg",
+        ".m4a" or ".mp4" => "audio/mp4",
+        ".aac" => "audio/aac",
+        ".wma" => "audio/x-ms-wma",
+        ".aif" or ".aiff" => "audio/aiff",
+        _ => "application/octet-stream"
+    };
 
     private void MediaPlayer_MediaEnded(MediaPlayer sender, object args)
     {
