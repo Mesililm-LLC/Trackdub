@@ -13,8 +13,15 @@ namespace Trackdub.Media.Playback;
 public sealed class MediaFoundationAudioPreviewTransport : IAudioPreviewTransport
 {
     private readonly object playbackGate = new();
+    private readonly Func<string, FileStream> openFile;
     private PreviewSession? current;
+    private CancellationTokenSource? pendingOpen;
     private bool isEnded;
+
+    public MediaFoundationAudioPreviewTransport()
+        : this(path => File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete)) { }
+
+    internal MediaFoundationAudioPreviewTransport(Func<string, FileStream> openFile) => this.openFile = openFile;
 
     public event EventHandler? Ended;
 
@@ -22,32 +29,38 @@ public sealed class MediaFoundationAudioPreviewTransport : IAudioPreviewTranspor
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(absoluteFilePath);
         ct.ThrowIfCancellationRequested();
-        PreviewSession session;
+        using var request = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        CancellationToken token = request.Token;
         lock (playbackGate)
         {
-            ct.ThrowIfCancellationRequested();
+            token.ThrowIfCancellationRequested();
+            pendingOpen?.Cancel();
+            pendingOpen = request;
             DisposePlayer();
-            session = PreviewSession.Create(absoluteFilePath);
-            current = session;
         }
-        using CancellationTokenRegistration reg = ct.Register(() => session.Opened.TrySetCanceled(ct));
+
+        // File/cloud hydration and Media Foundation creation must not block Stop or the UI.
+        Task<PreviewSession> creation = Task.Run(() => PreviewSession.Create(absoluteFilePath, openFile), token);
+        PreviewSession? session = null;
         try
         {
+            session = await creation.WaitAsync(token).ConfigureAwait(false);
             lock (playbackGate)
             {
-                ct.ThrowIfCancellationRequested();
-                if (!ReferenceEquals(current, session))
-                    throw new OperationCanceledException("Audio preview open was superseded.", ct);
+                token.ThrowIfCancellationRequested();
+                if (!ReferenceEquals(pendingOpen, request))
+                    throw new OperationCanceledException("Audio preview open was superseded.", token);
+                current = session;
                 session.Player.MediaEnded += MediaPlayer_MediaEnded;
                 session.Player.Source = session.Source;
             }
 
-            await session.Opened.Task.ConfigureAwait(false);
+            await session.Opened.Task.WaitAsync(token).ConfigureAwait(false);
             lock (playbackGate)
             {
-                ct.ThrowIfCancellationRequested();
+                token.ThrowIfCancellationRequested();
                 if (!ReferenceEquals(current, session))
-                    throw new OperationCanceledException("Audio preview open was superseded.", ct);
+                    throw new OperationCanceledException("Audio preview open was superseded.", token);
                 if (session.Player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing)
                     session.Player.Pause();
                 session.Player.PlaybackSession.Position = TimeSpan.Zero;
@@ -56,12 +69,36 @@ public sealed class MediaFoundationAudioPreviewTransport : IAudioPreviewTranspor
         }
         catch
         {
-            lock (playbackGate)
+            if (session is null)
             {
-                if (ReferenceEquals(current, session)) DisposePlayer();
-                else session.Dispose();
+                // Synchronous file opening cannot be interrupted. Release any late result.
+                _ = DisposeWhenCreatedAsync(creation);
+            }
+            else
+            {
+                lock (playbackGate)
+                {
+                    if (ReferenceEquals(current, session)) DisposePlayer();
+                    else session.Dispose();
+                }
             }
             throw;
+        }
+        finally
+        {
+            lock (playbackGate)
+            {
+                if (ReferenceEquals(pendingOpen, request)) pendingOpen = null;
+            }
+        }
+    }
+
+    private static async Task DisposeWhenCreatedAsync(Task<PreviewSession> creation)
+    {
+        try { (await creation.ConfigureAwait(false)).Dispose(); }
+        catch
+        {
+            // The opening request has already reported cancellation or creation failure.
         }
     }
 
@@ -96,7 +133,12 @@ public sealed class MediaFoundationAudioPreviewTransport : IAudioPreviewTranspor
 
     public Task StopAsync(CancellationToken ct)
     {
-        lock (playbackGate) DisposePlayer();
+        lock (playbackGate)
+        {
+            pendingOpen?.Cancel();
+            pendingOpen = null;
+            DisposePlayer();
+        }
         return Task.CompletedTask;
     }
 
@@ -122,7 +164,12 @@ public sealed class MediaFoundationAudioPreviewTransport : IAudioPreviewTranspor
 
     public void Dispose()
     {
-        lock (playbackGate) DisposePlayer();
+        lock (playbackGate)
+        {
+            pendingOpen?.Cancel();
+            pendingOpen = null;
+            DisposePlayer();
+        }
     }
 
     // All active-session transitions and end-state reads/writes use playbackGate.
@@ -180,10 +227,10 @@ public sealed class MediaFoundationAudioPreviewTransport : IAudioPreviewTranspor
         public MediaSource Source { get; }
         public TaskCompletionSource<bool> Opened { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public static PreviewSession Create(string path)
+        public static PreviewSession Create(string path, Func<string, FileStream> openFile)
         {
             // The file-URI resolver rejects valid long paths; .NET stream opening does not.
-            FileStream file = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            FileStream file = openFile(path);
             IRandomAccessStream? stream = null;
             MediaSource? source = null;
             MediaPlayer? player = null;
