@@ -61,11 +61,31 @@ internal static class TensorRtRtxTeardownGuard
             if (message.Contains("out of memory", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("cudaErrorMemoryAllocation", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("CUDA_ERROR_OUT_OF_MEMORY", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("CUDA failure 2", StringComparison.OrdinalIgnoreCase))
+                || ContainsCudaFailureCode2(message))
             {
                 Volatile.Write(ref poisoned, 1);
                 return true;
             }
+        }
+
+        return false;
+    }
+
+    // "CUDA failure 2" must not match longer codes such as 209 (no kernel image on an unsupported
+    // GPU), 201 or 222: poisoning on those would leak every tracked session's VRAM without an OOM.
+    private static bool ContainsCudaFailureCode2(string message)
+    {
+        const string Prefix = "CUDA failure 2";
+        int index = message.IndexOf(Prefix, StringComparison.OrdinalIgnoreCase);
+        while (index >= 0)
+        {
+            int next = index + Prefix.Length;
+            if (next >= message.Length || !char.IsAsciiDigit(message[next]))
+            {
+                return true;
+            }
+
+            index = message.IndexOf(Prefix, next, StringComparison.OrdinalIgnoreCase);
         }
 
         return false;

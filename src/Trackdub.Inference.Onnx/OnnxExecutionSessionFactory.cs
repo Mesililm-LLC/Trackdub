@@ -238,15 +238,25 @@ internal static class OnnxExecutionSessionFactory
         Func<string, SessionOptions, InferenceSession>? sessionFactory)
     {
         // Atomic bundle (audit §3A): never hold the encoder lease while blocked on the decoder.
-        // Lease order in the bundle is caller order (encoder, decoder).
+        // Lease order in the bundle is caller order (encoder, decoder). Each graph reports its
+        // placement at creation: if the decoder then fails, a CPU-placed encoder must not stay
+        // tracked as TensorRT-RTX, or a poisoned runtime would skip its disposal and leak it.
         SessionLeaseBundle bundle = await pool.GetLeaseBundleAsync(
             [
                 new SessionLeaseRequest(
                     encoderKey,
-                    ct => Task.FromResult(CreateSession(encoderModelPath, selections.Encoder.Options, sessionFactory, ct, selections.Encoder.SelectedProvider, bootstrap.DevicePolicy))),
+                    ct => Task.FromResult(CreateSession(encoderModelPath, selections.Encoder.Options, sessionFactory, ct, selections.Encoder.SelectedProvider, bootstrap.DevicePolicy)),
+                    session => ResolveEffectiveProviderKindFromSession(
+                        session,
+                        selections.Encoder.SelectedProvider,
+                        ShouldUseCatalogDevicePolicy(bootstrap.DevicePolicy, selections.Encoder.SelectedProvider))),
                 new SessionLeaseRequest(
                     decoderKey,
-                    ct => Task.FromResult(CreateSession(decoderModelPath, selections.Decoder.Options, sessionFactory, ct, selections.Decoder.SelectedProvider, bootstrap.DevicePolicy))),
+                    ct => Task.FromResult(CreateSession(decoderModelPath, selections.Decoder.Options, sessionFactory, ct, selections.Decoder.SelectedProvider, bootstrap.DevicePolicy)),
+                    session => ResolveEffectiveProviderKindFromSession(
+                        session,
+                        selections.Decoder.SelectedProvider,
+                        ShouldUseCatalogDevicePolicy(bootstrap.DevicePolicy, selections.Decoder.SelectedProvider))),
             ],
             cancellationToken).ConfigureAwait(false);
 
@@ -1038,7 +1048,19 @@ internal static class OnnxExecutionSessionFactory
                     && !cancellationToken.IsCancellationRequested
                     && IsRecoverableTrtFallbackInitFailure(ex))
                 {
-                    await pool.EvictModelAsync(engineFamily, cancellationToken: cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        await pool.EvictModelAsync(engineFamily, cancellationToken: cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception evictionFailure) when (evictionFailure is not OperationCanceledException)
+                    {
+                        // A failed eviction must not abort the fallback chain or replace the init failure.
+                        _logger?.LogWarning(
+                            evictionFailure,
+                            "Evicting {EngineFamily} after a failed {Provider} Whisper init failed; continuing fallback.",
+                            engineFamily,
+                            FormatProviderLabel(attemptProvider));
+                    }
                     abandonedReason = MergeFallbackReasons(
                         abandonedReason,
                         $"{FormatProviderLabel(attemptProvider)} Whisper session init failed ({SummarizeExceptionMessage(ex)}); "

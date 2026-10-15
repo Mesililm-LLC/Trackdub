@@ -4,9 +4,22 @@ using Trackdub.Domain;
 namespace Trackdub.Inference.Onnx.Pool;
 
 /// <summary>One graph in a multi-graph bundle acquire.</summary>
+/// <param name="ResolvePlacedProvider">
+/// Where ORT actually placed the created session, when it can differ from
+/// <see cref="SessionPoolKey.Provider"/>. Reported per graph at creation so admission and
+/// TensorRT-RTX teardown tracking are right even if a later graph in the bundle fails.
+/// </param>
 internal sealed record SessionLeaseRequest(
     SessionPoolKey Key,
-    Func<CancellationToken, Task<InferenceSession>> Factory);
+    Func<CancellationToken, Task<InferenceSession>> Factory,
+    Func<InferenceSession, ExecutionProviderKind>? ResolvePlacedProvider = null)
+{
+    internal async Task<CreatedPoolSession> CreateReportingProviderAsync(CancellationToken cancellationToken)
+    {
+        InferenceSession session = await Factory(cancellationToken).ConfigureAwait(false);
+        return new CreatedPoolSession(session, ResolvePlacedProvider?.Invoke(session) ?? Key.Provider);
+    }
+}
 
 /// <summary>
 /// A session created for a pool miss and the provider it was created with. The provider differs

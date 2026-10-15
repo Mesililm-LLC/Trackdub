@@ -308,7 +308,15 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            await InferenceSessionPool.Shared.EvictModelAsync(WhisperOnnxAudioTranscriptionEngine.EngineFamilyName).ConfigureAwait(false);
+            try
+            {
+                await InferenceSessionPool.Shared.EvictModelAsync(WhisperOnnxAudioTranscriptionEngine.EngineFamilyName).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Cleanup only: an eviction failure must not replace the smoke-test failure rethrown below.
+            }
+
             throw;
         }
     }
