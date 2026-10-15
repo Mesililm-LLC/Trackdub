@@ -132,8 +132,31 @@ public sealed class JsonStudioSettingsService(
             HardwareQualityPresetOverrideKey = NormalizeOptionalKey(settings.HardwareQualityPresetOverrideKey),
             HardwareProfilerEvidenceId = NormalizeOptionalKey(settings.HardwareProfilerEvidenceId),
             HardwareProfilerFingerprint = NormalizeOptionalKey(settings.HardwareProfilerFingerprint),
-            ThemeName = AppThemeNames.Normalize(settings.ThemeName)
+            ThemeName = AppThemeNames.Normalize(settings.ThemeName),
+            CloudEgressConsents = NormalizeCloudEgressConsents(settings.CloudEgressConsents)
         };
+    }
+
+    private static IReadOnlyDictionary<string, bool> NormalizeCloudEgressConsents(
+        IReadOnlyDictionary<string, bool>? consents)
+    {
+        if (consents is null || consents.Count == 0)
+        {
+            return new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var normalized = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        foreach ((string key, bool value) in consents)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                continue;
+            }
+
+            normalized[key.Trim().ToLowerInvariant()] = value;
+        }
+
+        return normalized;
     }
 
     private static string? NormalizeOptionalKey(string? value) =>

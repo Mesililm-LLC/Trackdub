@@ -1,4 +1,6 @@
+using Trackdub.Application.Cloud;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Cloud;
 using Trackdub.Contracts.Serving;
 using Trackdub.Contracts.LipSync;
 using Trackdub.Contracts.Licensing;
@@ -326,6 +328,21 @@ public static class CompositionRoot
                 new TensorRtRtxReadinessProbe(sp.GetRequiredService<ITensorRtRtxProviderBootstrap>())));
         services.TryAddSingleton<ITensorRtRtxRuntimeReadinessService, TensorRtRtxRuntimeReadinessService>();
         services.TryAddSingleton<ICloudApiKeyProvider, EnvironmentCloudApiKeyProvider>();
+        services.TryAddSingleton<CloudEgressConsentService>(sp =>
+            new CloudEgressConsentService(sp.GetRequiredService<IStudioSettingsService>()));
+        services.TryAddScoped<ICloudEgressConsentService>(sp =>
+        {
+            StudioSettings? sessionSettings = null;
+            if (sp.GetService<TranscriptWorkspaceContext>() is { } context &&
+                context.TryGetSettings(out StudioSettings scopedSettings))
+            {
+                sessionSettings = scopedSettings;
+            }
+
+            return new SessionCloudEgressConsentOverlay(
+                sp.GetRequiredService<CloudEgressConsentService>(),
+                sessionSettings?.CloudEgressConsents);
+        });
         services.TryAddSingleton<ICloudCredentialReadiness, CloudCredentialReadinessService>();
         services.TryAddSingleton<IConsentService>(sp =>
             new SqliteConsentService(
@@ -540,7 +557,13 @@ public static class CompositionRoot
         services.TryAddScoped<ProjectWorkflow>();
         services.TryAddSingleton<IRuntimeSelectionService, RuntimeSelectionService>();
         services.TryAddSingleton<IPipelinePreFlightChecker, RuntimePlannerPreFlightChecker>();
-        services.TryAddSingleton<IPipelineReadinessService, PipelineReadinessService>();
+        services.TryAddSingleton<IPipelineReadinessService>(sp =>
+            new PipelineReadinessService(
+                sp.GetRequiredService<IRuntimePlanner>(),
+                sp.GetRequiredService<ICloudApiKeyProvider>(),
+                sp.GetRequiredService<IConsentService>(),
+                runtimePlanningPreferences: sp.GetService<IRuntimePlanningPreferences>(),
+                cloudEgressConsentService: sp.GetRequiredService<CloudEgressConsentService>()));
         services.TryAddSingleton<IStageReadinessOrchestrator, StageReadinessOrchestrator>();
         services.TryAddScoped<IRuntimeModelBootstrapService, RuntimeModelBootstrapService>();
         services.TryAddScoped<RuntimeModelWorkflow>();
@@ -682,6 +705,7 @@ public static class CompositionRoot
         services.AddHttpClient<GoogleCloudTtsEngine>(c => c.Timeout = TimeSpan.FromSeconds(30));
         services.AddHttpClient<GeminiCloudTtsEngine>(c => c.Timeout = TimeSpan.FromSeconds(30));
         services.AddHttpClient<ElevenLabsCloudDubbingEngine>(c => c.Timeout = TimeSpan.FromMinutes(40));
+        services.TryAddTransient<ICloudDubbingEngine>(sp => sp.GetRequiredService<ElevenLabsCloudDubbingEngine>());
 
         // Forced-alignment adapters. wav2vec2 (phoneme-capable, commercial lane) is registered
         // first; Qwen (word-level only, experimental lane) is the registration-order fallback.

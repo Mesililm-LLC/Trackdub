@@ -3,18 +3,22 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Cloud;
 using Trackdub.Contracts.Pipeline;
+using Trackdub.Domain.StageRuns;
 
 namespace Trackdub.Infrastructure.Transcription;
 
 public sealed class GeminiCloudTranscriptionEngine(
     HttpClient httpClient,
-    ICloudApiKeyProvider apiKeyProvider)
+    ICloudApiKeyProvider apiKeyProvider,
+    ICloudEgressConsentService? consentService = null)
     : IAudioTranscriptionEngine, IStageRuntimeExecutionReporter
 {
     public const string ProviderKey = "gemini";
     public const string ProviderName = "gemini";
     public const string EngineFamilyName = "gemini-asr-cloud";
+    public const string ConsentKey = CloudEgressConsentKeys.AudioGemini;
 
     public const string DefaultModel = "gemini-3.8-flash";
     public const string QualityModel = "gemini-2.5-pro";
@@ -29,8 +33,43 @@ public sealed class GeminiCloudTranscriptionEngine(
 
     private readonly HttpClient httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
     private readonly ICloudApiKeyProvider apiKeyProvider = apiKeyProvider ?? throw new ArgumentNullException(nameof(apiKeyProvider));
+    private readonly ICloudEgressConsentService? consentService = consentService;
 
     public StageRuntimeExecutionSummary? LastExecutionSummary { get; private set; }
+
+    public async Task<StageReadiness> EvaluateReadinessAsync(CancellationToken cancellationToken = default)
+    {
+        if (consentService is not null && !await consentService.HasConsentAsync(ConsentKey, cancellationToken).ConfigureAwait(false))
+        {
+            return new StageReadiness(
+                StageName: StageNames.Asr,
+                Status: ReadinessState.CloudEgressConsentRequired,
+                Detail: $"Cloud egress to {ProviderName} ({ConsentKey}) requires user consent",
+                ModelId: null,
+                ModelAlias: AsrModelOverrideSettings.GeminiAsrCloudAlias,
+                ResolveAction: "grant-egress-consent");
+        }
+
+        string? apiKey = await apiKeyProvider.GetApiKeyAsync(ProviderKey, cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            return new StageReadiness(
+                StageName: StageNames.Asr,
+                Status: ReadinessState.CloudKeyMissing,
+                Detail: $"{ProviderKey} API key is not configured",
+                ModelId: null,
+                ModelAlias: AsrModelOverrideSettings.GeminiAsrCloudAlias,
+                ResolveAction: "set-api-key");
+        }
+
+        return new StageReadiness(
+            StageName: StageNames.Asr,
+            Status: ReadinessState.Ready,
+            Detail: null,
+            ModelId: null,
+            ModelAlias: AsrModelOverrideSettings.GeminiAsrCloudAlias,
+            ResolveAction: null);
+    }
 
     public Task<IReadOnlyList<RecognizedTranscriptSegment>> TranscribeAsync(
         string normalizedAudioPath,
@@ -43,6 +82,7 @@ public sealed class GeminiCloudTranscriptionEngine(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        await EnsureEgressConsentAsync(cancellationToken).ConfigureAwait(false);
         string apiKey = await ResolveApiKeyAsync(cancellationToken).ConfigureAwait(false);
 
         byte[] audioBytes = await File.ReadAllBytesAsync(
@@ -137,6 +177,14 @@ public sealed class GeminiCloudTranscriptionEngine(
         return segments
             .Select((s, i) => new RecognizedTranscriptSegment(i, s.Start, s.End, s.Text.Trim()))
             .ToArray();
+    }
+
+    private async Task EnsureEgressConsentAsync(CancellationToken cancellationToken)
+    {
+        if (consentService is not null && !await consentService.HasConsentAsync(ConsentKey, cancellationToken).ConfigureAwait(false))
+        {
+            throw new CloudEgressConsentException(ConsentKey, ProviderName);
+        }
     }
 
     private static string ResolveModel(AudioTranscriptionRequest request)

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Cloud;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Infrastructure.Transcripts;
 
@@ -32,7 +33,8 @@ public sealed class GeminiCloudTextRefinementEngineTests
         using var httpClient = new HttpClient(handler);
         var engine = new GeminiCloudTextRefinementEngine(
             httpClient,
-            new StaticCloudApiKeyProvider("test-gemini-key"));
+            new StaticCloudApiKeyProvider("test-gemini-key"),
+            new StaticCloudEgressConsentService(true));
 
         IReadOnlyList<RefinedTextSegment> result = await engine.RefineAsync(
             new TextRefinementRequest(
@@ -71,7 +73,8 @@ public sealed class GeminiCloudTextRefinementEngineTests
         using var httpClient = new HttpClient(handler);
         var engine = new GeminiCloudTextRefinementEngine(
             httpClient,
-            new StaticCloudApiKeyProvider("test-gemini-key"));
+            new StaticCloudApiKeyProvider("test-gemini-key"),
+            new StaticCloudEgressConsentService(true));
 
         IReadOnlyList<RefinedTextSegment> result = await engine.RefineAsync(
             new TextRefinementRequest(
@@ -91,7 +94,8 @@ public sealed class GeminiCloudTextRefinementEngineTests
         using var httpClient = new HttpClient(new CapturingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)));
         var engine = new GeminiCloudTextRefinementEngine(
             httpClient,
-            new StaticCloudApiKeyProvider(null));
+            new StaticCloudApiKeyProvider(null),
+            new StaticCloudEgressConsentService(true));
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             engine.RefineAsync(
@@ -101,8 +105,36 @@ public sealed class GeminiCloudTextRefinementEngineTests
                 TestContext.Current.CancellationToken));
     }
 
+    [Fact]
+    public async Task RefineAsync_throws_CloudEgressConsentException_when_consent_not_granted()
+    {
+        var handler = new CapturingHandler(_ => throw new InvalidOperationException("Network must not be called without consent."));
+        using var httpClient = new HttpClient(handler);
+        var engine = new GeminiCloudTextRefinementEngine(
+            httpClient,
+            new StaticCloudApiKeyProvider("test-gemini-key"),
+            new StaticCloudEgressConsentService(false));
+
+        await Assert.ThrowsAsync<CloudEgressConsentException>(() =>
+            engine.RefineAsync(
+                new TextRefinementRequest(
+                    [new TextRefinementInputSegment(0, 0.0, 1.5, "hello world")],
+                    SourceLanguage: "en"),
+                TestContext.Current.CancellationToken));
+
+        Assert.Null(handler.RequestUri);
+    }
+
     private static StringContent JsonContent(string json) =>
         new(json, Encoding.UTF8, "application/json");
+
+    private sealed class StaticCloudEgressConsentService(bool consented) : ICloudEgressConsentService
+    {
+        public Task<bool> HasConsentAsync(string consentKey, CancellationToken ct = default) =>
+            Task.FromResult(consented && string.Equals(consentKey, CloudEgressConsentKeys.TextGemini, StringComparison.OrdinalIgnoreCase));
+        public IReadOnlyList<string> GetRequiredConsentKeys(string stageName, string? modelAlias) => [CloudEgressConsentKeys.TextGemini];
+        public Task SetConsentAsync(string consentKey, bool value, CancellationToken ct = default) => Task.CompletedTask;
+    }
 
     private sealed class StaticCloudApiKeyProvider(string? apiKey) : ICloudApiKeyProvider
     {

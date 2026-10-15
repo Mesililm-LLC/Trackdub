@@ -3,18 +3,22 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Cloud;
 using Trackdub.Contracts.Pipeline;
+using Trackdub.Domain.StageRuns;
 
 namespace Trackdub.Infrastructure.Transcripts;
 
 public sealed class GeminiCloudTextRefinementEngine(
     HttpClient httpClient,
-    ICloudApiKeyProvider apiKeyProvider)
+    ICloudApiKeyProvider apiKeyProvider,
+    ICloudEgressConsentService? consentService = null)
     : ITextRefinementEngine, IStageRuntimeExecutionReporter
 {
     public const string ProviderKey = "gemini";
     public const string ProviderName = "gemini";
     public const string EngineFamilyName = "gemini-refinement-cloud";
+    public const string ConsentKey = CloudEgressConsentKeys.TextGemini;
     public const string DefaultModel = "gemini-3.5-flash-lite";
     public const string StandardModel = "gemini-2.5-flash";
     public const string AdvancedModel = "gemini-3.8-flash";
@@ -28,16 +32,52 @@ public sealed class GeminiCloudTextRefinementEngine(
 
     private readonly HttpClient httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
     private readonly ICloudApiKeyProvider apiKeyProvider = apiKeyProvider ?? throw new ArgumentNullException(nameof(apiKeyProvider));
+    private readonly ICloudEgressConsentService? consentService = consentService;
 
     public string EngineFamily => EngineFamilyName;
 
     public StageRuntimeExecutionSummary? LastExecutionSummary { get; private set; }
+
+    public async Task<StageReadiness> EvaluateReadinessAsync(CancellationToken cancellationToken = default)
+    {
+        if (consentService is not null && !await consentService.HasConsentAsync(ConsentKey, cancellationToken).ConfigureAwait(false))
+        {
+            return new StageReadiness(
+                StageName: StageNames.TextRefinementAsr,
+                Status: ReadinessState.CloudEgressConsentRequired,
+                Detail: $"Cloud egress to {ProviderName} ({ConsentKey}) requires user consent",
+                ModelId: null,
+                ModelAlias: EngineFamilyName,
+                ResolveAction: "grant-egress-consent");
+        }
+
+        string? apiKey = await apiKeyProvider.GetApiKeyAsync(ProviderKey, cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            return new StageReadiness(
+                StageName: StageNames.TextRefinementAsr,
+                Status: ReadinessState.CloudKeyMissing,
+                Detail: $"{ProviderKey} API key is not configured",
+                ModelId: null,
+                ModelAlias: EngineFamilyName,
+                ResolveAction: "set-api-key");
+        }
+
+        return new StageReadiness(
+            StageName: StageNames.TextRefinementAsr,
+            Status: ReadinessState.Ready,
+            Detail: null,
+            ModelId: null,
+            ModelAlias: EngineFamilyName,
+            ResolveAction: null);
+    }
 
     public async Task<IReadOnlyList<RefinedTextSegment>> RefineAsync(
         TextRefinementRequest request,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        await EnsureEgressConsentAsync(cancellationToken).ConfigureAwait(false);
         if (request.Segments.Count == 0)
         {
             LastExecutionSummary = null;
@@ -136,6 +176,14 @@ public sealed class GeminiCloudTextRefinementEngine(
         }
 
         return results;
+    }
+
+    private async Task EnsureEgressConsentAsync(CancellationToken cancellationToken)
+    {
+        if (consentService is not null && !await consentService.HasConsentAsync(ConsentKey, cancellationToken).ConfigureAwait(false))
+        {
+            throw new CloudEgressConsentException(ConsentKey, ProviderName);
+        }
     }
 
     private static string ResolveModel(TextRefinementRequest request)

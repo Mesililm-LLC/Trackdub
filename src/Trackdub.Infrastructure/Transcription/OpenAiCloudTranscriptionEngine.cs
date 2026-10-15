@@ -2,18 +2,22 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Cloud;
 using Trackdub.Contracts.Pipeline;
+using Trackdub.Domain.StageRuns;
 
 namespace Trackdub.Infrastructure.Transcription;
 
 public sealed class OpenAiCloudTranscriptionEngine(
     HttpClient httpClient,
-    ICloudApiKeyProvider apiKeyProvider)
+    ICloudApiKeyProvider apiKeyProvider,
+    ICloudEgressConsentService? consentService = null)
     : IAudioTranscriptionEngine, IStageRuntimeExecutionReporter
 {
     public const string ProviderKey = "openai";
     public const string ProviderName = "openai";
     public const string EngineFamilyName = "openai-whisper-cloud";
+    public const string ConsentKey = CloudEgressConsentKeys.AudioOpenAi;
 
     private const string TranscriptionsEndpoint = "https://api.openai.com/v1/audio/transcriptions";
 
@@ -21,6 +25,7 @@ public sealed class OpenAiCloudTranscriptionEngine(
 
     private readonly HttpClient httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
     private readonly ICloudApiKeyProvider apiKeyProvider = apiKeyProvider ?? throw new ArgumentNullException(nameof(apiKeyProvider));
+    private readonly ICloudEgressConsentService? consentService = consentService;
 
     public StageRuntimeExecutionSummary? LastExecutionSummary { get; private set; }
 
@@ -35,6 +40,7 @@ public sealed class OpenAiCloudTranscriptionEngine(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        await EnsureEgressConsentAsync(cancellationToken).ConfigureAwait(false);
         string apiKey = await ResolveApiKeyAsync(cancellationToken).ConfigureAwait(false);
 
         byte[] audioBytes = await File.ReadAllBytesAsync(
@@ -98,6 +104,48 @@ public sealed class OpenAiCloudTranscriptionEngine(
                 s.Text.Trim(),
                 DetectedLanguage: whisperResponse.Language))
             .ToArray();
+    }
+
+    public async Task<StageReadiness> EvaluateReadinessAsync(CancellationToken cancellationToken = default)
+    {
+        if (consentService is not null && !await consentService.HasConsentAsync(ConsentKey, cancellationToken).ConfigureAwait(false))
+        {
+            return new StageReadiness(
+                StageName: StageNames.Asr,
+                Status: ReadinessState.CloudEgressConsentRequired,
+                Detail: $"Cloud egress to {ProviderName} ({ConsentKey}) requires user consent",
+                ModelId: null,
+                ModelAlias: AsrModelOverrideSettings.OpenAiWhisperCloudAlias,
+                ResolveAction: "grant-egress-consent");
+        }
+
+        string? apiKey = await apiKeyProvider.GetApiKeyAsync(ProviderKey, cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            return new StageReadiness(
+                StageName: StageNames.Asr,
+                Status: ReadinessState.CloudKeyMissing,
+                Detail: $"{ProviderKey} API key is not configured",
+                ModelId: null,
+                ModelAlias: AsrModelOverrideSettings.OpenAiWhisperCloudAlias,
+                ResolveAction: "set-api-key");
+        }
+
+        return new StageReadiness(
+            StageName: StageNames.Asr,
+            Status: ReadinessState.Ready,
+            Detail: null,
+            ModelId: null,
+            ModelAlias: AsrModelOverrideSettings.OpenAiWhisperCloudAlias,
+            ResolveAction: null);
+    }
+
+    private async Task EnsureEgressConsentAsync(CancellationToken cancellationToken)
+    {
+        if (consentService is not null && !await consentService.HasConsentAsync(ConsentKey, cancellationToken).ConfigureAwait(false))
+        {
+            throw new CloudEgressConsentException(ConsentKey, ProviderName);
+        }
     }
 
     private async Task<string> ResolveApiKeyAsync(CancellationToken cancellationToken)

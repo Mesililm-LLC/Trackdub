@@ -94,7 +94,12 @@ public sealed record StudioSettings(
     /// When true, the desktop warms the pipeline's planner-selected models in the background
     /// after startup (IResidentWarmupService), so the first run skips most cold-start cost.
     /// </summary>
-    bool WarmModelsAtStartup = true)
+    bool WarmModelsAtStartup = true,
+    /// <summary>
+    /// Persisted user consent for cloud data egress keyed by "{egressType}:{providerKey}".
+    /// Null or absent entry means consent has not been granted.
+    /// </summary>
+    IReadOnlyDictionary<string, bool>? CloudEgressConsents = null)
 {
     public const double DefaultTranscriptConfidenceThreshold = 0.75d;
 
@@ -122,7 +127,8 @@ public sealed record StudioSettings(
         AutomaticModelAliases: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             [Trackdub.Domain.StageRuns.StageNames.Translation] = TranslationModelOverrideSettings.MadladModelAlias
-        });
+        },
+        CloudEgressConsents: new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase));
 }
 
 /// <summary>

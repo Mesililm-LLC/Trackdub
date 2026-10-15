@@ -1,3 +1,4 @@
+using Trackdub.Application.Cloud;
 using Trackdub.Contracts;
 using Trackdub.Domain;
 
@@ -66,7 +67,50 @@ public sealed class InMemoryStudioSettingsService : IStudioSettingsService
             NvidiaAfxIntensityRatio = persisted.NvidiaAfxIntensityRatio,
             NvidiaAfxLicenseAccepted = persisted.NvidiaAfxLicenseAccepted,
             NvidiaAfxRuntimeDirectory = persisted.NvidiaAfxRuntimeDirectory,
+            CloudEgressConsents = MergeCloudEgressConsents(
+                persisted.CloudEgressConsents,
+                getEnvironmentVariable ?? Environment.GetEnvironmentVariable),
         };
+    }
+
+    private static IReadOnlyDictionary<string, bool> MergeCloudEgressConsents(
+        IReadOnlyDictionary<string, bool>? persistedConsents,
+        Func<string, string?> getEnvironmentVariable)
+    {
+        var merged = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        if (persistedConsents is not null)
+        {
+            foreach ((string key, bool value) in persistedConsents)
+            {
+                if (!string.IsNullOrWhiteSpace(key))
+                {
+                    merged[key.Trim().ToLowerInvariant()] = value;
+                }
+            }
+        }
+
+        foreach (string? raw in new[]
+        {
+            CloudEgressConsentService.ConsentEnvironmentVariable,
+            CloudEgressConsentService.ConsentsEnvironmentVariable,
+        }.Select(getEnvironmentVariable))
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                continue;
+            }
+
+            foreach (string normalizedToken in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                         .Select(token => token.ToLowerInvariant())
+                         .Where(normalizedToken => !merged.ContainsKey(normalizedToken)))
+            {
+                // Environment grants are a fallback: an explicit persisted value (including a
+                // revocation) wins, matching CloudEgressConsentService.HasConsentAsync semantics.
+                merged[normalizedToken] = true;
+            }
+        }
+
+        return merged;
     }
 
     private static bool IsTruthy(string? value) =>

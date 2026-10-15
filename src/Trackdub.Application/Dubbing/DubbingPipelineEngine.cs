@@ -113,6 +113,11 @@ public sealed class DubbingPipelineEngine(
                 TryResolveService<IConsentService>(session)?.GrantVoiceCloningConsent();
             }
 
+            // Explicit cloud egress consents are applied as a run-scoped overlay via the
+            // session settings seeded in CreateSessionOrError. They are never written to the
+            // shared consent store, so a later run that omits the option is still gated by
+            // what was actually persisted.
+
             TranscriptProjectState? initialProjectState = null;
 
             // --- Ensure project/media spine exists for fresh SDK runs ---
@@ -273,6 +278,21 @@ public sealed class DubbingPipelineEngine(
         return (effectiveOptions, null);
     }
 
+    private static IReadOnlyDictionary<string, bool> BuildExplicitCloudEgressConsents(
+        IReadOnlyList<string>? explicitConsents)
+    {
+        var map = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        if (explicitConsents is not null)
+        {
+            foreach (string key in explicitConsents.Where(static key => !string.IsNullOrWhiteSpace(key)))
+            {
+                map[key.Trim().ToLowerInvariant()] = true;
+            }
+        }
+
+        return map;
+    }
+
     private static string EnsureProjectDirectory(DubbingSessionOptions options)
     {
         string projectOutputDirectory = DubbingProjectPaths.ResolveProjectDirectory(
@@ -306,6 +326,9 @@ public sealed class DubbingPipelineEngine(
                 // WinML catalog device policy for this run when the host pinned one.
                 WindowsMlExecutionDevicePolicy = options.WindowsMlExecutionDevicePolicy
                     ?? StudioSettings.Default.WindowsMlExecutionDevicePolicy,
+                // Seeds SessionCloudEgressConsentOverlay for this run. Engine consent
+                // checks read it from the session; it is not written to the shared store.
+                CloudEgressConsents = BuildExplicitCloudEgressConsents(options.ExplicitCloudEgressConsents),
             };
             return (_sessionFactory.CreateSession(projectOutputDirectory, sessionSettings), null);
         }
@@ -889,7 +912,8 @@ public sealed class DubbingPipelineEngine(
                 state,
                 cancellationToken,
                 options.SourceLanguageCode,
-                options.TargetLanguageCode)
+                options.TargetLanguageCode,
+                explicitEgressConsents: BuildExplicitCloudEgressConsents(options.ExplicitCloudEgressConsents))
             .ConfigureAwait(false);
 
         // Provision downloadable models upfront via the host's interaction surface.
@@ -962,7 +986,8 @@ public sealed class DubbingPipelineEngine(
                     state,
                     cancellationToken,
                     options.SourceLanguageCode,
-                    options.TargetLanguageCode)
+                    options.TargetLanguageCode,
+                    explicitEgressConsents: BuildExplicitCloudEgressConsents(options.ExplicitCloudEgressConsents))
                 .ConfigureAwait(false);
         }
 
@@ -1027,6 +1052,8 @@ public sealed class DubbingPipelineEngine(
                 $"{s.StageName}: model checksum verification failed — re-download the model",
             ReadinessState.ConsentRequired =>
                 $"{s.StageName}: voice-clone consent required",
+            ReadinessState.CloudEgressConsentRequired =>
+                $"{s.StageName}: {s.Detail ?? "cloud egress consent required. Set TRACKDUB_CLOUD_EGRESS_CONSENT or use the app to consent interactively."}",
             _ =>
                 s.Detail is not null
                     ? $"{s.StageName}: {s.Detail}"

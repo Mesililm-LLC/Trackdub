@@ -2,18 +2,22 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Cloud;
 using Trackdub.Contracts.Pipeline;
+using Trackdub.Domain.StageRuns;
 
 namespace Trackdub.Infrastructure.Translation;
 
 public sealed class GeminiCloudTranslationEngine(
     HttpClient httpClient,
-    ICloudApiKeyProvider apiKeyProvider)
+    ICloudApiKeyProvider apiKeyProvider,
+    ICloudEgressConsentService? consentService = null)
     : ITranslationEngine, ITranslationExecutionMetadataReporter, IStageRuntimeExecutionReporter
 {
     public const string ProviderKey = "gemini";
     public const string ProviderName = "gemini";
     public const string EngineFamilyName = "gemini-translation-cloud";
+    public const string ConsentKey = CloudEgressConsentKeys.TextGemini;
 
     public const string DefaultModel = "gemini-3.8-flash";
     public const string QualityModel = "gemini-2.5-pro";
@@ -28,16 +32,52 @@ public sealed class GeminiCloudTranslationEngine(
 
     private readonly HttpClient httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
     private readonly ICloudApiKeyProvider apiKeyProvider = apiKeyProvider ?? throw new ArgumentNullException(nameof(apiKeyProvider));
+    private readonly ICloudEgressConsentService? consentService = consentService;
 
     public TranslationExecutionMetadata? LastExecutionMetadata { get; private set; }
 
     public StageRuntimeExecutionSummary? LastExecutionSummary { get; private set; }
+
+    public async Task<StageReadiness> EvaluateReadinessAsync(CancellationToken cancellationToken = default)
+    {
+        if (consentService is not null && !await consentService.HasConsentAsync(ConsentKey, cancellationToken).ConfigureAwait(false))
+        {
+            return new StageReadiness(
+                StageName: StageNames.Translation,
+                Status: ReadinessState.CloudEgressConsentRequired,
+                Detail: $"Cloud egress to {ProviderName} ({ConsentKey}) requires user consent",
+                ModelId: null,
+                ModelAlias: TranslationModelOverrideSettings.GeminiTranslationCloudAlias,
+                ResolveAction: "grant-egress-consent");
+        }
+
+        string? apiKey = await apiKeyProvider.GetApiKeyAsync(ProviderKey, cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            return new StageReadiness(
+                StageName: StageNames.Translation,
+                Status: ReadinessState.CloudKeyMissing,
+                Detail: $"{ProviderKey} API key is not configured",
+                ModelId: null,
+                ModelAlias: TranslationModelOverrideSettings.GeminiTranslationCloudAlias,
+                ResolveAction: "set-api-key");
+        }
+
+        return new StageReadiness(
+            StageName: StageNames.Translation,
+            Status: ReadinessState.Ready,
+            Detail: null,
+            ModelId: null,
+            ModelAlias: TranslationModelOverrideSettings.GeminiTranslationCloudAlias,
+            ResolveAction: null);
+    }
 
     public async Task<IReadOnlyList<TranslatedTextSegment>> TranslateAsync(
         TranslationRequest request,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        await EnsureEgressConsentAsync(cancellationToken).ConfigureAwait(false);
         if (request.Segments.Count == 0)
         {
             return [];
@@ -132,6 +172,14 @@ public sealed class GeminiCloudTranslationEngine(
         }
 
         return results;
+    }
+
+    private async Task EnsureEgressConsentAsync(CancellationToken cancellationToken)
+    {
+        if (consentService is not null && !await consentService.HasConsentAsync(ConsentKey, cancellationToken).ConfigureAwait(false))
+        {
+            throw new CloudEgressConsentException(ConsentKey, ProviderName);
+        }
     }
 
     private static string ResolveModel(TranslationRequest request)

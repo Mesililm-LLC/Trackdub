@@ -1,14 +1,15 @@
 using System.Collections.Concurrent;
 using Trackdub.Application.Pipeline;
 using Trackdub.Application.Transcripts;
+using Trackdub.Application.Cloud;
 using Trackdub.Contracts;
 using Trackdub.Contracts.ApplicationContracts;
+using Trackdub.Contracts.Cloud;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Domain;
 using Trackdub.Domain.StageRuns;
 using Trackdub.Inference.Onnx.Runtime.Planning;
 using Trackdub.Inference.Runtime.Planning;
-using Trackdub.Infrastructure.Transcripts;
 
 namespace Trackdub.Composition.Pipeline;
 
@@ -23,7 +24,8 @@ public sealed class PipelineReadinessService(
     IConsentService consentService,
     IRuntimePlanningPreferences? runtimePlanningPreferences = null,
     int? maxConcurrentStageEvaluations = null,
-    TimeSpan? stageEvaluationTimeout = null)
+    TimeSpan? stageEvaluationTimeout = null,
+    ICloudEgressConsentService? cloudEgressConsentService = null)
     : IPipelineReadinessService
 {
     private readonly IRuntimePlanner _runtimePlanner =
@@ -33,6 +35,7 @@ public sealed class PipelineReadinessService(
     private readonly IConsentService _consentService =
         consentService ?? throw new ArgumentNullException(nameof(consentService));
     private readonly IRuntimePlanningPreferences? _runtimePlanningPreferences = runtimePlanningPreferences;
+    private readonly ICloudEgressConsentService? _cloudEgressConsentService = cloudEgressConsentService;
 
     // Readiness smoke tests cold-load full ONNX graphs. Cap parallel stage checks so a
     // multi-stage sweep overlaps load work without stampeding GPU/RAM admission.
@@ -85,7 +88,8 @@ public sealed class PipelineReadinessService(
         CancellationToken cancellationToken = default,
         string? sourceLanguageCode = null,
         string? targetLanguageCode = null,
-        bool validateRuntime = true)
+        bool validateRuntime = true,
+        IReadOnlyDictionary<string, bool>? explicitEgressConsents = null)
     {
         ArgumentNullException.ThrowIfNull(enabledStages);
         ArgumentNullException.ThrowIfNull(selections);
@@ -114,6 +118,7 @@ public sealed class PipelineReadinessService(
                     sourceLanguageCode,
                     targetLanguageCode,
                     validateRuntime,
+                    explicitEgressConsents,
                     stageReadinesses,
                     throttle,
                     cancellationToken),
@@ -133,6 +138,7 @@ public sealed class PipelineReadinessService(
         string? sourceLanguageCode,
         string? targetLanguageCode,
         bool validateRuntime,
+        IReadOnlyDictionary<string, bool>? explicitEgressConsents,
         StageReadiness[] stageReadinesses,
         SemaphoreSlim throttle,
         CancellationToken cancellationToken)
@@ -154,6 +160,7 @@ public sealed class PipelineReadinessService(
                         sourceLanguageCode,
                         targetLanguageCode,
                         validateRuntime,
+                        explicitEgressConsents,
                         stageToken)
                     .ConfigureAwait(false);
             }
@@ -183,6 +190,7 @@ public sealed class PipelineReadinessService(
         string? sourceLanguageCode,
         string? targetLanguageCode,
         bool validateRuntime,
+        IReadOnlyDictionary<string, bool>? explicitEgressConsents,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -219,11 +227,16 @@ public sealed class PipelineReadinessService(
             planningRequest.PreferredModelVariantAlias,
             preferredModelTier, selections.GetSelectionIntent(stage));
 
+        if (IsCloudAlias(stage, modelAlias))
+        {
+            StageReadiness cloudReadiness = await EvaluateCloudStageAsync(
+                stage, modelAlias!, explicitEgressConsents, cancellationToken).ConfigureAwait(false);
+            return ApplyVoiceCloneConsent(stage, state, cloudReadiness);
+        }
+
         if (!_cache.TryGetValue(cacheKey, out StageReadiness? readiness))
         {
-            readiness = IsCloudAlias(stage, modelAlias)
-                ? await EvaluateCloudStageAsync(stage, modelAlias!, cancellationToken).ConfigureAwait(false)
-                : await EvaluateLocalStageAsync(
+            readiness = await EvaluateLocalStageAsync(
                     planningRequest,
                     stage,
                     preferredModelTier,
@@ -293,9 +306,34 @@ public sealed class PipelineReadinessService(
     private async Task<StageReadiness> EvaluateCloudStageAsync(
         RuntimeStage stage,
         string modelAlias,
+        IReadOnlyDictionary<string, bool>? explicitEgressConsents,
         CancellationToken cancellationToken)
     {
+        string stageName = StageNameFor(stage);
         string providerKey = CloudProviderKey(modelAlias);
+
+        // A missing consent service means consent gating is not configured (e.g. a host
+        // that constructs the readiness service without wiring egress consent). Treat it
+        // as "no gating required" so cloud stages are not permanently blocked, matching
+        // the engines' own null-service handling.
+        if (_cloudEgressConsentService is not null)
+        {
+            IReadOnlyList<string> requiredConsentKeys = _cloudEgressConsentService
+                .GetRequiredConsentKeys(stageName, modelAlias);
+            string? missingConsentKey = await ResolveMissingConsentKeyAsync(
+                requiredConsentKeys, explicitEgressConsents, cancellationToken).ConfigureAwait(false);
+            if (missingConsentKey is not null)
+            {
+                return new StageReadiness(
+                    StageName: stageName,
+                    Status: ReadinessState.CloudEgressConsentRequired,
+                    Detail: $"Cloud egress to {providerKey} ({missingConsentKey}) requires user consent",
+                    ModelId: null,
+                    ModelAlias: modelAlias,
+                    ResolveAction: "grant-egress-consent");
+            }
+        }
+
         string? apiKey = await _cloudApiKeyProvider
             .GetApiKeyAsync(providerKey, cancellationToken)
             .ConfigureAwait(false);
@@ -303,7 +341,7 @@ public sealed class PipelineReadinessService(
         if (string.IsNullOrWhiteSpace(apiKey))
         {
             return new StageReadiness(
-                StageName: StageNameFor(stage),
+                StageName: stageName,
                 Status: ReadinessState.CloudKeyMissing,
                 Detail: $"{providerKey} API key is not configured",
                 ModelId: null,
@@ -312,12 +350,38 @@ public sealed class PipelineReadinessService(
         }
 
         return new StageReadiness(
-            StageName: StageNameFor(stage),
+            StageName: stageName,
             Status: ReadinessState.Ready,
             Detail: null,
             ModelId: null,
             ModelAlias: modelAlias,
             ResolveAction: null);
+    }
+
+    private async Task<string?> ResolveMissingConsentKeyAsync(
+        IReadOnlyList<string> requiredConsentKeys,
+        IReadOnlyDictionary<string, bool>? explicitEgressConsents,
+        CancellationToken cancellationToken)
+    {
+        foreach (string key in requiredConsentKeys)
+        {
+            if (explicitEgressConsents is not null &&
+                explicitEgressConsents.TryGetValue(key.Trim().ToLowerInvariant(), out bool explicitlyConsented) &&
+                explicitlyConsented)
+            {
+                continue;
+            }
+
+            if (_cloudEgressConsentService is not null &&
+                await _cloudEgressConsentService.HasConsentAsync(key, cancellationToken).ConfigureAwait(false))
+            {
+                continue;
+            }
+
+            return key;
+        }
+
+        return null;
     }
 
     // ── Local stage evaluation ─────────────────────────────────────────────────
@@ -443,11 +507,7 @@ public sealed class PipelineReadinessService(
 
     private static bool IsGeminiRefinementAlias(string? alias) =>
         !string.IsNullOrWhiteSpace(alias) &&
-        (string.Equals(alias, GeminiCloudTextRefinementEngine.EngineFamilyName, StringComparison.OrdinalIgnoreCase) ||
-         alias.StartsWith("gemini-refinement", StringComparison.OrdinalIgnoreCase) ||
-         alias.StartsWith("gemini-3.8", StringComparison.OrdinalIgnoreCase) ||
-         alias.StartsWith("gemini-3.5", StringComparison.OrdinalIgnoreCase) ||
-         alias.StartsWith("gemini-2.5", StringComparison.OrdinalIgnoreCase));
+        alias.StartsWith("gemini", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsCloudTranslationAlias(string? alias) =>
         TranslationModelOverrideSettings.IsDeepLModelAlias(alias)

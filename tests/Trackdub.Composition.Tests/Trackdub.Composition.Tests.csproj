@@ -53,6 +53,7 @@
     <Compile Include="..\Trackdub.TestDoubles\RequiresBundledModelFactAttribute.cs" Link="TestDoubles\RequiresBundledModelFactAttribute.cs" />
     <Compile Include="..\Trackdub.TestDoubles\FakeHardwareProfilerService.cs" Link="TestDoubles\FakeHardwareProfilerService.cs" />
     <Compile Include="..\Trackdub.TestDoubles\FakeStudioSettingsService.cs" Link="TestDoubles\FakeStudioSettingsService.cs" />
+    <Compile Include="..\Trackdub.TestDoubles\FakeCloudEgressConsentService.cs" Link="TestDoubles\FakeCloudEgressConsentService.cs" />
     <Compile Include="..\Trackdub.TestDoubles\NullModelHashVerifier.cs" Link="TestDoubles\NullModelHashVerifier.cs" />
     <Compile Include="..\Trackdub.TestDoubles\ConfigurableModelHashVerifier.cs" Link="TestDoubles\ConfigurableModelHashVerifier.cs" />
     <Compile Include="..\Trackdub.TestDoubles\FakeArtifactStore.cs" Link="TestDoubles\FakeArtifactStore.cs" />
