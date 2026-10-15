@@ -10,6 +10,7 @@ using System.Reflection;
 
 namespace Trackdub.Inference.Tests;
 
+[Collection(nameof(OnnxExecutionSessionFactoryStateCollection))]
 public sealed class OnnxExecutionSessionFactoryTests
 {
     [Fact]
@@ -1386,3 +1387,11 @@ public sealed class OnnxExecutionSessionFactoryTests
     }
 }
 
+/// <summary>
+/// These tests reset and replace the process-global bootstrapper (e.g. one that always selects
+/// MIGraphX), which makes concurrent smoke/session tests see the wrong provider. xUnit runs
+/// non-parallel collections only after every parallel collection has finished, so the swaps
+/// cannot overlap any other test in the assembly.
+/// </summary>
+[CollectionDefinition(nameof(OnnxExecutionSessionFactoryStateCollection), DisableParallelization = true)]
+public sealed class OnnxExecutionSessionFactoryStateCollection;

@@ -485,12 +485,30 @@ internal sealed class InferenceSessionPool : IDisposable
         ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(factory);
 
+        return await GetResidencyReportingProviderAsync(
+            key,
+            async ct => new CreatedPoolSession(await factory(ct).ConfigureAwait(false), key.Provider),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// <see cref="GetResidencyAsync"/> for a factory that reports the provider the session was
+    /// actually created on (see <see cref="GetLeaseReportingProviderAsync"/>).
+    /// </summary>
+    internal async Task<SessionResidency> GetResidencyReportingProviderAsync(
+        SessionPoolKey key,
+        Func<CancellationToken, Task<CreatedPoolSession>> factory,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(factory);
+
         while (true)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
 
             // Ensure the session exists (single-flight create). Release the lease immediately.
-            using (await GetLeaseAsync(key, factory, cancellationToken).ConfigureAwait(false))
+            using (await GetLeaseReportingProviderAsync(key, factory, cancellationToken).ConfigureAwait(false))
             {
             }
 
@@ -838,9 +856,18 @@ internal sealed class InferenceSessionPool : IDisposable
                         created = await factory(cancellationToken).ConfigureAwait(false);
                     session = created.Session;
                     createdProvider = created.Provider;
+                    if (createdProvider is ExecutionProviderKind.TensorRTRtx)
+                    {
+                        TensorRtRtxTeardownGuard.Track(session);
+                    }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    if (key.Provider is ExecutionProviderKind.TensorRTRtx)
+                    {
+                        TensorRtRtxTeardownGuard.MarkPoisonedIfCudaOutOfMemory(ex);
+                    }
+
                     if (reserved)
                     {
                         // Always release reservation on factory failure to prevent a reservation leak
@@ -1151,7 +1178,7 @@ internal sealed class InferenceSessionPool : IDisposable
                     cancellationToken.ThrowIfCancellationRequested();
                     if (enableMemoryAdmission)
                     {
-                        pins.Add(await GetResidencyAsync(request.Key, request.Factory, cancellationToken)
+                        pins.Add(await GetResidencyReportingProviderAsync(request.Key, request.CreateReportingProviderAsync, cancellationToken)
                             .ConfigureAwait(false));
                         // Recheck after each pin: a session pinned now is counted in the bucket
                         // it was created in, and a later admission must not wait on memory this
@@ -1160,7 +1187,7 @@ internal sealed class InferenceSessionPool : IDisposable
                     }
                     else
                     {
-                        using SessionLease warm = await GetLeaseAsync(request.Key, request.Factory, cancellationToken)
+                        using SessionLease warm = await GetLeaseReportingProviderAsync(request.Key, request.CreateReportingProviderAsync, cancellationToken)
                             .ConfigureAwait(false);
                     }
                 }
@@ -1206,13 +1233,13 @@ internal sealed class InferenceSessionPool : IDisposable
                             {
                                 if (enableMemoryAdmission)
                                 {
-                                    pins.Add(await GetResidencyAsync(request.Key, request.Factory, cancellationToken)
+                                    pins.Add(await GetResidencyReportingProviderAsync(request.Key, request.CreateReportingProviderAsync, cancellationToken)
                                         .ConfigureAwait(false));
                                     ValidateBundleAdmission(ordered);
                                 }
                                 else
                                 {
-                                    using SessionLease warm = await GetLeaseAsync(request.Key, request.Factory, cancellationToken)
+                                    using SessionLease warm = await GetLeaseReportingProviderAsync(request.Key, request.CreateReportingProviderAsync, cancellationToken)
                                         .ConfigureAwait(false);
                                 }
                             }
@@ -1864,7 +1891,8 @@ internal sealed class InferenceSessionPool : IDisposable
     /// <returns>The number of entries that were evicted and disposed.</returns>
     public async Task<int> EvictModelAsync(
         string engineFamily,
-        string? modelId = null)
+        string? modelId = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(engineFamily);
         ObjectDisposedException.ThrowIf(disposed, this);
@@ -1872,7 +1900,7 @@ internal sealed class InferenceSessionPool : IDisposable
         List<PoolEntry> toDispose = new();
         int count = 0;
 
-        await creationLock.WaitAsync().ConfigureAwait(false);
+        await creationLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ObjectDisposedException.ThrowIf(disposed, this);

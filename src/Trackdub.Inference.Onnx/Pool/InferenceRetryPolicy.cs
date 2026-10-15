@@ -2,6 +2,7 @@ using Microsoft.ML.OnnxRuntime;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Contracts.Benchmarking;
 using Trackdub.Domain;
+using Trackdub.Inference.Onnx.TensorRtRtx;
 using Trackdub.Inference.Runtime.Planning;
 
 namespace Trackdub.Inference.Onnx.Pool;
@@ -77,7 +78,8 @@ internal static class InferenceRetryPolicy
                 },
                 maxAttempts,
                 cancellationToken,
-                provider);
+                provider,
+                session: session);
         }
 
         using var runOptions = new RunOptions();
@@ -90,7 +92,8 @@ internal static class InferenceRetryPolicy
             maxAttempts,
             cancellationToken,
             provider,
-            runOptions);
+            runOptions,
+            session);
     }
 
     /// <summary>
@@ -120,7 +123,7 @@ internal static class InferenceRetryPolicy
             }
             catch (OnnxRuntimeException ex) when (!cancellationToken.IsCancellationRequested &&
                                                   !runOptions.Terminate &&
-                                                  IsTransient(ex, provider) && ++attempt < maxAttempts)
+                                                  IsTransient(ex, provider, session) && ++attempt < maxAttempts)
             {
                 await Task.Delay(BackoffFor(attempt), cancellationToken).ConfigureAwait(false);
             }
@@ -156,14 +159,16 @@ internal static class InferenceRetryPolicy
             maxAttempts,
             cancellationToken,
             provider,
-            runOptions);
+            runOptions,
+            session);
 
     internal static IDisposableReadOnlyCollection<DisposableNamedOnnxValue> Execute(
         Func<IDisposableReadOnlyCollection<DisposableNamedOnnxValue>> run,
         int maxAttempts,
         CancellationToken cancellationToken,
         ExecutionProviderKind? provider,
-        RunOptions? runOptions = null)
+        RunOptions? runOptions = null,
+        InferenceSession? session = null)
     {
         int attempt = 0;
         while (true)
@@ -174,7 +179,7 @@ internal static class InferenceRetryPolicy
             }
             catch (OnnxRuntimeException ex) when (!cancellationToken.IsCancellationRequested &&
                                                   !(runOptions?.Terminate ?? false) &&
-                                                  IsTransient(ex, provider) && ++attempt < maxAttempts)
+                                                  IsTransient(ex, provider, session) && ++attempt < maxAttempts)
             {
                 cancellationToken.WaitHandle.WaitOne(BackoffFor(attempt));
                 cancellationToken.ThrowIfCancellationRequested();
@@ -235,8 +240,18 @@ internal static class InferenceRetryPolicy
     private static TimeSpan BackoffFor(int attempt) =>
         DefaultDelays[Math.Min(attempt - 1, DefaultDelays.Length - 1)];
 
-    private static bool IsTransient(OnnxRuntimeException ex, ExecutionProviderKind? provider) =>
-        IsTransientMessage(ex.Message, provider);
+    private static bool IsTransient(OnnxRuntimeException ex, ExecutionProviderKind? provider, InferenceSession? session)
+    {
+        // Callers often omit the provider hint, so a session tracked as TensorRT-RTX also counts:
+        // an unpoisoned OOM would let the session's later disposal hit the native teardown crash.
+        if (provider is ExecutionProviderKind.TensorRTRtx
+            || (session is not null && TensorRtRtxTeardownGuard.IsTracked(session)))
+        {
+            TensorRtRtxTeardownGuard.MarkPoisonedIfCudaOutOfMemory(ex);
+        }
+
+        return IsTransientMessage(ex.Message, provider);
+    }
 
     internal static bool IsTransientMessage(string message, ExecutionProviderKind? provider = null)
     {

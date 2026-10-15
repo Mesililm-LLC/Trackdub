@@ -2,6 +2,7 @@ using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using Trackdub.Domain;
 using Trackdub.Inference.Onnx;
+using Trackdub.Inference.Onnx.Pool;
 using Trackdub.Inference.Onnx.TensorRtRtx;
 
 namespace Trackdub.Inference.Tests;
@@ -15,6 +16,10 @@ public sealed class TensorRtRtxTeardownGuardTests : IDisposable
 
     [Theory]
     [InlineData("CUDA failure 2: out of memory ; GPU=0 ; hostname=x", true)]
+    [InlineData("CUDA failure 2", true)]
+    [InlineData("CUDA failure 209: no kernel image is available for execution on the device", false)]
+    [InlineData("CUDA failure 201: invalid device context", false)]
+    [InlineData("CUDA failure 222: the provided PTX was compiled with an unsupported toolchain", false)]
     [InlineData("cudaErrorMemoryAllocation while compiling engine", true)]
     [InlineData("CUDA_ERROR_OUT_OF_MEMORY", true)]
     [InlineData("Kernel not found for op: Squeeze(13) under NvTensorRTRTXExecutionProvider", false)]
@@ -40,6 +45,8 @@ public sealed class TensorRtRtxTeardownGuardTests : IDisposable
         using InferenceSession untracked = CreateSession();
         TensorRtRtxTeardownGuard.Track(tracked);
 
+        Assert.True(TensorRtRtxTeardownGuard.IsTracked(tracked));
+        Assert.False(TensorRtRtxTeardownGuard.IsTracked(untracked));
         Assert.False(TensorRtRtxTeardownGuard.ShouldSkipNativeTeardown(tracked));
 
         TensorRtRtxTeardownGuard.MarkPoisonedIfCudaOutOfMemory(new InvalidOperationException("out of memory"));
@@ -89,34 +96,102 @@ public sealed class TensorRtRtxTeardownGuardTests : IDisposable
     }
 
     [Fact]
-    public void Single_session_and_whisper_leases_skip_native_teardown_after_cuda_oom()
+    public void Single_session_and_compound_leases_skip_native_teardown_after_cuda_oom()
     {
         InferenceSession single = CreateSession();
-        InferenceSession encoder = CreateSession();
-        InferenceSession decoder = CreateSession();
+        InferenceSession whisperEncoder = CreateSession();
+        InferenceSession whisperDecoder = CreateSession();
+        InferenceSession opusEncoder = CreateSession();
+        InferenceSession opusDecoder = CreateSession();
+        InferenceSession qwenEncoder = CreateSession();
+        InferenceSession qwenDecoderInit = CreateSession();
+        InferenceSession qwenDecoderStep = CreateSession();
+        InferenceSession nemotronEncoder = CreateSession();
+        InferenceSession nemotronDecoderJoint = CreateSession();
+        InferenceSession latentUnet = CreateSession();
+        InferenceSession latentVaeEnc = CreateSession();
+        InferenceSession latentVaeDec = CreateSession();
+        InferenceSession latentWhisperEnc = CreateSession();
+
+        InferenceSession[] allSessions =
+        [
+            single,
+            whisperEncoder,
+            whisperDecoder,
+            opusEncoder,
+            opusDecoder,
+            qwenEncoder,
+            qwenDecoderInit,
+            qwenDecoderStep,
+            nemotronEncoder,
+            nemotronDecoderJoint,
+            latentUnet,
+            latentVaeEnc,
+            latentVaeDec,
+            latentWhisperEnc,
+        ];
+
         try
         {
-            TensorRtRtxTeardownGuard.Track(single);
-            TensorRtRtxTeardownGuard.Track(encoder);
-            TensorRtRtxTeardownGuard.Track(decoder);
+            foreach (InferenceSession session in allSessions)
+            {
+                TensorRtRtxTeardownGuard.Track(session);
+            }
+
             TensorRtRtxTeardownGuard.MarkPoisonedIfCudaOutOfMemory(
-                new InvalidOperationException("CUDA failure: out of memory"));
+                new InvalidOperationException("CUDA failure 2: out of memory"));
 
-            new OnnxExecutionSessionFactory.SingleSessionLease(single, "TensorRT RTX", "TensorRT RTX", null).Dispose();
-            new OnnxExecutionSessionFactory.WhisperSessionLease(encoder, decoder, "TensorRT RTX", "TensorRT RTX", null).Dispose();
-            new OnnxExecutionSessionFactory.OpusSessionLease(encoder, decoder, "TensorRT RTX", "TensorRT RTX", null).Dispose();
+            new OnnxExecutionSessionFactory.SingleSessionLease(single, "tensorrt-rtx", "tensorrt-rtx", null).Dispose();
+            new OnnxExecutionSessionFactory.WhisperSessionLease(whisperEncoder, whisperDecoder, "tensorrt-rtx", "tensorrt-rtx", null).Dispose();
+            new OnnxExecutionSessionFactory.OpusSessionLease(opusEncoder, opusDecoder, "tensorrt-rtx", "tensorrt-rtx", null).Dispose();
+            new OnnxExecutionSessionFactory.Qwen3AsrSessionLease(qwenEncoder, qwenDecoderInit, qwenDecoderStep, "tensorrt-rtx", "tensorrt-rtx", null).Dispose();
+            new OnnxExecutionSessionFactory.NemotronAsrSessionLease(nemotronEncoder, nemotronDecoderJoint, "tensorrt-rtx", "tensorrt-rtx", null).Dispose();
+            new OnnxExecutionSessionFactory.LatentSyncSessionLease(latentUnet, latentVaeEnc, latentVaeDec, latentWhisperEnc, "tensorrt-rtx", "tensorrt-rtx", null).Dispose();
 
-            Assert.Equal(1f, RunIdentity(single));
-            Assert.Equal(1f, RunIdentity(encoder));
-            Assert.Equal(1f, RunIdentity(decoder));
+            foreach (InferenceSession session in allSessions)
+            {
+                Assert.Equal(1f, RunIdentity(session));
+            }
         }
         finally
         {
             TensorRtRtxTeardownGuard.ResetForTests();
-            single.Dispose();
-            encoder.Dispose();
-            decoder.Dispose();
+            foreach (InferenceSession session in allSessions)
+            {
+                session.Dispose();
+            }
         }
+    }
+
+    [Fact]
+    public void Compound_leases_still_dispose_untracked_fallback_sessions_after_cuda_oom()
+    {
+        InferenceSession qwenEncoder = CreateSession();
+        InferenceSession qwenDecoderInit = CreateSession();
+        InferenceSession qwenDecoderStep = CreateSession();
+        InferenceSession nemotronEncoder = CreateSession();
+        InferenceSession nemotronDecoderJoint = CreateSession();
+        InferenceSession latentUnet = CreateSession();
+        InferenceSession latentVaeEnc = CreateSession();
+        InferenceSession latentVaeDec = CreateSession();
+        InferenceSession latentWhisperEnc = CreateSession();
+
+        TensorRtRtxTeardownGuard.MarkPoisonedIfCudaOutOfMemory(
+            new InvalidOperationException("CUDA failure 2: out of memory"));
+
+        new OnnxExecutionSessionFactory.Qwen3AsrSessionLease(qwenEncoder, qwenDecoderInit, qwenDecoderStep, "tensorrt-rtx", "cpu", null).Dispose();
+        new OnnxExecutionSessionFactory.NemotronAsrSessionLease(nemotronEncoder, nemotronDecoderJoint, "tensorrt-rtx", "cpu", null).Dispose();
+        new OnnxExecutionSessionFactory.LatentSyncSessionLease(latentUnet, latentVaeEnc, latentVaeDec, latentWhisperEnc, "tensorrt-rtx", "cpu", null).Dispose();
+
+        Assert.Throws<NullReferenceException>(() => RunIdentity(qwenEncoder));
+        Assert.Throws<NullReferenceException>(() => RunIdentity(qwenDecoderInit));
+        Assert.Throws<NullReferenceException>(() => RunIdentity(qwenDecoderStep));
+        Assert.Throws<NullReferenceException>(() => RunIdentity(nemotronEncoder));
+        Assert.Throws<NullReferenceException>(() => RunIdentity(nemotronDecoderJoint));
+        Assert.Throws<NullReferenceException>(() => RunIdentity(latentUnet));
+        Assert.Throws<NullReferenceException>(() => RunIdentity(latentVaeEnc));
+        Assert.Throws<NullReferenceException>(() => RunIdentity(latentVaeDec));
+        Assert.Throws<NullReferenceException>(() => RunIdentity(latentWhisperEnc));
     }
 
     [Fact]
@@ -170,6 +245,78 @@ public sealed class TensorRtRtxTeardownGuardTests : IDisposable
         TensorRtRtxTeardownGuard.DisposeSafely(session);
 
         Assert.Throws<NullReferenceException>(() => RunIdentity(session));
+    }
+
+    [Fact]
+    public async Task Pool_eviction_under_poisoned_state_skips_trt_teardown_while_disposing_non_trt_entries()
+    {
+        InferenceSession trtSession = CreateSession();
+        InferenceSession cpuSession = CreateSession();
+        try
+        {
+            using var pool = new InferenceSessionPool(maxSessions: 4, enableMemoryAdmission: false);
+            var trtKey = new SessionPoolKey(
+                "whisper-onnx",
+                "whisper-large-v3",
+                "default",
+                ExecutionProviderKind.TensorRTRtx,
+                "encoder_model.onnx",
+                deviceId: 0,
+                graphRole: "encoder");
+            var failedTrtDecoderKey = new SessionPoolKey(
+                "whisper-onnx",
+                "whisper-large-v3",
+                "default",
+                ExecutionProviderKind.TensorRTRtx,
+                "decoder_model.onnx",
+                deviceId: 0,
+                graphRole: "decoder");
+            var cpuKey = new SessionPoolKey(
+                "whisper-onnx",
+                "whisper-large-v3",
+                "default",
+                ExecutionProviderKind.Cpu,
+                "encoder_model.onnx",
+                deviceId: null,
+                graphRole: "encoder");
+
+            using (SessionLease trtLease = await pool.GetLeaseAsync(
+                trtKey,
+                _ => Task.FromResult(trtSession),
+                CancellationToken.None))
+            {
+                Assert.True(TensorRtRtxTeardownGuard.IsTracked(trtLease.Session));
+            }
+
+            using (SessionLease cpuLease = await pool.GetLeaseAsync(
+                cpuKey,
+                _ => Task.FromResult(cpuSession),
+                CancellationToken.None))
+            {
+                Assert.False(TensorRtRtxTeardownGuard.IsTracked(cpuLease.Session));
+            }
+
+            // Simulate decoder engine compilation throwing CUDA OOM on TensorRT-RTX.
+            await Assert.ThrowsAsync<InvalidOperationException>(() => pool.GetLeaseAsync(
+                failedTrtDecoderKey,
+                _ => throw new InvalidOperationException("[NvTensorRTRTX EP] CUDA failure 2: out of memory"),
+                CancellationToken.None));
+
+            Assert.True(TensorRtRtxTeardownGuard.IsPoisoned);
+
+            int evicted = await pool.EvictAllIdleAsync();
+            Assert.Equal(2, evicted);
+
+            // The poisoned TRT-RTX session skipped native Dispose; the CPU session disposed cleanly.
+            Assert.Equal(1f, RunIdentity(trtSession));
+            Assert.Throws<NullReferenceException>(() => RunIdentity(cpuSession));
+        }
+        finally
+        {
+            TensorRtRtxTeardownGuard.ResetForTests();
+            trtSession.Dispose();
+            cpuSession.Dispose();
+        }
     }
 
     private static float RunIdentity(InferenceSession session)

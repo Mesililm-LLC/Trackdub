@@ -34,6 +34,9 @@ internal static class TensorRtRtxTeardownGuard
     /// <summary>Drops a session that was tracked before effective-provider detection placed it elsewhere.</summary>
     internal static void Untrack(InferenceSession session) => TrackedSessions.Remove(session);
 
+    /// <summary><see langword="true"/> when <paramref name="session"/> is currently tracked as a TensorRT-RTX session.</summary>
+    internal static bool IsTracked(InferenceSession session) => TrackedSessions.TryGetValue(session, out _);
+
     /// <summary>
     /// Keeps tracking only when <paramref name="effectiveProvider"/> is TensorRT-RTX.
     /// A CPU or DirectML fallback must still release its native session after a later OOM.
@@ -57,11 +60,32 @@ internal static class TensorRtRtxTeardownGuard
             string message = current.Message;
             if (message.Contains("out of memory", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("cudaErrorMemoryAllocation", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("CUDA_ERROR_OUT_OF_MEMORY", StringComparison.OrdinalIgnoreCase))
+                || message.Contains("CUDA_ERROR_OUT_OF_MEMORY", StringComparison.OrdinalIgnoreCase)
+                || ContainsCudaFailureCode2(message))
             {
                 Volatile.Write(ref poisoned, 1);
                 return true;
             }
+        }
+
+        return false;
+    }
+
+    // "CUDA failure 2" must not match longer codes such as 209 (no kernel image on an unsupported
+    // GPU), 201 or 222: poisoning on those would leak every tracked session's VRAM without an OOM.
+    private static bool ContainsCudaFailureCode2(string message)
+    {
+        const string Prefix = "CUDA failure 2";
+        int index = message.IndexOf(Prefix, StringComparison.OrdinalIgnoreCase);
+        while (index >= 0)
+        {
+            int next = index + Prefix.Length;
+            if (next >= message.Length || !char.IsAsciiDigit(message[next]))
+            {
+                return true;
+            }
+
+            index = message.IndexOf(Prefix, next, StringComparison.OrdinalIgnoreCase);
         }
 
         return false;
@@ -91,6 +115,10 @@ internal static class TensorRtRtxTeardownGuard
         session.Dispose();
     }
 
-    /// <summary>Clears the poisoned flag. Test seam only.</summary>
-    internal static void ResetForTests() => Volatile.Write(ref poisoned, 0);
+    /// <summary>Clears the poisoned flag and session tracking. Test seam only.</summary>
+    internal static void ResetForTests()
+    {
+        Volatile.Write(ref poisoned, 0);
+        TrackedSessions.Clear();
+    }
 }

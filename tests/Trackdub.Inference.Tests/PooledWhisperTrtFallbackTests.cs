@@ -1,4 +1,5 @@
 using Microsoft.ML.OnnxRuntime;
+using Microsoft.ML.OnnxRuntime.Tensors;
 using Trackdub.Domain;
 using Trackdub.Inference.Onnx;
 using Trackdub.Inference.Onnx.Pool;
@@ -56,6 +57,103 @@ public sealed class PooledWhisperTrtFallbackTests : IDisposable
     }
 
     [Fact]
+    public async Task CreatePooledWhisperAsync_when_decoder_fails_with_cuda_oom_after_encoder_succeeds_evicts_safely_and_falls_back()
+    {
+        string encoder = WriteModel("encoder_model.onnx");
+        string decoder = WriteModel("decoder_model.onnx");
+        InferenceSession? trtEncoderSession = null;
+        var fallbackSessions = new List<InferenceSession>();
+        try
+        {
+            using (var pool = new InferenceSessionPool(maxSessions: 4, enableMemoryAdmission: false))
+            {
+                int creations = 0;
+                using OnnxExecutionSessionFactory.WhisperSessionLease lease = await OnnxExecutionSessionFactory.CreatePooledWhisperAsync(
+                    "whisper-onnx",
+                    encoder,
+                    decoder,
+                    ExecutionProviderKind.TensorRTRtx,
+                    CancellationToken.None,
+                    pool,
+                    sessionFactory: (_, _) =>
+                    {
+                        int step = Interlocked.Increment(ref creations);
+                        if (step == 1)
+                        {
+                            // Simulate encoder succeeding on TensorRT-RTX before the decoder OOMs.
+                            trtEncoderSession = CreateMinimalSession();
+                            TensorRtRtxTeardownGuard.Track(trtEncoderSession);
+                            return trtEncoderSession;
+                        }
+
+                        if (step == 2)
+                        {
+                            throw new InvalidOperationException(
+                                "[NvTensorRTRTX EP] CUDA failure 2: out of memory building whisper-large-v3 decoder profile");
+                        }
+
+                        InferenceSession fallback = CreateMinimalSession();
+                        lock (fallbackSessions)
+                        {
+                            fallbackSessions.Add(fallback);
+                        }
+
+                        return fallback;
+                    });
+
+                Assert.True(TensorRtRtxTeardownGuard.IsPoisoned);
+                Assert.NotNull(trtEncoderSession);
+                Assert.Equal(2, fallbackSessions.Count);
+                Assert.Equal(1f, RunIdentity(lease.EncoderSession));
+                Assert.Equal(1f, RunIdentity(lease.DecoderSession));
+            }
+
+            // After pool disposal, the poisoned TRT encoder session skipped native teardown,
+            // while the fallback CPU/DirectML sessions were untracked and disposed normally.
+            Assert.Equal(1f, RunIdentity(trtEncoderSession!));
+            foreach (InferenceSession fallback in fallbackSessions)
+            {
+                Assert.Throws<NullReferenceException>(() => RunIdentity(fallback));
+            }
+        }
+        finally
+        {
+            TensorRtRtxTeardownGuard.ResetForTests();
+            trtEncoderSession?.Dispose();
+            foreach (InferenceSession fallback in fallbackSessions)
+            {
+                fallback.Dispose();
+            }
+        }
+    }
+
+    [Fact]
+    public async Task CreatePooledWhisperAsync_with_allowTrtInitFallback_false_poisons_guard_and_does_not_retry()
+    {
+        string encoder = WriteModel("encoder_model.onnx");
+        string decoder = WriteModel("decoder_model.onnx");
+        using var pool = new InferenceSessionPool(maxSessions: 4, enableMemoryAdmission: false);
+        int creations = 0;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => OnnxExecutionSessionFactory.CreatePooledWhisperAsync(
+            "whisper-onnx",
+            encoder,
+            decoder,
+            ExecutionProviderKind.TensorRTRtx,
+            CancellationToken.None,
+            pool,
+            sessionFactory: (_, _) =>
+            {
+                Interlocked.Increment(ref creations);
+                throw new InvalidOperationException("CUDA_ERROR_OUT_OF_MEMORY");
+            },
+            allowTrtInitFallback: false));
+
+        Assert.Equal(1, creations);
+        Assert.True(TensorRtRtxTeardownGuard.IsPoisoned);
+    }
+
+    [Fact]
     public async Task CreatePooledWhisperAsync_does_not_retry_non_trt_requests()
     {
         string encoder = WriteModel("encoder_model.onnx");
@@ -80,6 +178,13 @@ public sealed class PooledWhisperTrtFallbackTests : IDisposable
         string path = Path.Join(directory, name);
         File.WriteAllBytes(path, IdentityModel);
         return path;
+    }
+
+    private static float RunIdentity(InferenceSession session)
+    {
+        using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> outputs = session.Run(
+            [NamedOnnxValue.CreateFromTensor("x", new DenseTensor<float>(new[] { 1f }, new[] { 1 }))]);
+        return Assert.Single(outputs).AsTensor<float>()[0];
     }
 
     private static InferenceSession CreateMinimalSession() => new(IdentityModel);
