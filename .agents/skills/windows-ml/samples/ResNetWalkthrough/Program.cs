@@ -62,8 +62,10 @@ internal static class Program
             using var options = new SessionOptions();
             // Learn's provider_specific_option is a placeholder, not a configuration key.
             options.AppendExecutionProvider(environment, selected, new Dictionary<string, string>());
+            // Compatibility metadata is keyed by the EP name reported by the device,
+            // which can differ in casing from the command-line selection name.
             string selectedPath = useCache && deviceType != OrtHardwareDeviceType.CPU
-                ? GetValidatedModelPath(environment, options, selected, modelPath, epName, deviceIndex)
+                ? GetValidatedModelPath(environment, options, selected, modelPath, selected[0].EpName, deviceIndex)
                 : modelPath;
             using var session = new InferenceSession(selectedPath, options);
             PrintMetadata("Input", session.InputMetadata);
@@ -140,10 +142,15 @@ internal static class Program
             throw new NotSupportedException("This walkthrough requires one input and one output.");
         var input = session.InputMetadata.Single().Value;
         var output = session.OutputMetadata.Single().Value;
-        if (input.ElementType != typeof(float) || !input.Dimensions.SequenceEqual(new[] { 1, 3, 224, 224 })
-            || output.ElementType != typeof(float) || !output.Dimensions.SequenceEqual(new[] { 1, 1000 }))
-            throw new NotSupportedException("Expected float32 input [1,3,224,224] and float32 output [1,1000]. Use the documented ResNet export.");
+        if (input.ElementType != typeof(float) || !MatchesSingleImageShape(input.Dimensions, new[] { 3, 224, 224 })
+            || output.ElementType != typeof(float) || !MatchesSingleImageShape(output.Dimensions, new[] { 1000 }))
+            throw new NotSupportedException("Expected float32 input [batch,3,224,224] and float32 output [batch,1000], with batch fixed to 1 or dynamic. Use the documented ResNet export.");
     }
+
+    private static bool MatchesSingleImageShape(int[] dimensions, int[] nonBatchDimensions) =>
+        dimensions.Length == nonBatchDimensions.Length + 1
+        && dimensions[0] is 1 or -1
+        && dimensions.Skip(1).SequenceEqual(nonBatchDimensions);
 
     private static DenseTensor<float> Preprocess(string imagePath)
     {
