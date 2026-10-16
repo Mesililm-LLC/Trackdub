@@ -129,3 +129,112 @@ Every field is required; write "unknown" or "nothing" rather than leaving one ou
 - **Cause confidence:** suspected (path length).
 - **Status:** current, as a practical tip only.
 - **Acted on in:** nothing in code; probes since then have lived under `D:\tdhost\`.
+
+### O-8. ResNet dynamic-batch rejection on the standalone sample
+
+- **Observed:** 2026-10-10, Codex agent.
+- **Setup:**
+  - OS and GPU: Windows 11 Pro, build 26200; NVIDIA GeForce RTX 5070, driver 32.0.16.1742.
+  - Packages: Windows ML 2.4.89; System.Drawing.Common 8.0.31; .NET SDK 10.0.401 / runtime 8.0.31.
+  - Model or export: `resnet50-v2-7.onnx` (SHA-256 `79102261…F31`, 102 MB) from the Microsoft Learn walkthrough.
+  - How run: standalone ResNetWalkthrough sample, `.agents/skills/windows-ml/samples/ResNetWalkthrough/`.
+- **Result:** The sample's shape guard rejected the model because it declared a dynamic batch dimension (`[-1,3,224,224]` and `[-1,1000]`). The guard previously required the batch dimension to be exactly `1`.
+- **Reproduced:** Once. The fix was verified by the same agent on the same machine.
+- **Cause confidence:** confirmed. Guard fixed to accept `1` or `-1` for the batch position while rejecting any other value and preserving strict rank, spatial and output-shape checks. Binding a fixed batch-1 tensor against a model that declares dynamic batch is valid ONNX semantics.
+- **Status:** current.
+- **Acted on in:** `MatchesSingleImageShape` in `Program.cs` (PR #484).
+
+### O-9. ResNet CPU inference, three executions
+
+- **Observed:** 2026-10-10, Codex agent.
+- **Setup:** Same as O-8. Explicit `CPUExecutionProvider`, CPU device 0.
+- **Result:** Exit 0. Inference returned 1000 finite scores and top-five output:
+  ```
+  Class index 644: 28.9243%
+  Class index 604: 11.6401%
+  Class index 499: 5.8384%
+  Class index 714: 4.7572%
+  Class index 111: 2.7703%
+  ```
+- **Reproduced:** Once with this model/image combination. No labeled accuracy evaluation.
+- **Cause confidence:** not applicable.
+- **Status:** current, as a baseline for comparison only.
+- **Acted on in:** nothing.
+
+### O-10. ResNet DirectML inference
+
+- **Observed:** 2026-10-10, Codex agent.
+- **Setup:** Same as O-8. Explicit `DmlExecutionProvider`, GPU device 0.
+- **Result:** Exit 0. Top-five output matched CPU scores to four decimal places (same values as O-9). No per-node placement trace was captured.
+- **Reproduced:** Once.
+- **Cause confidence:** not applicable.
+- **Status:** current.
+- **Acted on in:** nothing.
+
+### O-11. ResNet DirectML with --cache selected the original model
+
+- **Observed:** 2026-10-10, Codex agent.
+- **Setup:** Same as O-8. `DmlExecutionProvider`, `--cache`.
+- **Result:** Exit 0. Logged `Using original model; no unvalidated compiled artifact was selected.` Compiled-artifact promotion and reuse were not exercised on this path.
+- **Reproduced:** Once.
+- **Cause confidence:** not applicable.
+- **Status:** current.
+- **Acted on in:** nothing.
+
+### O-12. TensorRT RTX catalog state during acquisition
+
+- **Observed:** 2026-10-10, Codex agent.
+- **Setup:** Same as O-8. `NvTensorRtRtxExecutionProvider` without `--download`.
+- **Result:** Exit 3; catalog reported `NotPresent`. A concurrent process run during an active download by another process also reported `NotPresent`, even though `Get-AppxPackage` already listed the EP package. The sample stopped without silently substituting another provider.
+- **Reproduced:** Once per variant.
+- **Cause confidence:** not applicable (behaviour matches documented install states). The intermediate `NotPresent` during download is unexpected but not investigated.
+- **Status:** needs re-test if the catalog readiness API changes.
+- **Acted on in:** nothing.
+
+### O-13. TensorRT RTX catalog preparation and original-model inference
+
+- **Observed:** 2026-10-10, Codex agent.
+- **Setup:** Same as O-8. `NvTensorRtRtxExecutionProvider`, `--download`, after `Get-AppxPackage` confirmed both `Microsoft.WinML.NVIDIA.TRT-RTX.EP.2` and `Microsoft.WinML.NVIDIA.TRT-RTX.EP.Framework.2` version `2.30.49.0`.
+- **Result:** Exit 0 after acquisition (~4 min). Dynamic-shape profile warnings appeared in native diagnostics; no undocumented options were added. Uncached run top-five class indices matched O-9/O-10; highest score was 29.0548%.
+- **Reproduced:** Once.
+- **Cause confidence:** not applicable.
+- **Status:** current.
+- **Acted on in:** nothing.
+
+### O-14. TensorRT RTX canonical EP name for cache lookup
+
+- **Observed:** 2026-10-10, Codex agent.
+- **Setup:** Same as O-8. `NvTensorRtRtxExecutionProvider`, `--download`, `--cache`.
+- **Result:** The device reported `NvTensorRTRTXExecutionProvider` (different casing from the CLI argument). Using the CLI spelling in compatibility metadata returned no usable metadata. Switching to the device's `EpName` property caused compilation to report `EP_SUPPORTED_OPTIMAL`.
+- **Reproduced:** Once.
+- **Cause confidence:** confirmed for this provider/version. Not generalised to every provider.
+- **Status:** current.
+- **Acted on in:** `GetValidatedModelPath` and `IsOptimal` in `Program.cs` (PR #484). The `epName` parameter now uses `selected[0].EpName` rather than the command-line selection string.
+
+### O-15. TensorRT RTX cache reuse across processes
+
+- **Observed:** 2026-10-10, Codex agent. Subsequent to O-14 (compilation published the cache index).
+- **Setup:** Same as O-8. New process, `NvTensorRtRtxExecutionProvider`, `--cache` (no `--download`).
+- **Result:** Exit 0. Logged `Reusing source-matched, EP-validated compiled model.` Top-five output:
+  ```
+  Class index 644: 29.2965%
+  Class index 604: 11.6305%
+  Class index 499: 5.7555%
+  Class index 714: 4.6999%
+  Class index 111: 2.7831%
+  ```
+  Scores differed from O-9/O-10 and from the O-13 uncached run; top-five indices were the same across all.
+- **Reproduced:** Once.
+- **Cause confidence:** not applicable. Score variation across EP backends and engine builds is expected.
+- **Status:** current.
+- **Acted on in:** nothing.
+
+### O-16. PR #484 Release build, zero warnings
+
+- **Observed:** 2026-10-15, Codex agent.
+- **Setup:** Same as O-8 (OS/GPU/packages). Rebuilt the isolated sample from `main` at the PR #484 commit, Release, warnings-as-errors.
+- **Result:** Zero warnings, zero errors. Eight shape-guard cases passed: fixed and dynamic input batch accepted; batch 2, a dynamic spatial dimension and wrong rank rejected; fixed and dynamic output batch accepted; batch 0 rejected. No-argument usage returned exit code 2.
+- **Reproduced:** Once.
+- **Cause confidence:** not applicable.
+- **Status:** current.
+- **Acted on in:** nothing (verification pass, not a code change).
