@@ -2,10 +2,14 @@ using Trackdub.Composition.StarterPacks;
 using Trackdub.Contracts;
 using Trackdub.Contracts.ApplicationContracts;
 using Trackdub.Contracts.Benchmarking;
+using Trackdub.Contracts.Persistence;
 using Trackdub.Domain;
 using Trackdub.Domain.Benchmarking;
 using Trackdub.Inference;
 using Trackdub.Inference.Onnx;
+using Trackdub.Infrastructure.Persistence.Repositories;
+using Trackdub.Infrastructure.Persistence.Sqlite;
+using Trackdub.Infrastructure.Settings;
 
 namespace Trackdub.Benchmarks;
 
@@ -122,10 +126,13 @@ public static class Program
                 options.OutputPath,
                 options.ProviderPreference,
                 options.RunCount,
-                options.WindowsMlDevicePolicyKey);
+                options.WindowsMlDevicePolicyKey,
+                options.Execution);
 
             BenchmarkReport report = await runner.RunAsync(request, cancellationToken);
             report = AddResolutionNote(report, candidate);
+            report = await PersistHistoryIfRequestedAsync(
+                options, report, $"onnx-model:{candidate.CandidateKey}", output, cancellationToken);
             await BenchmarkReportWriter.WriteAsync(report, options.ReportFormat, cancellationToken);
 
             if (options.ReportFormat is ReportFormat.Console or ReportFormat.Both)
@@ -835,10 +842,13 @@ public static class Program
                 reportPath,
                 options.ProviderPreference,
                 options.RunCount,
-                options.WindowsMlDevicePolicyKey);
+                options.WindowsMlDevicePolicyKey,
+                options.Execution);
 
             BenchmarkReport report = await runner.RunAsync(request, cancellationToken);
             report = AddResolutionNote(report, candidate);
+            report = await PersistHistoryIfRequestedAsync(
+                options, report, $"onnx-model:{candidate.CandidateKey}", output, cancellationToken);
             reports.Add(report);
 
             await BenchmarkReportWriter.WriteAsync(report, options.ReportFormat, cancellationToken);
@@ -1001,13 +1011,17 @@ public static class Program
                 reportPath,
                 providerPreference,
                 options.RunCount,
-                options.WindowsMlDevicePolicyKey);
+                options.WindowsMlDevicePolicyKey,
+                options.Execution);
 
             BenchmarkReport report;
             try
             {
                 report = await runner.RunAsync(request, cancellationToken).ConfigureAwait(false);
                 report = AddResolutionNote(report, candidate);
+                report = await PersistHistoryIfRequestedAsync(
+                    options, report, $"onnx-model:{candidate.CandidateKey}", output, cancellationToken)
+                    .ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -1064,6 +1078,51 @@ public static class Program
         }
 
         return failed > 0 ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Opt-in (<c>--history</c>) persistence into the user benchmark store. The returned report
+    /// carries the recorded outcome so JSON/console output never claims a save that failed.
+    /// </summary>
+    private static async Task<BenchmarkReport> PersistHistoryIfRequestedAsync(
+        BenchmarkOptions options,
+        BenchmarkReport report,
+        string modelId,
+        TextWriter output,
+        CancellationToken cancellationToken)
+    {
+        if (!options.HistoryRequested)
+        {
+            return report with
+            {
+                HistoryPersistence = new BenchmarkHistoryPersistenceResult(
+                    BenchmarkHistoryPersistenceStatus.NotRequested)
+            };
+        }
+
+        try
+        {
+            IUserBenchmarkRepository repository = new UserBenchmarkRepository(
+                new SqliteUserBenchmarkDatabase(new TrackdubStoragePaths().UserDataRoot));
+            BenchmarkRunRecord record = BenchmarkRunRecord.FromReport(report.RunId ?? Guid.NewGuid(), modelId, report);
+            await repository.AddAsync(record, cancellationToken).ConfigureAwait(false);
+            await output.WriteLineAsync($"Benchmark history recorded (run {record.Id}).").ConfigureAwait(false);
+            return report with
+            {
+                RunId = record.Id,
+                HistoryPersistence = new BenchmarkHistoryPersistenceResult(
+                    BenchmarkHistoryPersistenceStatus.Saved)
+            };
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            await output.WriteLineAsync($"Benchmark history persistence failed: {ex.Message}").ConfigureAwait(false);
+            return report with
+            {
+                HistoryPersistence = new BenchmarkHistoryPersistenceResult(
+                    BenchmarkHistoryPersistenceStatus.Failed, ex.Message)
+            };
+        }
     }
 
     private static BenchmarkReport AddResolutionNote(BenchmarkReport report, BenchmarkModelCandidate candidate)
