@@ -122,11 +122,55 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             };
 
             bool succeeded = execution.Sampling.PolicyCompleted && execution.Sampling.Failure is null;
-            if (!succeeded && execution.Sampling.LatencySamplesMilliseconds.Count > 0)
+            var metadataWarnings = new List<string>(execution.MetadataWarnings);
+            if (!succeeded)
             {
-                notes.Add(
-                    $"Sampling stopped early: {execution.Sampling.LatencySamplesMilliseconds.Count} measured pass(es) retained as partial evidence.");
+                if (execution.Sampling.LatencySamplesMilliseconds.Count > 0)
+                {
+                    notes.Add(
+                        $"Sampling stopped early: {execution.Sampling.LatencySamplesMilliseconds.Count} measured pass(es) retained as partial evidence.");
+                }
+
+                metadataWarnings.Add(
+                    $"sampling policy did not complete: {execution.Sampling.Failure?.Message ?? "measurement floor not reached"}.");
             }
+
+            var configuration = new BenchmarkConfigurationInfo
+            {
+                RequestedProvider = requestedProvider,
+                SelectedProvider = selectedProvider,
+                WindowsMlDevicePolicyKey = request.WindowsMlDevicePolicyKey,
+                RequestedRunCount = request.RunCount,
+                Execution = settings,
+                TimingMode = BenchmarkTimingMode.ManagedOrtRunEndToEnd,
+                InputProfileId = settings.InputMode is BenchmarkInputMode.Synthetic
+                    ? BenchmarkMetadataBuilder.SyntheticInputProfileId
+                    : BenchmarkMetadataBuilder.ZerosInputProfileId,
+                ModelProfileId = FormatModelProfile(execution.ModelProfile)
+            };
+            BenchmarkEnvironmentInfo environment = BenchmarkMetadataBuilder.CaptureEnvironment();
+            string? comparisonKey = BenchmarkMetadataBuilder.BuildComparisonKey(
+                configuration, execution.Graphs, environment, metadataWarnings);
+            var metadata = new BenchmarkRunMetadata
+            {
+                Environment = environment,
+                Configuration = configuration,
+                WorkDefinition = new BenchmarkWorkDefinition(
+                    execution.Scenario,
+                    $"{execution.Scenario} benchmark workload",
+                    execution.ThroughputUnit,
+                    execution.AudioDurationSeconds),
+                Graphs = execution.Graphs,
+                Sampling = new BenchmarkSamplingInfo(
+                    execution.Sampling.PolicyCompleted,
+                    execution.Sampling.WarmupRunCount,
+                    execution.Sampling.WarmupMilliseconds,
+                    execution.Sampling.LatencySamplesMilliseconds.Count,
+                    execution.Sampling.MeasuredWallTimeMilliseconds,
+                    comparisonKey is not null ? "EnvironmentAndWorkload" : "WarmupPolicyOnly"),
+                ComparisonKey = comparisonKey,
+                Warnings = metadataWarnings
+            };
 
             return CreateReport(
                 scenario: execution.Scenario,
@@ -142,7 +186,8 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
                 failureReason: succeeded
                     ? null
                     : execution.Sampling.Failure?.Message ?? "Measurement policy did not complete.",
-                notes: notes);
+                notes: notes,
+                metadata: metadata);
         }
         catch (OperationCanceledException)
         {
@@ -238,15 +283,27 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
 
         var inputSet = CreateInputs(modelPath, sessionLease.Session.InputMetadata, settings, "single");
 
-        var phaseSnapshots = new List<EngineCacheProbe.Snapshot>();
+        var phaseSnapshots = new List<(BenchmarkSamplingPhase, EngineCacheProbe.Snapshot)>();
         BenchmarkSamplingResult sampling = BenchmarkSamplingLoop.Run(
             _ => { using var results = sessionLease.Session.Run(inputSet.Values); },
             runCount,
             settings,
             cancellationToken: cancellationToken,
-            phaseObserver: _ => phaseSnapshots.Add(EngineCacheProbe.Capture(probeDirectory)));
+            phaseObserver: phase => phaseSnapshots.Add((phase, EngineCacheProbe.Capture(probeDirectory))));
 
-        ReportPostInitCacheActivity(attribution.CacheAfter, phaseSnapshots, notes);
+        ReportPostInitCacheActivity(attribution.CacheAfter, phaseSnapshots.Select(pair => pair.Item2).ToArray(), notes);
+
+        var warnings = new List<string>();
+        List<BenchmarkCacheObservation> cacheObservations = BuildCacheObservations(
+            cacheBefore, attribution.CacheAfter, attribution.Outcome, phaseSnapshots);
+        var graphs = new List<BenchmarkGraphMetadata>
+        {
+            DescribeGraph(graph, sessionLease.Session, cacheObservations, warnings)
+        };
+        foreach (string warning in warnings)
+        {
+            notes.Add(warning);
+        }
 
         return new BenchmarkExecution(
             Scenario: "onnx-model",
@@ -260,7 +317,9 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
                 ? BenchmarkThroughputUnit.AudioSecondsPerSecond
                 : BenchmarkThroughputUnit.PassesPerSecond,
             AudioDurationSeconds: inputSet.AudioDurationSeconds,
-            Graphs: sessionLease.Graphs);
+            Graphs: graphs,
+            MetadataWarnings: warnings,
+            ModelProfile: inputSet.ModelProfile);
     }
 
     /// <summary>
@@ -283,7 +342,10 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         string LoadPath,
         string LoadKind,
         string Role,
-        IReadOnlyDictionary<string, string>? TrtOptions);
+        IReadOnlyDictionary<string, string>? TrtOptions,
+        IReadOnlyDictionary<string, string> EffectiveProviderOptions,
+        string? CompileOptionsIdentity,
+        string? ArtifactIdentity);
 
     private static BenchmarkSessionPlan CreateSessionPlan(
         BenchmarkRequest request,
@@ -387,24 +449,32 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         if (preference is not BenchmarkProviderPreference.TensorRtRtx
             || ShouldUseCatalogDevicePolicyForPreference(preference))
         {
-            return new BenchmarkGraphPlan(sourceModelPath, sourceModelPath, "source", role, null);
+            return new BenchmarkGraphPlan(
+                sourceModelPath, sourceModelPath, "source", role, null,
+                new Dictionary<string, string>(StringComparer.Ordinal), null, null);
         }
 
         IReadOnlyDictionary<string, string> additional = BuildBenchmarkTrtAdditionalOptions(sourceModelPath, plan);
         IReadOnlyDictionary<string, string> effective =
             OnnxExecutionSessionFactory.BuildTensorRtRtxOptions(additional, plan.EnableCudaGraph);
+        string compileOptionsIdentity = EpContextLoadPathResolver.BuildCompileOptionsIdentity(sourceModelPath, effective);
 
         if (plan.ArtifactMode is BenchmarkArtifactMode.Source)
         {
             notes.Add($"Artifact policy 'source': bypassing EP-context artifacts for '{sourceModelPath}'.");
-            return new BenchmarkGraphPlan(sourceModelPath, sourceModelPath, "source", role, additional);
+            return new BenchmarkGraphPlan(
+                sourceModelPath, sourceModelPath, "source", role, additional,
+                effective, compileOptionsIdentity, null);
         }
 
         string? artifactPath = EpContextLoadPathResolver.TryResolveLoadPath(sourceModelPath, effective);
         if (artifactPath is not null)
         {
             notes.Add($"EP-context artifact selected for {role}: '{artifactPath}'.");
-            return new BenchmarkGraphPlan(sourceModelPath, artifactPath, "ep-context-artifact", role, additional);
+            return new BenchmarkGraphPlan(
+                sourceModelPath, artifactPath, "ep-context-artifact", role, additional,
+                effective, compileOptionsIdentity,
+                $"{Path.GetFileName(artifactPath)}#{compileOptionsIdentity}");
         }
 
         if (plan.ArtifactMode is BenchmarkArtifactMode.Require)
@@ -413,7 +483,9 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
                 $"EP-context artifact required but no compatible artifact was found for '{sourceModelPath}' ({role}).");
         }
 
-        return new BenchmarkGraphPlan(sourceModelPath, sourceModelPath, "source", role, additional);
+        return new BenchmarkGraphPlan(
+            sourceModelPath, sourceModelPath, "source", role, additional,
+            effective, compileOptionsIdentity, null);
     }
 
     private static IReadOnlyDictionary<string, string> BuildBenchmarkTrtAdditionalOptions(
@@ -461,6 +533,91 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
                 $"Runtime cache grew after session initialization (+{filesAdded} file(s), +{bytesAdded} byte(s)); " +
                 "first-run/warmup/measurement cache writes are recorded as activity, not a proven hit.");
         }
+    }
+
+    /// <summary>Cache probes at session-init and after each sampling phase, for one execution.</summary>
+    private static List<BenchmarkCacheObservation> BuildCacheObservations(
+        EngineCacheProbe.Snapshot cacheBefore,
+        EngineCacheProbe.Snapshot cacheAfterInit,
+        string coldLoadOutcome,
+        IReadOnlyList<(BenchmarkSamplingPhase Phase, EngineCacheProbe.Snapshot Snapshot)> phaseSnapshots)
+    {
+        var observations = new List<BenchmarkCacheObservation>
+        {
+            new(BenchmarkCachePhase.BeforeSession,
+                cacheBefore.DirectoryExists, cacheBefore.FileCount, cacheBefore.TotalBytes),
+            new(BenchmarkCachePhase.SessionInitialized,
+                cacheAfterInit.DirectoryExists, cacheAfterInit.FileCount, cacheAfterInit.TotalBytes,
+                coldLoadOutcome)
+        };
+
+        BenchmarkCachePhase MapPhase(BenchmarkSamplingPhase phase) => phase switch
+        {
+            BenchmarkSamplingPhase.FirstRun => BenchmarkCachePhase.FirstRun,
+            BenchmarkSamplingPhase.Warmup => BenchmarkCachePhase.Warmup,
+            _ => BenchmarkCachePhase.Measurement
+        };
+
+        foreach ((BenchmarkSamplingPhase phase, EngineCacheProbe.Snapshot snapshot) in phaseSnapshots)
+        {
+            observations.Add(new BenchmarkCacheObservation(
+                MapPhase(phase), snapshot.DirectoryExists, snapshot.FileCount, snapshot.TotalBytes));
+        }
+
+        return observations;
+    }
+
+    /// <summary>
+    /// Graph identity + tensor surface + effective options recorded for report metadata.
+    /// Runs after session creation, outside every timed region.
+    /// </summary>
+    private static BenchmarkGraphMetadata DescribeGraph(
+        BenchmarkGraphPlan plan,
+        InferenceSession session,
+        IReadOnlyList<BenchmarkCacheObservation> cacheObservations,
+        ICollection<string> warnings)
+    {
+        string? sourceSha256 = BenchmarkMetadataBuilder.ComputeModelSha256(plan.SourcePath);
+        if (sourceSha256 is null)
+        {
+            warnings.Add($"model identity unavailable: could not hash '{plan.SourcePath}'.");
+        }
+
+        bool externalDataVerified = BenchmarkMetadataBuilder.TryVerifyExternalDataIdentity(
+            plan.SourcePath, out _, out string? externalReason);
+        if (externalReason is not null)
+        {
+            warnings.Add($"external weights identity unavailable for '{plan.SourcePath}': {externalReason}.");
+        }
+
+        IReadOnlyList<string> devices = BenchmarkMetadataBuilder.DescribeSessionDevices(session);
+        string? selectedDevice = devices.FirstOrDefault(
+            device => device.Contains("GPU", StringComparison.OrdinalIgnoreCase)) ?? devices.FirstOrDefault();
+        if (selectedDevice is null)
+        {
+            warnings.Add($"selected-device identity unavailable for graph '{plan.Role}'.");
+        }
+
+        return new BenchmarkGraphMetadata
+        {
+            Role = plan.Role,
+            SourceModelPath = plan.SourcePath,
+            SourceModelSha256 = sourceSha256,
+            ExternalDataIdentityVerified = externalDataVerified,
+            LoadedModelPath = plan.LoadPath,
+            LoadKind = plan.LoadKind,
+            ArtifactIdentity = plan.ArtifactIdentity,
+            CompileOptionsIdentity = plan.CompileOptionsIdentity,
+            RuntimeCacheDirectoryIdentity = plan.EffectiveProviderOptions.TryGetValue(
+                "nv_runtime_cache_path", out string? cachePath) ? cachePath : null,
+            EnableCudaGraph = plan.EffectiveProviderOptions.TryGetValue(
+                "enable_cuda_graph", out string? graphFlag) && graphFlag == "1",
+            SelectedDeviceIdentity = selectedDevice,
+            EffectiveProviderOptions = plan.EffectiveProviderOptions,
+            Inputs = BenchmarkMetadataBuilder.DescribeTensors(session.InputMetadata),
+            Outputs = BenchmarkMetadataBuilder.DescribeTensors(session.OutputMetadata),
+            CacheObservations = cacheObservations
+        };
     }
 
     private readonly record struct ColdLoadAttribution(
@@ -520,15 +677,28 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         var encoderInputSet = CreateInputs(encoderModelPath, whisperLease.EncoderSession.InputMetadata, settings, "encoder");
         var decoderStartTokenId = ResolveWhisperDecoderStartTokenId(fullConfigPath);
 
-        var phaseSnapshots = new List<EngineCacheProbe.Snapshot>();
+        var phaseSnapshots = new List<(BenchmarkSamplingPhase, EngineCacheProbe.Snapshot)>();
         BenchmarkSamplingResult sampling = BenchmarkSamplingLoop.Run(
             _ => RunWhisperPass(whisperLease, encoderInputSet, decoderStartTokenId),
             runCount,
             settings,
             cancellationToken: cancellationToken,
-            phaseObserver: _ => phaseSnapshots.Add(EngineCacheProbe.Capture(probeDirectory)));
+            phaseObserver: phase => phaseSnapshots.Add((phase, EngineCacheProbe.Capture(probeDirectory))));
 
-        ReportPostInitCacheActivity(attribution.CacheAfter, phaseSnapshots, notes);
+        ReportPostInitCacheActivity(attribution.CacheAfter, phaseSnapshots.Select(pair => pair.Item2).ToArray(), notes);
+
+        var warnings = new List<string>();
+        List<BenchmarkCacheObservation> cacheObservations = BuildCacheObservations(
+            cacheBefore, attribution.CacheAfter, attribution.Outcome, phaseSnapshots);
+        var graphs = new List<BenchmarkGraphMetadata>
+        {
+            DescribeGraph(encoderGraph, whisperLease.EncoderSession, cacheObservations, warnings),
+            DescribeGraph(decoderGraph, whisperLease.DecoderSession, [], warnings)
+        };
+        foreach (string warning in warnings)
+        {
+            notes.Add(warning);
+        }
 
         return new BenchmarkExecution(
             Scenario: "whisper-encoder-decoder",
@@ -542,7 +712,9 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
                 ? BenchmarkThroughputUnit.AudioSecondsPerSecond
                 : BenchmarkThroughputUnit.PassesPerSecond,
             AudioDurationSeconds: encoderInputSet.AudioDurationSeconds,
-            Graphs: whisperLease.Graphs);
+            Graphs: graphs,
+            MetadataWarnings: warnings,
+            ModelProfile: encoderInputSet.ModelProfile);
     }
 
     private static BenchmarkExecution RunOpusExecution(
@@ -572,15 +744,28 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         var encoderInputSet = CreateInputs(encoderModelPath, opusLease.EncoderSession.InputMetadata, settings, "encoder");
         var decoderStartTokenId = ResolveOpusDecoderStartTokenId(fullConfigPath);
 
-        var phaseSnapshots = new List<EngineCacheProbe.Snapshot>();
+        var phaseSnapshots = new List<(BenchmarkSamplingPhase, EngineCacheProbe.Snapshot)>();
         BenchmarkSamplingResult sampling = BenchmarkSamplingLoop.Run(
             _ => RunOpusPass(opusLease, encoderInputSet, decoderStartTokenId),
             runCount,
             settings,
             cancellationToken: cancellationToken,
-            phaseObserver: _ => phaseSnapshots.Add(EngineCacheProbe.Capture(probeDirectory)));
+            phaseObserver: phase => phaseSnapshots.Add((phase, EngineCacheProbe.Capture(probeDirectory))));
 
-        ReportPostInitCacheActivity(attribution.CacheAfter, phaseSnapshots, notes);
+        ReportPostInitCacheActivity(attribution.CacheAfter, phaseSnapshots.Select(pair => pair.Item2).ToArray(), notes);
+
+        var warnings = new List<string>();
+        List<BenchmarkCacheObservation> cacheObservations = BuildCacheObservations(
+            cacheBefore, attribution.CacheAfter, attribution.Outcome, phaseSnapshots);
+        var graphs = new List<BenchmarkGraphMetadata>
+        {
+            DescribeGraph(encoderGraph, opusLease.EncoderSession, cacheObservations, warnings),
+            DescribeGraph(decoderGraph, opusLease.DecoderSession, [], warnings)
+        };
+        foreach (string warning in warnings)
+        {
+            notes.Add(warning);
+        }
 
         return new BenchmarkExecution(
             Scenario: "opus-mt-encoder-decoder",
@@ -592,7 +777,9 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             Sampling: sampling,
             ThroughputUnit: BenchmarkThroughputUnit.PassesPerSecond,
             AudioDurationSeconds: null,
-            Graphs: opusLease.Graphs);
+            Graphs: graphs,
+            MetadataWarnings: warnings,
+            ModelProfile: encoderInputSet.ModelProfile);
     }
 
     private static bool ShouldUseCatalogDevicePolicyForPreference(BenchmarkProviderPreference preference)
@@ -987,6 +1174,15 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             ? (average / 1000d) / audioDurationSeconds.Value
             : null;
 
+    private static string FormatModelProfile(BenchmarkModelProfile modelProfile) =>
+        modelProfile switch
+        {
+            BenchmarkModelProfile.SileroVad => "silero-vad",
+            BenchmarkModelProfile.WhisperEncoder => "whisper-encoder",
+            BenchmarkModelProfile.OpusEncoder => "opus-encoder",
+            _ => "generic"
+        };
+
     private static BenchmarkReport CreateReport(
         string scenario,
         BenchmarkStatus status,
@@ -999,7 +1195,8 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         long modelSizeBytes,
         BenchmarkMeasurements measurements,
         string? failureReason,
-        IReadOnlyList<string> notes) =>
+        IReadOnlyList<string> notes,
+        BenchmarkRunMetadata? metadata = null) =>
         new(
             Scenario: scenario,
             ModelPath: modelPath,
@@ -1013,7 +1210,8 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             Measurements: measurements,
             FailureReason: failureReason,
             Notes: notes,
-            GeneratedAtUtc: DateTimeOffset.UtcNow);
+            GeneratedAtUtc: DateTimeOffset.UtcNow,
+            Metadata: metadata);
 
     private static BenchmarkInputSet CreateInputs(
         string modelPath,
@@ -1039,7 +1237,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             audioDurationSeconds = ResolveWhisperAudioDurationSeconds(inputMetadata);
         }
 
-        return new BenchmarkInputSet(values, audioDurationSeconds);
+        return new BenchmarkInputSet(values, audioDurationSeconds, modelProfile);
     }
 
     private static NamedOnnxValue CreateInputValue(
@@ -1951,7 +2149,8 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
 
     private sealed record BenchmarkInputSet(
         IReadOnlyList<NamedOnnxValue> Values,
-        double? AudioDurationSeconds);
+        double? AudioDurationSeconds,
+        BenchmarkModelProfile ModelProfile = BenchmarkModelProfile.Generic);
 
     private sealed class DecoderInputSet : IDisposable
     {
@@ -2022,7 +2221,9 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         BenchmarkSamplingResult Sampling,
         BenchmarkThroughputUnit ThroughputUnit,
         double? AudioDurationSeconds,
-        IReadOnlyList<BenchmarkGraphPlan> Graphs);
+        IReadOnlyList<BenchmarkGraphMetadata> Graphs,
+        IReadOnlyList<string> MetadataWarnings,
+        BenchmarkModelProfile ModelProfile = BenchmarkModelProfile.Generic);
 
     private enum BenchmarkModelProfile
     {
