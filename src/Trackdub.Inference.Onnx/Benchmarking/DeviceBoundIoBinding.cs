@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 
@@ -137,14 +138,32 @@ public sealed class DeviceBoundIoBinding : IDisposable
     internal static OrtValue CreateHostValue(NamedOnnxValue input, Type elementType)
     {
         if (elementType == typeof(float)) return CreateHostValue<float>(input);
-        // ORT's fp16 tensor type is Float16; System.Half is accepted for callers that
-        // construct inputs that way. Both share the same 16-bit storage layout.
-        if (elementType == typeof(Float16)) return CreateHostValue<Float16>(input);
-        if (elementType == typeof(Half)) return CreateHostValue<Half>(input);
+        // ORT fp16 tensors are Float16; System.Half appears in metadata for some callers.
+        // ORT only accepts Float16 in CreateTensorValueFromMemory, so Half inputs are
+        // bit-reinterpreted into a Float16 buffer (identical IEEE-754 binary16 layout).
+        if (elementType == typeof(Float16) || elementType == typeof(Half))
+        {
+            return CreateHostValueF16(input);
+        }
         if (elementType == typeof(int)) return CreateHostValue<int>(input);
         if (elementType == typeof(long)) return CreateHostValue<long>(input);
         throw new NotSupportedException(
             $"Device-bound I/O does not support '{elementType.Name}' inputs in this build.");
+    }
+
+    private static OrtValue CreateHostValueF16(NamedOnnxValue input)
+    {
+        if (input.AsTensor<Float16>() is DenseTensor<Float16> tensor)
+        {
+            return CreateHostValue(tensor);
+        }
+        if (input.AsTensor<Half>() is DenseTensor<Half> halfTensor)
+        {
+            Float16[] data = MemoryMarshal.Cast<Half, Float16>(halfTensor.Buffer.Span).ToArray();
+            return CreateHostValue(new DenseTensor<Float16>(data, halfTensor.Dimensions.ToArray()));
+        }
+        throw new NotSupportedException(
+            "Device-bound I/O requires dense 'Float16' input tensors.");
     }
 
     private static OrtValue CreateHostValue<T>(NamedOnnxValue input) where T : unmanaged
@@ -154,6 +173,11 @@ public sealed class DeviceBoundIoBinding : IDisposable
             throw new NotSupportedException(
                 $"Device-bound I/O requires dense '{typeof(T).Name}' input tensors.");
         }
+        return CreateHostValue(tensor);
+    }
+
+    private static OrtValue CreateHostValue<T>(DenseTensor<T> tensor) where T : unmanaged
+    {
         long[] shape = Array.ConvertAll(tensor.Dimensions.ToArray(), dim => (long)dim);
         return OrtValue.CreateTensorValueFromMemory(OrtMemoryInfo.DefaultInstance, tensor.Buffer, shape);
     }

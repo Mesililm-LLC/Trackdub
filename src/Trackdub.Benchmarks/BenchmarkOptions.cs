@@ -372,6 +372,13 @@ public sealed record BenchmarkOptions(
             }
         }
 
+        // Sampling floors come from the shared domain policy so CLI and other callers
+        // cannot drift: absent --runs means >=10 samples plus a 3s measurement floor;
+        // explicit --runs keeps exact-count behavior (including --runs 1 smoke runs).
+        BenchmarkSamplingPolicy sampling = BenchmarkSamplingPolicy.Resolve(
+            runCountSpecified ? runCount : null,
+            durationMilliseconds);
+
         if (showHelp)
         {
             options = new BenchmarkOptions(
@@ -387,7 +394,7 @@ public sealed record BenchmarkOptions(
                 ShowHelp: true)
             {
                 Execution = BuildExecutionSettings(
-                    runCountSpecified, durationMilliseconds, warmupRuns, warmupMilliseconds,
+                    sampling, warmupRuns, warmupMilliseconds,
                     inputMode, inputSeed, ioMode, artifactMode, runtimeCacheMode,
                     runtimeCacheDirectory, cudaGraphMode, inputShapeOverrides)
             };
@@ -430,12 +437,6 @@ public sealed record BenchmarkOptions(
             return false;
         }
 
-        // Sampling floors come from the shared domain policy so CLI and other callers
-        // cannot drift: absent --runs means >=10 samples plus a 3s measurement floor;
-        // explicit --runs keeps exact-count behavior (including --runs 1 smoke runs).
-        BenchmarkSamplingPolicy sampling = BenchmarkSamplingPolicy.Resolve(
-            runCountSpecified ? runCount : null,
-            durationMilliseconds);
         int effectiveRunCount = sampling.MinimumSamples;
 
         options = new BenchmarkOptions(

@@ -16,7 +16,7 @@ public sealed class DeviceBoundIoBindingTests
     {
         var data = new Float16[] { (Float16)1.5f, (Float16)(-0.25f), (Float16)0f };
         var tensor = new DenseTensor<Float16>(data, [1, 3]);
-        using NamedOnnxValue input = NamedOnnxValue.CreateFromTensor("fp16_input", tensor);
+        NamedOnnxValue input = NamedOnnxValue.CreateFromTensor("fp16_input", tensor);
 
         using OrtValue host = DeviceBoundIoBinding.CreateHostValue(input, typeof(Float16));
 
@@ -33,7 +33,7 @@ public sealed class DeviceBoundIoBindingTests
     {
         var data = new Half[] { (Half)2f, (Half)(-1f) };
         var tensor = new DenseTensor<Half>(data, [2]);
-        using NamedOnnxValue input = NamedOnnxValue.CreateFromTensor("half_input", tensor);
+        NamedOnnxValue input = NamedOnnxValue.CreateFromTensor("half_input", tensor);
 
         using OrtValue host = DeviceBoundIoBinding.CreateHostValue(input, typeof(Half));
 
@@ -45,7 +45,7 @@ public sealed class DeviceBoundIoBindingTests
     public void CreateHostValue_rejects_unsupported_element_type()
     {
         var tensor = new DenseTensor<byte>(new byte[] { 1, 2 }, [2]);
-        using NamedOnnxValue input = NamedOnnxValue.CreateFromTensor("u8_input", tensor);
+        NamedOnnxValue input = NamedOnnxValue.CreateFromTensor("u8_input", tensor);
 
         Assert.Throws<NotSupportedException>(
             () => DeviceBoundIoBinding.CreateHostValue(input, typeof(byte)));
