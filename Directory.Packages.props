@@ -66,7 +66,7 @@
     <PackageVersion Include="Microsoft.Windows.AI.MachineLearning" Version="2.4.89" />
     <PackageVersion Include="FluentValidation.DependencyInjectionExtensions" Version="12.1.1" />
     <PackageVersion Include="coverlet.collector" Version="6.0.4" />
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
     <!-- xunit v2 kept for projects pending FsCheck 3.x API migration (App.Avalonia.Tests, Inference.Tests, Api.Billing.Tests).
          FsCheck 3.x has hard C# API breaks (Gen static class renamed, Prop class removed, LINQ comprehension changed).
          Remove once those projects are updated to FsCheck 3.x API. -->
