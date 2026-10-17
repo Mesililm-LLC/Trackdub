@@ -63,12 +63,11 @@ public sealed class DeviceBoundIoBinding : IDisposable
             {
                 NamedOnnxValue input = inputs[index];
                 NodeMetadata meta = inputMetadata[input.Name];
-                long[] shape = ToShape(input.Name, meta);
                 OrtMemoryInfo inputInfo = index < inputMemoryInfos.Count
                     ? inputMemoryInfos[index]
                     : OrtMemoryInfo.DefaultInstance;
 
-                OrtValue host = CreateHostValue(input, meta.ElementType, shape);
+                OrtValue host = CreateHostValue(input, meta.ElementType);
                 hostValues.Add(host);
                 binding.BindInput(input.Name, host);
                 if (!IsDeviceMemory(inputInfo))
@@ -132,34 +131,24 @@ public sealed class DeviceBoundIoBinding : IDisposable
     private static bool IsDeviceMemory(OrtMemoryInfo info) =>
         !info.Equals(OrtMemoryInfo.DefaultInstance);
 
-    private static long[] ToShape(string inputName, NodeMetadata meta)
+    private static OrtValue CreateHostValue(NamedOnnxValue input, Type elementType)
     {
-        long[] shape = Array.ConvertAll(meta.Dimensions, dim => (long)dim);
-        if (shape.Any(dim => dim <= 0))
-        {
-            throw new NotSupportedException(
-                $"Device-bound I/O requires concrete input shapes; '{inputName}' has unresolved dimensions.");
-        }
-        return shape;
-    }
-
-    private static OrtValue CreateHostValue(NamedOnnxValue input, Type elementType, long[] shape)
-    {
-        if (elementType == typeof(float)) return CreateHostValue<float>(input, shape);
-        if (elementType == typeof(Half)) return CreateHostValue<Half>(input, shape);
-        if (elementType == typeof(int)) return CreateHostValue<int>(input, shape);
-        if (elementType == typeof(long)) return CreateHostValue<long>(input, shape);
+        if (elementType == typeof(float)) return CreateHostValue<float>(input);
+        if (elementType == typeof(Half)) return CreateHostValue<Half>(input);
+        if (elementType == typeof(int)) return CreateHostValue<int>(input);
+        if (elementType == typeof(long)) return CreateHostValue<long>(input);
         throw new NotSupportedException(
             $"Device-bound I/O does not support '{elementType.Name}' inputs in this build.");
     }
 
-    private static OrtValue CreateHostValue<T>(NamedOnnxValue input, long[] shape) where T : unmanaged
+    private static OrtValue CreateHostValue<T>(NamedOnnxValue input) where T : unmanaged
     {
         if (input.AsTensor<T>() is not DenseTensor<T> tensor)
         {
             throw new NotSupportedException(
                 $"Device-bound I/O requires dense '{typeof(T).Name}' input tensors.");
         }
+        long[] shape = Array.ConvertAll(tensor.Dimensions.ToArray(), dim => (long)dim);
         return OrtValue.CreateTensorValueFromMemory(OrtMemoryInfo.DefaultInstance, tensor.Buffer, shape);
     }
 }

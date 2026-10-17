@@ -267,6 +267,73 @@ trackdub doctor   # includes tensorrt-rtx-plugin probe row (no download)
 
 DubBench ONNX runs call the same bootstrap before each benchmark invocation.
 
+## Benchmark fidelity flags
+
+`Trackdub.Benchmarks --model <path>` accepts a sampling and timing policy beyond the
+legacy `--runs <n>`:
+
+| Flag | Effect |
+|------|--------|
+| `--runs <n>` | Measured pass target (default policy also applies duration/warmup floors) |
+| `--duration-ms <n>` | Minimum measured wall time; the sampler keeps collecting past `n` runs until reached |
+| `--warmup-runs <n>` / `--warmup-ms <n>` | Warmup floor by count and/or wall time; warmup samples are excluded from statistics |
+| `--input-mode synthetic\|zeros` | Deterministic seeded synthetic inputs (default) or the legacy all-zeros recipe; `--input-seed <n>` fixes the synthetic stream |
+| `--io-mode managed\|device-bound` | Managed `session.Run` end-to-end timing vs device-bound `OrtIoBinding` timing |
+| `--cuda-graphs off\|on\|compare` | `enable_cuda_graph` for the TRT-RTX EP; `compare` measures both lanes in fresh sessions |
+| `--artifact auto\|source\|require` | EP-context artifact selection (`auto` = production resolver, `source` = force source model, `require` = fail without a compatible artifact) |
+| `--runtime-cache reuse\|isolated` | `nv_runtime_cache_path` reuse vs an isolated per-run cache directory (`--runtime-cache-dir`) |
+| `--reference-tool tensorrt-rtx\|ort-perf-test` | Optional NVIDIA reference-tool run attached to the report (`--reference-tool-path`, `--reference-tool-required`) |
+| `--history` | Persist the run into the user benchmark history SQLite store |
+| `--format console\|json\|both` | Console summary, JSON report, or both |
+
+### Device-bound I/O
+
+`--io-mode device-bound` binds pinned host tensors through `OrtIoBinding`, copies inputs
+per pass via `SynchronizeBoundInputs`, binds outputs to session-reported memory, and
+fences device work with `SynchronizeBoundOutputs`. The pass therefore measures device
+execution rather than enqueue-only latency, and reports `TimingMode:
+DeviceBoundSynchronized` in JSON metadata.
+
+Prerequisites and limits:
+
+- Explicit `--provider trt-rtx` only; other routes throw rather than silently fall back
+  to managed timing.
+- Single-graph models only in this build; whisper/opus encoder-decoder pipelines keep
+  managed I/O and fail fast if device-bound is requested.
+- Requires the session to report device-resident inputs (`GetMemoryInfosForInputs`);
+  host-only sessions fail with an explicit reason.
+- Inputs must be dense float/fp16/int32/int64 tensors; string or non-tensor inputs are
+  unsupported.
+
+### CUDA graphs
+
+`--cuda-graphs on|compare` requires `--io-mode device-bound` (persistent bound buffers
+are the same precondition production applies for `enable_cuda_graph=1`); settings
+validation rejects the combination with managed I/O. `compare` runs a graphs-off lane
+then a graphs-on lane, each in a fresh session so `enable_cuda_graph` is honestly
+applied, and records per-lane sampling/statistics under `metadata.cudaGraphLanes` in
+the JSON report plus a `CUDA graph comparison` block in console output.
+
+### Reference tool
+
+`--reference-tool ort-perf-test` invokes a resolved `onnxruntime_perf_test` binary and
+`--reference-tool tensorrt-rtx` invokes `tensorrt_rtx`. Every intended argument is
+checked against the tool's live `--help` output before invocation; missing tools or
+unsupported flags report `NotAvailable`/`UnsupportedVersion` in
+`metadata.referenceToolResults` instead of failing the primary benchmark. With
+`--reference-tool-required` the command exits nonzero when the tool cannot run.
+Reference metrics keep their native timing domain (native-tool numbers are not merged
+into ORT measurements) and stdout/stderr are captured to bounded log files whose
+identities are recorded in the report.
+
+### Report metadata
+
+JSON reports carry `metadata.environment` (GPU/driver/OS/ORT/plugin identity),
+`metadata.graphs[]` (model SHA-256, artifact identity, effective provider options,
+cache observations per phase), `metadata.sampling`, `metadata.configuration.timingMode`,
+and a `metadata.comparisonKey` fingerprint so runs from different machines can be
+compared honestly.
+
 ## Bumping TRT RTX EP release
 
 When NVIDIA ships a new `TensorRT-RTX-EP-ABI` GitHub release:
