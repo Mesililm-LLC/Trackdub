@@ -121,9 +121,10 @@ internal static class BenchmarkReferenceToolRunner
         }
 
         Directory.CreateDirectory(request.EvidenceDirectory);
-        // Several candidates can share one report directory (--all-variants), so the model path
-        // is part of the evidence name; otherwise each candidate overwrites the previous log.
-        string evidenceStem = $"reference-{request.Kind}-{request.GraphRole}-{ModelPathDigest(request.ModelPath)}";
+        // Candidates (--all-variants) and repeat runs can share one report directory, so each
+        // invocation gets its own evidence name; an overwritten log would orphan history evidence.
+        string evidenceStem =
+            $"reference-{request.Kind}-{request.GraphRole}-{ModelPathDigest(request.ModelPath)}-{Guid.NewGuid():N}";
         string stdoutLogPath = Path.Join(request.EvidenceDirectory, $"{evidenceStem}.stdout.log");
         string stderrLogPath = Path.Join(request.EvidenceDirectory, $"{evidenceStem}.stderr.log");
 

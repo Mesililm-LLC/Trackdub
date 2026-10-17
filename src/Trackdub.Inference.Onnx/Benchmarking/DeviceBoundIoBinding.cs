@@ -62,7 +62,7 @@ public sealed class DeviceBoundIoBinding : IDisposable
         }
 
         OrtAllocator deviceAllocator = OrtEnv.Instance().GetSharedAllocator(deviceMemoryInfos[0]);
-        if (deviceAllocator.IsInvalid)
+        if (deviceAllocator is null || deviceAllocator.IsInvalid)
         {
             throw new NotSupportedException(
                 $"No shared allocator registered for '{deviceMemoryInfos[0].Name}'.");
