@@ -1,3 +1,5 @@
+using Trackdub.Domain.Benchmarking;
+
 namespace Trackdub.Benchmarks.Metrics;
 
 /// <summary>
@@ -52,6 +54,7 @@ public static class PercentileCalculator
         double mean = sum / sorted.Length;
         double p50 = CalculatePercentile(sorted, 0.50d);
         double p90 = CalculatePercentile(sorted, 0.90d);
+        double p95 = CalculatePercentile(sorted, 0.95d);
         double p99 = CalculatePercentile(sorted, 0.99d);
 
         double throughput = 0d;
@@ -72,7 +75,8 @@ public static class PercentileCalculator
             P90Milliseconds: p90,
             P99Milliseconds: p99,
             ThroughputUnitsPerSecond: throughput,
-            SampleCount: sorted.Length);
+            SampleCount: sorted.Length,
+            P95Milliseconds: p95);
     }
 
     /// <summary>
@@ -92,15 +96,6 @@ public static class PercentileCalculator
         double p = percentile > 1d ? percentile / 100d : percentile;
         p = Math.Clamp(p, 0d, 1d);
 
-        double position = p * (sortedSamples.Length - 1);
-        int left = (int)Math.Floor(position);
-        int right = (int)Math.Ceiling(position);
-        if (left == right)
-        {
-            return sortedSamples[left];
-        }
-
-        double fraction = position - left;
-        return sortedSamples[left] + ((sortedSamples[right] - sortedSamples[left]) * fraction);
+        return BenchmarkLatencyCalculator.CalculatePercentile(sortedSamples, p) ?? 0d;
     }
 }
