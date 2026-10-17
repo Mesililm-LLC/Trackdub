@@ -3,12 +3,28 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/pull_request_template.md'
+      - 'LICENSE*'
+      - '.gitignore'
+      - '.editorconfig'
   # Every pull request, not only the ones targeting main. A stacked pull request (base = another
   # branch) is still merged code, and with the branch filter above it in place the matrix never ran
   # for it: the run had to be dispatched by hand, and the change only met the matrix once it landed
   # on main. Pull requests into main are unaffected; the concurrency group below already keys on the
   # pull request number.
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/pull_request_template.md'
+      - 'LICENSE*'
+      - '.gitignore'
+      - '.editorconfig'
   workflow_dispatch:
 
 concurrency:
@@ -203,7 +219,7 @@ jobs:
 
   build-macos:
     name: Build & Test (macOS)
-    timeout-minutes: 45
+    timeout-minutes: 25
     runs-on: macos-latest
     steps:
       - name: Checkout Source
