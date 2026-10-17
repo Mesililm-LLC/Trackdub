@@ -1,4 +1,5 @@
 using Microsoft.ML.OnnxRuntime;
+using Trackdub.Inference.Onnx.Whisper;
 using Trackdub.Inference.Onnx.Madlad;
 using Trackdub.Inference.Onnx.NemotronAsr;
 using Trackdub.Inference.Onnx.SortFormer;
@@ -25,6 +26,14 @@ internal static class EpContextTrtProfiles
             // Metadata only: a CPU session never touches the TRT plugin.
             using InferenceSession session = new(sourceModelPath);
             inputNames = session.InputMetadata.Keys.ToArray();
+            // No-past whisper decoder: the hidden width comes from the declared dims, so the
+            // profile needs the opened session, not just names.
+            if (inputNames.Count == 2
+                && session.InputMetadata.ContainsKey("input_ids")
+                && session.InputMetadata.ContainsKey("encoder_hidden_states"))
+            {
+                return WhisperOnnxAudioTranscriptionEngine.BuildTrtDecoderOptions(sourceModelPath);
+            }
         }
         catch (OnnxRuntimeException)
         {

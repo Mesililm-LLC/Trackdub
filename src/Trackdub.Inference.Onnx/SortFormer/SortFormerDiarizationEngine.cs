@@ -70,6 +70,9 @@ public sealed class SortFormerDiarizationEngine(IRuntimePlanner runtimePlanner,
 
     public StageRuntimeExecutionSummary? LastExecutionSummary { get; private set; }
 
+    /// <summary>Streaming chunks served by the fixed-address bound path in the last run.</summary>
+    internal int LastBoundChunkCount { get; private set; }
+
     public string EngineFamily => EngineFamilyName;
 
     public async Task<IReadOnlyList<DiarizedSpeakerTurn>> DiarizeAsync(
@@ -125,7 +128,7 @@ public sealed class SortFormerDiarizationEngine(IRuntimePlanner runtimePlanner,
                 modelPath,
                 plan.ExecutionProvider!.Value,
                 cancellationToken,
-                additionalTrtOptions: TrtOptions,
+                additionalTrtOptions: OnnxExecutionSessionFactory.WithCudaGraphsEnabled(TrtOptions),
                 allowTrtInitFallback: !plan.RequirePreferredExecutionProvider)
             .ConfigureAwait(false);
 
@@ -142,8 +145,11 @@ public sealed class SortFormerDiarizationEngine(IRuntimePlanner runtimePlanner,
         {
             Tensor<float> probabilityTensor = RunStreamingFeatureModel(
                 sessionLease.Session,
+                sessionLease.SelectedProvider,
                 targetAudio,
-                cancellationToken);
+                cancellationToken,
+                out int boundChunkCount);
+            LastBoundChunkCount = boundChunkCount;
             turns = DecodeTurns(probabilityTensor, request.DurationSeconds, plan.ModelAlias);
         }
         else
@@ -160,6 +166,7 @@ public sealed class SortFormerDiarizationEngine(IRuntimePlanner runtimePlanner,
             cancellationToken.ThrowIfCancellationRequested();
             using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> outputs = sessionLease.Session.RunWithRetry(inputSet.Values, cancellationToken: cancellationToken);
             Tensor<float> probabilityTensor = ResolveProbabilityTensor(outputs);
+            LastBoundChunkCount = 0;
             turns = DecodeTurns(probabilityTensor, request.DurationSeconds, plan.ModelAlias);
         }
 
@@ -178,9 +185,12 @@ public sealed class SortFormerDiarizationEngine(IRuntimePlanner runtimePlanner,
 
     private static DenseTensor<float> RunStreamingFeatureModel(
         InferenceSession session,
+        string selectedProviderLabel,
         IAudioSamples audio,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        out int boundChunkCount)
     {
+        boundChunkCount = 0;
         if (audio.SampleFrameCount <= 0)
         {
             return new DenseTensor<float>(Array.Empty<float>(), [0, MaxSupportedSpeakers]);
@@ -192,6 +202,21 @@ public sealed class SortFormerDiarizationEngine(IRuntimePlanner runtimePlanner,
         var predictionData = new List<float>();
         int speakerCount = MaxSupportedSpeakers;
         int chunkCount = CeilingDivide(totalFeatureFrames, StreamingChunkStrideFeatureFrames);
+
+        // The CUDA-graph session flag is only honored when every bound OrtValue stays at a fixed
+        // address. On TRT-RTX the streaming inputs sit in pinned host buffers at their profile
+        // capacities instead of fresh per-chunk tensors, so the compiled graph replays each chunk.
+        // The bound path is only entered once speaker cache and FIFO are fully saturated: the
+        // export's attention mask is a contiguous prefix over [spkcache | fifo | chunk], so any
+        // padded row inside that prefix would leak into attention and corrupt predictions.
+        // At full capacity the feed is identical to the exact-length managed feed.
+        using SortFormerStreamingRun? streamingRun =
+            string.Equals(
+                selectedProviderLabel,
+                OnnxExecutionSessionFactory.FormatProviderLabel(ExecutionProviderKind.TensorRTRtx),
+                StringComparison.Ordinal)
+                ? new SortFormerStreamingRun(session)
+                : null;
 
         for (int chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++)
         {
@@ -207,13 +232,31 @@ public sealed class SortFormerDiarizationEngine(IRuntimePlanner runtimePlanner,
                 startFrame,
                 currentFeatureFrameCount,
                 cancellationToken);
-            using var inputSet = CreateStreamingFeatureInputSet(
-                session.InputMetadata,
-                features,
-                0,
-                currentFeatureFrameCount,
-                state);
-            using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> outputs = session.RunWithRetry(inputSet.Values, cancellationToken: cancellationToken);
+            IDisposableReadOnlyCollection<DisposableNamedOnnxValue> outputs;
+            if (streamingRun is not null && streamingRun.TryLoad(features, currentFeatureFrameCount, state))
+            {
+                boundChunkCount++;
+                streamingRun.CopyInputsToDevice();
+                outputs = session.RunWithBindingAndNamesRetry(
+                    streamingRun.RunOptions,
+                    streamingRun.Binding,
+                    SortFormerStreamingRun.BoundOutputNames,
+                    cancellationToken: cancellationToken,
+                    provider: ExecutionProviderKind.TensorRTRtx);
+            }
+            else
+            {
+                using var inputSet = CreateStreamingFeatureInputSet(
+                    session.InputMetadata,
+                    features,
+                    0,
+                    currentFeatureFrameCount,
+                    state);
+                outputs = session.RunWithRetry(inputSet.Values, cancellationToken: cancellationToken);
+            }
+
+            using (outputs)
+            {
 
             Tensor<float> rawPredictions = ResolveRequiredFloatTensor(outputs, "spkcache_fifo_chunk_preds");
             Tensor<float> rawEmbeddings = ResolveRequiredFloatTensor(outputs, "chunk_pre_encode_embs");
@@ -261,6 +304,7 @@ public sealed class SortFormerDiarizationEngine(IRuntimePlanner runtimePlanner,
                 chunkEmbeddings,
                 keepModelFrameCount,
                 keepModelFrameCount);
+            }
         }
 
         int frameCount = predictionData.Count / speakerCount;
@@ -795,6 +839,121 @@ public sealed class SortFormerDiarizationEngine(IRuntimePlanner runtimePlanner,
             {
                 System.Buffers.ArrayPool<float>.Shared.Return(rentedArray);
             }
+        }
+    }
+
+    /// <summary>
+    /// Persistent TRT-RTX binding for the streaming export: chunk, caches and FIFO live in pinned
+    /// host OrtValues at their profile capacities for the whole diarization pass. The bound path is
+    /// only loaded once both caches are saturated, because the export's attention mask is a
+    /// contiguous prefix over [spkcache | fifo | chunk] and any padded row inside that prefix would
+    /// corrupt predictions; at full capacity the feed is identical to the exact-length managed feed.
+    /// </summary>
+    private sealed class SortFormerStreamingRun : IDisposable
+    {
+        internal static readonly string[] BoundOutputNames =
+            ["spkcache_fifo_chunk_preds", "chunk_pre_encode_embs", "chunk_pre_encode_lengths"];
+
+        private readonly DeviceBoundTensor<float> chunk;
+        private readonly DeviceBoundTensor<long> chunkLengths;
+        private readonly DeviceBoundTensor<float> spkcache;
+        private readonly DeviceBoundTensor<long> spkcacheLengths;
+        private readonly DeviceBoundTensor<float> fifo;
+        private readonly DeviceBoundTensor<long> fifoLengths;
+        private readonly OrtValue[] hostInputs;
+        private readonly OrtValue[] deviceInputs;
+
+        internal SortFormerStreamingRun(InferenceSession session)
+        {
+            Binding = session.CreateIoBinding();
+            RunOptions = new RunOptions();
+            OrtAllocator allocator = RequireDeviceAllocator(session);
+            chunk = new DeviceBoundTensor<float>(allocator, [1, StreamingFeedFeatureFrames, SortFormerFeatureExtractor.MelBins]);
+            chunkLengths = new DeviceBoundTensor<long>(allocator, [1]);
+            spkcache = new DeviceBoundTensor<float>(allocator, [1, StreamingSpeakerCacheFrames, StreamingEmbeddingDimension]);
+            spkcacheLengths = new DeviceBoundTensor<long>(allocator, [1]);
+            fifo = new DeviceBoundTensor<float>(allocator, [1, StreamingFifoFrames, StreamingEmbeddingDimension]);
+            fifoLengths = new DeviceBoundTensor<long>(allocator, [1]);
+
+            Binding.BindInput("chunk", chunk.Device);
+            Binding.BindInput("chunk_lengths", chunkLengths.Device);
+            Binding.BindInput("spkcache", spkcache.Device);
+            Binding.BindInput("spkcache_lengths", spkcacheLengths.Device);
+            Binding.BindInput("fifo", fifo.Device);
+            Binding.BindInput("fifo_lengths", fifoLengths.Device);
+
+            Binding.BindOutputToDevice("spkcache_fifo_chunk_preds", OrtMemoryInfo.DefaultInstance);
+            Binding.BindOutputToDevice("chunk_pre_encode_embs", OrtMemoryInfo.DefaultInstance);
+            Binding.BindOutputToDevice("chunk_pre_encode_lengths", OrtMemoryInfo.DefaultInstance);
+
+            hostInputs = [chunk.Host, chunkLengths.Host, spkcache.Host, spkcacheLengths.Host, fifo.Host, fifoLengths.Host];
+            deviceInputs = [chunk.Device, chunkLengths.Device, spkcache.Device, spkcacheLengths.Device, fifo.Device, fifoLengths.Device];
+        }
+
+        internal OrtIoBinding Binding { get; }
+
+        internal RunOptions RunOptions { get; }
+
+        internal bool TryLoad(
+            SortFormerFeatureInputSet features,
+            int featureFrameCount,
+            SortFormerStreamingState state)
+        {
+            if (state.SpeakerCacheFrameCount != StreamingSpeakerCacheFrames
+                || state.FifoFrameCount != StreamingFifoFrames)
+            {
+                return false;
+            }
+
+            Array.Clear(chunk.Backing);
+            features.CopyFramesTo(chunk.Backing, 0, 0, featureFrameCount);
+            chunkLengths.Backing[0] = featureFrameCount;
+            Array.Copy(
+                state.SpeakerCacheEmbeddings,
+                spkcache.Backing,
+                StreamingSpeakerCacheFrames * StreamingEmbeddingDimension);
+            spkcacheLengths.Backing[0] = StreamingSpeakerCacheFrames;
+            Array.Copy(
+                state.FifoEmbeddings,
+                fifo.Backing,
+                StreamingFifoFrames * StreamingEmbeddingDimension);
+            fifoLengths.Backing[0] = StreamingFifoFrames;
+            return true;
+        }
+
+        internal void CopyInputsToDevice() =>
+            OrtEnv.Instance().CopyTensors(hostInputs, deviceInputs, default);
+
+        private static OrtAllocator RequireDeviceAllocator(InferenceSession session)
+        {
+            OrtMemoryInfo? deviceMemInfo = session.GetMemoryInfosForInputs()
+                .FirstOrDefault(mi => !mi.Equals(OrtMemoryInfo.DefaultInstance));
+            if (deviceMemInfo is null)
+            {
+                throw new NotSupportedException(
+                    "Session reports host-resident inputs only; the persistent bound path requires a device-resident provider.");
+            }
+
+            OrtAllocator allocator = OrtEnv.Instance().GetSharedAllocator(deviceMemInfo);
+            if (allocator.IsInvalid)
+            {
+                throw new NotSupportedException(
+                    $"No shared allocator registered for '{deviceMemInfo.Name}'.");
+            }
+
+            return allocator;
+        }
+
+        public void Dispose()
+        {
+            Binding.Dispose();
+            RunOptions.Dispose();
+            chunk.Dispose();
+            chunkLengths.Dispose();
+            spkcache.Dispose();
+            spkcacheLengths.Dispose();
+            fifo.Dispose();
+            fifoLengths.Dispose();
         }
     }
 

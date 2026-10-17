@@ -5,9 +5,12 @@ namespace Trackdub.Inference.Onnx.Benchmarking;
 
 /// <summary>
 /// Device-bound I/O path for benchmark sampling on provider sessions that report device
-/// memory for their inputs (TensorRT-RTX today). Host tensors stay pinned and bound;
-/// <see cref="OrtIoBinding.SynchronizeBoundInputs"/> performs the host-to-device copy
-/// each pass, and <see cref="OrtIoBinding.SynchronizeBoundOutputs"/> fences device work
+/// memory for their inputs (TensorRT-RTX today). Host tensors stay pinned and bound and
+/// <see cref="OrtIoBinding.SynchronizeBoundInputs"/> requests the host-to-device copy
+/// each pass; on TRT-RTX that sync is a no-op for host-bound OrtValues (the engine runs
+/// on its own fixed device buffers), which is acceptable for latency sampling — input
+/// contents do not affect kernel timing — but this path must not be used where delivered
+/// data matters. <see cref="OrtIoBinding.SynchronizeBoundOutputs"/> fences device work
 /// after the bound run, so the measured pass covers device execution instead of
 /// enqueue-only latency. Lifetime is owned: host tensors and the binding are disposed
 /// with this object.

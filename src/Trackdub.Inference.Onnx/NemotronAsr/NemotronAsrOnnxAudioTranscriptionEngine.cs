@@ -110,7 +110,9 @@ public sealed class NemotronAsrOnnxAudioTranscriptionEngine(
                 // so a proven smoke session is reused here instead of a second cold create.
                 modelId: plan.ModelId,
                 variant: plan.Variant,
-                additionalTrtEncoderOptions: NemotronAsrEncoderTrtProfiles.BuildOptions(modelPaths.EncoderPath))
+                additionalTrtEncoderOptions: OnnxExecutionSessionFactory.WithCudaGraphsEnabled(
+                    NemotronAsrEncoderTrtProfiles.BuildOptions(modelPaths.EncoderPath)),
+                additionalTrtDecoderOptions: NemotronAsrEncoderTrtProfiles.DecoderJointCudaGraphOptions)
             .ConfigureAwait(false);
 
         // Use the original (filtered) caller-provided SpeechRegions for the transcription loop.

@@ -36,6 +36,21 @@ internal static class NemotronAsrEncoderTrtProfiles
         };
     }
 
+    // Profile options deliberately stay free of enable_cuda_graph: EpContextTrtProfiles.Resolve
+    // hands this dict to the benchmark path where the session flag must follow the benchmark's own
+    // cuda-graph mode. Production callers compose the flag on top via
+    // OnnxExecutionSessionFactory.WithCudaGraphsEnabled so their sessions are graph-enabled
+    // (NemotronAsrGreedyDecoder binds fixed-address buffers).
+    //
+    // decoder_joint inputs are all fixed-shape, so it needs no profile; the graph flag is the
+    // only option the bound decoder path requires. Shared between the engine and the smoke tester
+    // so both hit the same pool-key fingerprint.
+    internal static readonly IReadOnlyDictionary<string, string> DecoderJointCudaGraphOptions =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["enable_cuda_graph"] = "1",
+        };
+
     internal static bool EncoderHasPromptInput(string encoderModelPath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(encoderModelPath);

@@ -286,7 +286,10 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
                     decoderModelPath,
                     provider,
                     cancellationToken,
-                    additionalTrtEncoderOptions: WhisperOnnxAudioTranscriptionEngine.BuildTrtEncoderOptions(melBins))
+                    additionalTrtEncoderOptions: OnnxExecutionSessionFactory.WithCudaGraphsEnabled(
+                        WhisperOnnxAudioTranscriptionEngine.BuildTrtEncoderOptions(melBins)),
+                    additionalTrtDecoderOptions: OnnxExecutionSessionFactory.WithCudaGraphsEnabled(
+                        WhisperOnnxAudioTranscriptionEngine.BuildTrtDecoderOptions(decoderModelPath)))
                 .ConfigureAwait(false);
             try
             {
@@ -600,7 +603,9 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
                 cancellationToken,
                 modelId: request.ModelId,
                 variant: request.Variant,
-                additionalTrtEncoderOptions: NemotronAsrEncoderTrtProfiles.BuildOptions(encoderModelPath))
+                additionalTrtEncoderOptions: OnnxExecutionSessionFactory.WithCudaGraphsEnabled(
+                    NemotronAsrEncoderTrtProfiles.BuildOptions(encoderModelPath)),
+                additionalTrtDecoderOptions: NemotronAsrEncoderTrtProfiles.DecoderJointCudaGraphOptions)
             .ConfigureAwait(false);
         EnsureSelectedProviderMatchesRequested(request.ExecutionProvider, sessionLease.SelectedProvider);
 
@@ -716,7 +721,8 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
                 modelPath,
                 provider,
                 cancellationToken,
-                additionalTrtOptions: SortFormerDiarizationEngine.TrtOptions,
+                additionalTrtOptions: OnnxExecutionSessionFactory.WithCudaGraphsEnabled(
+                    SortFormerDiarizationEngine.TrtOptions),
                 allowTrtInitFallback: true)
             .ConfigureAwait(false);
         EnsureSelectedProviderMatchesRequested(provider, sessionLease.SelectedProvider);

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Trackdub.Contracts.Benchmarking;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Domain;
@@ -21,6 +22,9 @@ public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimeP
     public const string EngineFamilyName = "whisper-onnx";
 
     private const int DefaultMelBins = 80;
+    private const int MaxDecoderContextTokens = 448;
+    // The 30-second mel window always subsamples to 1500 encoder positions.
+    private const int EncoderSequenceLength = 1500;
 
     private const double MaxChunkDurationSeconds = 28;
     private const double TranscriptionMergeGapSeconds = 1.5;
@@ -33,6 +37,12 @@ public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimeP
     private readonly System.Collections.Concurrent.ConcurrentDictionary<int, WhisperFeatureExtractor> featureExtractors = new();
 
     public StageRuntimeExecutionSummary? LastExecutionSummary { get; private set; }
+
+    /// <summary>True when the last transcribe/language call ran through the fixed-address bound path.</summary>
+    internal static bool LastBoundTrtRtxRunUsed { get; private set; }
+
+    /// <summary>Test hook: forces the managed run path on TRT-RTX sessions for bound-path parity checks.</summary>
+    internal static bool TrtRtxBoundRunDisabled;
 
     public DeviceDegradationReport? LastDeviceDegradation { get; private set; }
 
@@ -190,7 +200,10 @@ public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimeP
                 decoderModelPath,
                 plan.ExecutionProvider!.Value,
                 cancellationToken,
-                additionalTrtEncoderOptions: BuildTrtEncoderOptions(ReadMelBins(modelRootPath)))
+                additionalTrtEncoderOptions: OnnxExecutionSessionFactory.WithCudaGraphsEnabled(
+                    BuildTrtEncoderOptions(ReadMelBins(modelRootPath))),
+                additionalTrtDecoderOptions: OnnxExecutionSessionFactory.WithCudaGraphsEnabled(
+                    BuildTrtDecoderOptions(decoderModelPath)))
             .ConfigureAwait(false);
         return new WhisperSessionBundle(lease, encoderModelPath, decoderModelPath, modelRootPath);
     }
@@ -255,6 +268,8 @@ public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimeP
         List<string> chunkLanguages = [];
         int maxChunkSamples = (int)(MaxChunkDurationSeconds * 16000d);
         using var phase = BenchmarkPhaseCapture.Start("asr-language-detection");
+        using WhisperTrtRtxRun? boundRun = WhisperTrtRtxRun.TryCreate(sessionLease, tokenizer);
+        LastBoundTrtRtxRunUsed = boundRun is not null;
 
         for (int offset = 0; offset < regionSamples.Length; offset += maxChunkSamples)
         {
@@ -263,16 +278,26 @@ public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimeP
             DenseTensor<float> features = featureExtractor.Extract(
                 new ReadOnlySpan<float>(regionSamples, offset, chunkLength));
 
-            using var encoderInputs = new InputSet(
-            [
-                NamedOnnxValue.CreateFromTensor("input_features", features)
-            ]);
-            using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> encoderResults =
-                sessionLease.EncoderSession.RunWithRetry(encoderInputs.Values, cancellationToken: cancellationToken);
-            Tensor<float> hiddenStates = encoderResults.Single(static result => result.Name == "last_hidden_state").AsTensor<float>();
+            string? chunkLanguage;
+            if (boundRun is not null)
+            {
+                boundRun.RunEncoder(features, cancellationToken);
+                chunkLanguage = tokenizer.TryGetLanguageCode(
+                    boundRun.DetectLanguageTokenBound(cancellationToken));
+            }
+            else
+            {
+                using var encoderInputs = new InputSet(
+                [
+                    NamedOnnxValue.CreateFromTensor("input_features", features)
+                ]);
+                using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> encoderResults =
+                    sessionLease.EncoderSession.RunWithRetry(encoderInputs.Values, cancellationToken: cancellationToken);
+                Tensor<float> hiddenStates = encoderResults.Single(static result => result.Name == "last_hidden_state").AsTensor<float>();
+                chunkLanguage = tokenizer.TryGetLanguageCode(
+                    DetectLanguageToken(sessionLease.DecoderSession, tokenizer, hiddenStates, cancellationToken));
+            }
 
-            string? chunkLanguage = tokenizer.TryGetLanguageCode(
-                DetectLanguageToken(sessionLease.DecoderSession, tokenizer, hiddenStates, cancellationToken));
             if (!string.IsNullOrWhiteSpace(chunkLanguage))
             {
                 chunkLanguages.Add(chunkLanguage);
@@ -429,6 +454,8 @@ public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimeP
         List<string> detectedLanguages = [];
         bool repetitionGuarded = false;
         int maxChunkSamples = (int)(MaxChunkDurationSeconds * 16000d);
+        using WhisperTrtRtxRun? boundRun = WhisperTrtRtxRun.TryCreate(sessionLease, tokenizer);
+        LastBoundTrtRtxRunUsed = boundRun is not null;
 
         for (int offset = 0; offset < regionSamples.Length; offset += maxChunkSamples)
         {
@@ -440,16 +467,25 @@ public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimeP
                 features = featureExtractor.Extract(chunkSpan);
             }
 
-            using var encoderInputs = new InputSet(
-            [
-                NamedOnnxValue.CreateFromTensor("input_features", features)
-            ]);
-            using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> encoderResults =
-                sessionLease.EncoderSession.RunWithRetry(encoderInputs.Values, cancellationToken: cancellationToken);
-            Tensor<float> hiddenStates = encoderResults.Single(static result => result.Name == "last_hidden_state").AsTensor<float>();
+            Tensor<float>? hiddenStates = null;
+            if (boundRun is not null)
+            {
+                boundRun.RunEncoder(features, cancellationToken);
+            }
+            else
+            {
+                using var encoderInputs = new InputSet(
+                [
+                    NamedOnnxValue.CreateFromTensor("input_features", features)
+                ]);
+                using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> encoderResults =
+                    sessionLease.EncoderSession.RunWithRetry(encoderInputs.Values, cancellationToken: cancellationToken);
+                hiddenStates = encoderResults.Single(static result => result.Name == "last_hidden_state").AsTensor<float>();
+            }
 
             WhisperDecodeResult decodeResult = await GreedyDecodeAsync(
                 sessionLease.DecoderSession,
+                boundRun,
                 tokenizer,
                 hiddenStates,
                 forcedLanguage,
@@ -500,36 +536,47 @@ public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimeP
 
     private static Task<WhisperDecodeResult> GreedyDecodeAsync(
         InferenceSession decoderSession,
+        WhisperTrtRtxRun? boundRun,
         WhisperTokenizerDecoder tokenizer,
-        Tensor<float> encoderHiddenStates,
+        Tensor<float>? encoderHiddenStates,
         string? forcedLanguage,
         double chunkDurationSeconds,
         CancellationToken cancellationToken)
     {
         int? detectedLanguageToken = tokenizer.TryGetLanguageTokenId(forcedLanguage) ??
-                                     DetectLanguageToken(decoderSession, tokenizer, encoderHiddenStates, cancellationToken);
+                                     (boundRun is not null
+                                         ? boundRun.DetectLanguageTokenBound(cancellationToken)
+                                         : DetectLanguageToken(decoderSession, tokenizer, encoderHiddenStates!, cancellationToken));
         IReadOnlyList<int> promptTokens = tokenizer.BuildTranscriptionPrompt(detectedLanguageToken);
         string? detectedLanguage = tokenizer.TryGetLanguageCode(detectedLanguageToken);
         var generated = promptTokens.Select(static token => (long)token).ToList();
         var outputTokens = new List<int>();
         var tokenConfidences = new List<double?>();
-        const int maxDecoderContextTokens = 448;
         int maxOutputTokens = Math.Min(
             CalculateMaxDecodeOutputTokens(chunkDurationSeconds),
-            Math.Max(0, maxDecoderContextTokens - generated.Count));
+            Math.Max(0, MaxDecoderContextTokens - generated.Count));
         bool repetitionGuarded = false;
 
         for (int step = 0; step < maxOutputTokens; step++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            using var decoderInputs = CreateDecoderInputs(generated, encoderHiddenStates);
-            using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> decoderResults = decoderSession.RunWithRetry(decoderInputs.Values, cancellationToken: cancellationToken);
-            Tensor<float> logits = decoderResults.Single(static result => result.Name == "logits").AsTensor<float>();
+            int nextToken;
+            double? confidence;
+            if (boundRun is not null)
+            {
+                (nextToken, confidence) = boundRun.DecodeStep(generated, cancellationToken);
+            }
+            else
+            {
+                using var decoderInputs = CreateDecoderInputs(generated, encoderHiddenStates!);
+                using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> decoderResults = decoderSession.RunWithRetry(decoderInputs.Values, cancellationToken: cancellationToken);
+                Tensor<float> logits = decoderResults.Single(static result => result.Name == "logits").AsTensor<float>();
 
-            int sequenceLength = logits.Dimensions[1];
-            int vocabularySize = logits.Dimensions[2];
-            (int nextToken, double? confidence) = SelectNextToken(logits, sequenceLength - 1, vocabularySize, tokenizer);
+                int sequenceLength = logits.Dimensions[1];
+                int vocabularySize = logits.Dimensions[2];
+                (nextToken, confidence) = SelectNextToken(logits, sequenceLength - 1, vocabularySize, tokenizer);
+            }
             if (nextToken == tokenizer.EndOfTranscriptToken || nextToken < 0)
             {
                 break;
@@ -778,6 +825,39 @@ public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimeP
         ["trt_profile_opt_shapes"] = $"input_features:1x{melBins}x3000"
     };
 
+    // Decoder profile for the no-past export: input_ids is always fed padded to the full
+    // 448-token decoder context (real prefix left-aligned; trailing positions are masked out by
+    // causal self-attention and only their logits are ignored), and encoder_hidden_states rides
+    // the encoder's 1500-frame output. Hidden width is read from the model's declared dims, so a
+    // single builder covers tiny/base/small/medium/large.
+    private static readonly ConcurrentDictionary<string, Dictionary<string, string>> DecoderOptionsCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    internal static Dictionary<string, string> BuildTrtDecoderOptions(string decoderModelPath) =>
+        DecoderOptionsCache.GetOrAdd(decoderModelPath, static path =>
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(path);
+            // Metadata only: a CPU session never touches the TRT plugin.
+            using InferenceSession session = new(path);
+            int hiddenDim = session.InputMetadata.TryGetValue("encoder_hidden_states", out NodeMetadata? hidden)
+                && hidden.Dimensions.Length == 3
+                && hidden.Dimensions[2] > 0
+                    ? hidden.Dimensions[2]
+                    : throw new InvalidOperationException(
+                        "Whisper decoder export does not declare a fixed encoder_hidden_states hidden dim.");
+            // min must cover the short managed probes (e.g. the smoke tester's [1,1] input_ids);
+            // opt/max pin the padded context width the bound decode path always feeds.
+            string minShapes = $"input_ids:1x1,encoder_hidden_states:1x1x{hiddenDim}";
+            string fullShapes =
+                $"input_ids:1x{MaxDecoderContextTokens},encoder_hidden_states:1x{EncoderSequenceLength}x{hiddenDim}";
+            return new Dictionary<string, string>
+            {
+                ["trt_profile_min_shapes"] = minShapes,
+                ["trt_profile_max_shapes"] = fullShapes,
+                ["trt_profile_opt_shapes"] = fullShapes,
+            };
+        });
+
     // large-v3 uses 128 mel bins; earlier sizes use 80.
     internal static int ReadMelBins(string modelRootPath)
     {
@@ -894,6 +974,245 @@ public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimeP
         string? DetectedLanguage,
         IReadOnlyList<double?> TokenConfidences,
         bool RepetitionGuarded);
+
+    /// <summary>
+    /// Persistent fixed-shape bindings for the whisper encoder + decoder under TRT-RTX, satisfying
+    /// the CUDA-graph replay precondition: every input OrtValue lives in a pinned host buffer for
+    /// the whole region decode, and input_ids is always fed at the padded 448-token context width
+    /// with the real prefix left-aligned. Causal self-attention keeps trailing pad positions from
+    /// influencing real positions (only their logits are ignored), so a single graph replays every
+    /// step instead of recapturing per sequence length.
+    /// </summary>
+    private sealed class WhisperTrtRtxRun : IDisposable
+    {
+        private readonly InferenceSession encoderSession;
+        private readonly InferenceSession decoderSession;
+        private readonly WhisperTokenizerDecoder tokenizer;
+        private readonly long padToken;
+
+        private DeviceBoundTensor<float>? inputFeatures;
+        private OrtIoBinding? encoderBinding;
+        private RunOptions? encoderRunOptions;
+        private string[]? encoderOutputNames;
+        private DeviceBoundTensor<long>? inputIds;
+        private DeviceBoundTensor<float>? encoderHidden;
+        private OrtIoBinding? decoderBinding;
+        private RunOptions? decoderRunOptions;
+        private string[]? decoderOutputNames;
+
+        private WhisperTrtRtxRun(
+            InferenceSession encoderSession,
+            InferenceSession decoderSession,
+            WhisperTokenizerDecoder tokenizer)
+        {
+            this.encoderSession = encoderSession;
+            this.decoderSession = decoderSession;
+            this.tokenizer = tokenizer;
+            padToken = tokenizer.EndOfTranscriptToken;
+        }
+
+        internal static WhisperTrtRtxRun? TryCreate(
+            OnnxExecutionSessionFactory.WhisperSessionLease lease,
+            WhisperTokenizerDecoder tokenizer)
+        {
+            if (TrtRtxBoundRunDisabled)
+            {
+                return null;
+            }
+
+            if (!string.Equals(
+                    lease.SelectedProvider,
+                    OnnxExecutionSessionFactory.FormatProviderLabel(ExecutionProviderKind.TensorRTRtx),
+                    StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            // Only the no-past export pair qualifies: input_ids + encoder_hidden_states must be the
+            // complete decoder input set. With-past exports grow a KV cache each step and cannot
+            // satisfy the fixed-shape precondition.
+            IReadOnlyDictionary<string, NodeMetadata> decoderInputs = lease.DecoderSession.InputMetadata;
+            if (!lease.EncoderSession.InputMetadata.ContainsKey("input_features")
+                || decoderInputs.Count != 2
+                || !decoderInputs.ContainsKey("input_ids")
+                || !decoderInputs.ContainsKey("encoder_hidden_states"))
+            {
+                return null;
+            }
+
+            return new WhisperTrtRtxRun(lease.EncoderSession, lease.DecoderSession, tokenizer);
+        }
+
+        /// <summary>Runs the encoder and stages its hidden state into the decoder's bound input.</summary>
+        internal void RunEncoder(DenseTensor<float> features, CancellationToken cancellationToken)
+        {
+            EnsureEncoderBound(features);
+            CopyTensorValues(features, inputFeatures!.Backing);
+            CopyInputToDevice(inputFeatures!);
+            using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results =
+                encoderSession.RunWithBindingAndNamesRetry(
+                    encoderRunOptions!,
+                    encoderBinding!,
+                    encoderOutputNames!,
+                    cancellationToken: cancellationToken,
+                    provider: ExecutionProviderKind.TensorRTRtx);
+            Tensor<float> hidden = results
+                .Single(static result => string.Equals(result.Name, "last_hidden_state", StringComparison.Ordinal))
+                .AsTensor<float>();
+            EnsureDecoderBound(hidden);
+            CopyTensorValues(hidden, encoderHidden!.Backing);
+        }
+
+        /// <summary>Language-token probe matching <see cref="DetectLanguageToken"/> on the bound path.</summary>
+        internal int? DetectLanguageTokenBound(CancellationToken cancellationToken)
+        {
+            if (tokenizer.LanguageTokenIds.Count == 0)
+            {
+                return null;
+            }
+
+            int bestToken = RunDecoderStep(
+                [tokenizer.DecoderStartToken],
+                logits => SelectBestToken(logits, 0, tokenizer.LanguageTokenIds),
+                cancellationToken);
+            return bestToken >= 0 ? bestToken : null;
+        }
+
+        /// <summary>
+        /// One greedy step on the bound decoder: the real prefix is written left-aligned into the
+        /// padded input_ids buffer, the graph replays at the fixed context width, and the next
+        /// token is read from the logits row at the end of the real prefix.
+        /// </summary>
+        internal (int Token, double? Confidence) DecodeStep(
+            IReadOnlyList<long> generated,
+            CancellationToken cancellationToken) =>
+            RunDecoderStep(
+                generated,
+                logits => SelectNextToken(logits, generated.Count - 1, logits.Dimensions[2], tokenizer),
+                cancellationToken);
+
+        private TResult RunDecoderStep<TResult>(
+            IReadOnlyList<long> tokens,
+            Func<Tensor<float>, TResult> select,
+            CancellationToken cancellationToken)
+        {
+            if (decoderBinding is null || inputIds is null || decoderOutputNames is null)
+            {
+                throw new InvalidOperationException("Whisper decoder bindings must be staged by RunEncoder first.");
+            }
+
+            for (int index = 0; index < tokens.Count; index++)
+            {
+                inputIds.Backing[index] = tokens[index];
+            }
+            if (tokens.Count < MaxDecoderContextTokens)
+            {
+                Array.Fill(inputIds.Backing, padToken, tokens.Count, MaxDecoderContextTokens - tokens.Count);
+            }
+
+            OrtEnv.Instance().CopyTensors(
+                [inputIds.Host, encoderHidden!.Host],
+                [inputIds.Device, encoderHidden.Device],
+                default);
+            using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results =
+                decoderSession.RunWithBindingAndNamesRetry(
+                    decoderRunOptions!,
+                    decoderBinding,
+                    decoderOutputNames,
+                    cancellationToken: cancellationToken,
+                    provider: ExecutionProviderKind.TensorRTRtx);
+            Tensor<float> logits = results
+                .Single(static result => string.Equals(result.Name, "logits", StringComparison.Ordinal))
+                .AsTensor<float>();
+            return select(logits);
+        }
+
+        private void EnsureEncoderBound(DenseTensor<float> features)
+        {
+            if (encoderBinding is not null)
+            {
+                return;
+            }
+
+            long[] shape = Array.ConvertAll(features.Dimensions.ToArray(), static dim => (long)dim);
+            inputFeatures = new DeviceBoundTensor<float>(RequireDeviceAllocator(encoderSession), shape);
+            encoderBinding = encoderSession.CreateIoBinding();
+            encoderRunOptions = new RunOptions();
+            encoderBinding.BindInput("input_features", inputFeatures.Device);
+            encoderOutputNames = encoderSession.OutputMetadata.Keys.ToArray();
+            foreach (string name in encoderOutputNames)
+            {
+                encoderBinding.BindOutputToDevice(name, OrtMemoryInfo.DefaultInstance);
+            }
+        }
+
+        private void EnsureDecoderBound(Tensor<float> hiddenStates)
+        {
+            if (decoderBinding is not null)
+            {
+                return;
+            }
+
+            long[] hiddenShape = Array.ConvertAll(hiddenStates.Dimensions.ToArray(), static dim => (long)dim);
+            OrtAllocator allocator = RequireDeviceAllocator(decoderSession);
+            encoderHidden = new DeviceBoundTensor<float>(allocator, hiddenShape);
+            inputIds = new DeviceBoundTensor<long>(allocator, [1, MaxDecoderContextTokens]);
+            decoderBinding = decoderSession.CreateIoBinding();
+            decoderRunOptions = new RunOptions();
+            decoderBinding.BindInput("input_ids", inputIds.Device);
+            decoderBinding.BindInput("encoder_hidden_states", encoderHidden.Device);
+            decoderOutputNames = decoderSession.OutputMetadata.Keys.ToArray();
+            foreach (string name in decoderOutputNames)
+            {
+                decoderBinding.BindOutputToDevice(name, OrtMemoryInfo.DefaultInstance);
+            }
+        }
+
+        private static OrtAllocator RequireDeviceAllocator(InferenceSession session)
+        {
+            OrtMemoryInfo? deviceMemInfo = session.GetMemoryInfosForInputs()
+                .FirstOrDefault(mi => !mi.Equals(OrtMemoryInfo.DefaultInstance));
+            if (deviceMemInfo is null)
+            {
+                throw new NotSupportedException(
+                    "Session reports host-resident inputs only; the persistent bound path requires a device-resident provider.");
+            }
+
+            OrtAllocator allocator = OrtEnv.Instance().GetSharedAllocator(deviceMemInfo);
+            if (allocator.IsInvalid)
+            {
+                throw new NotSupportedException(
+                    $"No shared allocator registered for '{deviceMemInfo.Name}'.");
+            }
+
+            return allocator;
+        }
+
+        private static void CopyInputToDevice<T>(DeviceBoundTensor<T> tensor)
+            where T : unmanaged =>
+            OrtEnv.Instance().CopyTensors([tensor.Host], [tensor.Device], default);
+
+        private static void CopyTensorValues<T>(Tensor<T> source, T[] destination)
+            where T : unmanaged
+        {
+            int index = 0;
+            foreach (T value in source)
+            {
+                destination[index++] = value;
+            }
+        }
+
+        public void Dispose()
+        {
+            encoderBinding?.Dispose();
+            encoderRunOptions?.Dispose();
+            inputFeatures?.Dispose();
+            decoderBinding?.Dispose();
+            decoderRunOptions?.Dispose();
+            inputIds?.Dispose();
+            encoderHidden?.Dispose();
+        }
+    }
 
     private sealed class InputSet(IReadOnlyList<NamedOnnxValue> values) : IDisposable
     {
