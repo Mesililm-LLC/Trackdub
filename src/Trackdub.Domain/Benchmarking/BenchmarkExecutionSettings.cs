@@ -40,10 +40,14 @@ public enum BenchmarkThroughputUnit
 }
 
 public sealed record BenchmarkTensorRtRtxSettings(
-    bool EnableCudaGraph = false,
+    BenchmarkCudaGraphMode CudaGraphMode = BenchmarkCudaGraphMode.Off,
     BenchmarkArtifactMode ArtifactMode = BenchmarkArtifactMode.Auto,
     BenchmarkRuntimeCacheMode CacheMode = BenchmarkRuntimeCacheMode.Reuse,
-    string? RuntimeCacheDirectory = null);
+    string? RuntimeCacheDirectory = null)
+{
+    /// <summary>Any lane that requests a CUDA-graph session (On or the on-half of Compare).</summary>
+    public bool EnableCudaGraph => CudaGraphMode is BenchmarkCudaGraphMode.On or BenchmarkCudaGraphMode.Compare;
+}
 
 /// <summary>Explicit budgets; a zero measurement duration preserves exact requested counts.</summary>
 public sealed record BenchmarkExecutionSettings(
@@ -68,14 +72,16 @@ public sealed record BenchmarkExecutionSettings(
         ArgumentOutOfRangeException.ThrowIfNegative(MinimumMeasurementMilliseconds);
         if (!Enum.IsDefined(InputMode) || !Enum.IsDefined(IoMode)
             || !Enum.IsDefined(EffectiveTensorRtRtx.ArtifactMode)
-            || !Enum.IsDefined(EffectiveTensorRtRtx.CacheMode))
+            || !Enum.IsDefined(EffectiveTensorRtRtx.CacheMode)
+            || !Enum.IsDefined(EffectiveTensorRtRtx.CudaGraphMode))
         {
             throw new ArgumentException("Unrecognized benchmark execution setting.");
         }
 
         if (EffectiveTensorRtRtx.EnableCudaGraph && IoMode != BenchmarkIoMode.DeviceBound)
         {
-            throw new ArgumentException("CUDA graphs require persistent device-bound I/O.");
+            throw new ArgumentException(
+                "CUDA graphs require persistent device-bound I/O; --io-mode device-bound is required for on/compare.");
         }
     }
 }

@@ -33,6 +33,16 @@ public sealed record BenchmarkHistoryPersistenceResult(
     BenchmarkHistoryPersistenceStatus Status,
     string? FailureReason = null);
 
+/// <summary>One lane of a CUDA-graph on/off comparison, measured with identical policy.</summary>
+public sealed record BenchmarkCudaGraphLaneResult(
+    string Lane,
+    bool EnableCudaGraph,
+    double? SessionInitializationMilliseconds,
+    BenchmarkTimingMode TimingMode,
+    BenchmarkSamplingInfo? Sampling,
+    BenchmarkLatencyStatistics? Statistics,
+    string? UnavailableReason = null);
+
 /// <summary>Versioned, typed evidence accompanying one ONNX workload measurement.</summary>
 public sealed record BenchmarkRunMetadata
 {
@@ -45,6 +55,7 @@ public sealed record BenchmarkRunMetadata
     public string? ComparisonKey { get; init; }
     public Guid? ComparisonGroupId { get; init; }
     public IReadOnlyList<BenchmarkReferenceToolResult> ReferenceToolResults { get; init; } = [];
+    public IReadOnlyList<BenchmarkCudaGraphLaneResult> CudaGraphLanes { get; init; } = [];
     public IReadOnlyList<string> Warnings { get; init; } = [];
 }
 

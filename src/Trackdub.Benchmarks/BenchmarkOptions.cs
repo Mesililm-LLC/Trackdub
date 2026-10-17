@@ -474,7 +474,7 @@ public sealed record BenchmarkOptions(
             InputSeed: inputSeed,
             IoMode: ioMode,
             TensorRtRtx: new BenchmarkTensorRtRtxSettings(
-                EnableCudaGraph: cudaGraphMode is not BenchmarkCudaGraphMode.Off,
+                CudaGraphMode: cudaGraphMode,
                 ArtifactMode: artifactMode,
                 CacheMode: runtimeCacheMode,
                 RuntimeCacheDirectory: runtimeCacheDirectory));

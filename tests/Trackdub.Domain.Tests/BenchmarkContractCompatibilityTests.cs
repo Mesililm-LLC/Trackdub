@@ -72,6 +72,28 @@ public sealed class BenchmarkContractCompatibilityTests
     }
 
     [Fact]
+    public void CudaGraphModesRequireDeviceBoundIo()
+    {
+        var deviceBoundSettings = new BenchmarkExecutionSettings(
+            IoMode: BenchmarkIoMode.DeviceBound,
+            TensorRtRtx: new BenchmarkTensorRtRtxSettings(CudaGraphMode: BenchmarkCudaGraphMode.Compare));
+        deviceBoundSettings.Validate(3);
+
+        foreach (var mode in new[] { BenchmarkCudaGraphMode.On, BenchmarkCudaGraphMode.Compare })
+        {
+            var managedSettings = new BenchmarkExecutionSettings(
+                IoMode: BenchmarkIoMode.Managed,
+                TensorRtRtx: new BenchmarkTensorRtRtxSettings(CudaGraphMode: mode));
+            Assert.Throws<ArgumentException>(() => managedSettings.Validate(3));
+        }
+
+        var graphOffManaged = new BenchmarkExecutionSettings(
+            IoMode: BenchmarkIoMode.Managed,
+            TensorRtRtx: new BenchmarkTensorRtRtxSettings(CudaGraphMode: BenchmarkCudaGraphMode.Off));
+        graphOffManaged.Validate(3);
+    }
+
+    [Fact]
     public void HistoryMappingRetainsNewMetricsAndCallerAssignedId()
     {
         var id = Guid.NewGuid();

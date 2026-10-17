@@ -138,6 +138,18 @@ public static class BenchmarkConsole
                 writer.WriteLine($"Comparison key: {report.Metadata.ComparisonKey}");
             }
         }
+        if (report.Metadata?.CudaGraphLanes.Count > 1)
+        {
+            writer.WriteLine("CUDA graph comparison:");
+            foreach (var lane in report.Metadata.CudaGraphLanes)
+            {
+                writer.WriteLine(
+                    $"  {lane.Lane}: avg={FormatMilliseconds(lane.Statistics?.MeanMilliseconds)} "
+                    + $"p95={FormatMilliseconds(lane.Statistics?.P95Milliseconds)} "
+                    + $"samples={lane.Sampling?.SampleCount.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "n/a"}"
+                    + (lane.UnavailableReason is null ? string.Empty : $" ({lane.UnavailableReason})"));
+            }
+        }
         if (report.Metadata?.ReferenceToolResults.Count > 0)
         {
             foreach (var referenceResult in report.Metadata.ReferenceToolResults)

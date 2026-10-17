@@ -84,13 +84,23 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
 
             BenchmarkExecutionSettings settings = request.Execution ?? BenchmarkExecutionSettings.Default;
             settings.Validate(request.RunCount);
-            if (settings.IoMode is not BenchmarkIoMode.Managed)
+            bool deviceBound = settings.IoMode is BenchmarkIoMode.DeviceBound;
+            if (deviceBound && request.ProviderPreference is not BenchmarkProviderPreference.TensorRtRtx)
             {
                 throw new NotSupportedException(
-                    "Device-bound I/O timing is not available in this benchmark build; request managed I/O.");
+                    "Device-bound I/O timing requires the explicit TensorRT-RTX provider route; "
+                    + "request managed I/O or the trt-rtx provider.");
             }
 
             fullModelPath = ResolveModelPath(fullModelPath, notes);
+            bool isCompositeGraph = LooksLikeWhisperEncoder(fullModelPath) || LooksLikeOpusEncoder(fullModelPath);
+            if (deviceBound && isCompositeGraph)
+            {
+                throw new NotSupportedException(
+                    "Device-bound I/O timing supports single-graph models only in this build; "
+                    + "encoder/decoder pipelines keep managed I/O.");
+            }
+
             await TryRegisterWindowsMlProvidersAsync(request.ProviderPreference, notes, cancellationToken).ConfigureAwait(false);
 
             BenchmarkSessionPlan plan = CreateSessionPlan(request, settings, fullReportPath, notes);
@@ -99,11 +109,24 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             modelSizeBytes = new FileInfo(fullModelPath).Length;
             notes.Add($"Model file discovered at '{fullModelPath}'.");
 
-            BenchmarkExecution execution = LooksLikeWhisperEncoder(fullModelPath)
-                ? RunWhisperExecution(fullModelPath, request.ProviderPreference, request.RunCount, settings, notes, cancellationToken)
-                : LooksLikeOpusEncoder(fullModelPath)
-                    ? RunOpusExecution(fullModelPath, request.ProviderPreference, request.RunCount, settings, notes, cancellationToken)
-                : RunSingleSessionExecution(fullModelPath, request.ProviderPreference, request.RunCount, settings, notes, cancellationToken);
+            BenchmarkExecution execution;
+            if (settings.EffectiveTensorRtRtx.CudaGraphMode is BenchmarkCudaGraphMode.Compare)
+            {
+                execution = RunCudaGraphCompareExecution(
+                    fullModelPath, request.ProviderPreference, request.RunCount, settings, notes, cancellationToken);
+            }
+            else if (isCompositeGraph)
+            {
+                execution = LooksLikeWhisperEncoder(fullModelPath)
+                    ? RunWhisperExecution(fullModelPath, request.ProviderPreference, request.RunCount, settings, notes, cancellationToken)
+                    : RunOpusExecution(fullModelPath, request.ProviderPreference, request.RunCount, settings, notes, cancellationToken);
+            }
+            else
+            {
+                execution = RunSingleSessionExecution(
+                    fullModelPath, request.ProviderPreference, request.RunCount, settings, notes, cancellationToken);
+            }
+
 
             requestedProvider = execution.RequestedProvider;
             selectedProvider = execution.SelectedProvider;
@@ -142,7 +165,9 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
                 WindowsMlDevicePolicyKey = request.WindowsMlDevicePolicyKey,
                 RequestedRunCount = request.RunCount,
                 Execution = settings,
-                TimingMode = BenchmarkTimingMode.ManagedOrtRunEndToEnd,
+                TimingMode = settings.IoMode is BenchmarkIoMode.DeviceBound
+                    ? BenchmarkTimingMode.DeviceBoundSynchronized
+                    : BenchmarkTimingMode.ManagedOrtRunEndToEnd,
                 InputProfileId = settings.InputMode is BenchmarkInputMode.Synthetic
                     ? BenchmarkMetadataBuilder.SyntheticInputProfileId
                     : BenchmarkMetadataBuilder.ZerosInputProfileId,
@@ -161,6 +186,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
                     execution.ThroughputUnit,
                     execution.AudioDurationSeconds),
                 Graphs = execution.Graphs,
+                CudaGraphLanes = execution.CudaGraphLanes ?? [],
                 Sampling = new BenchmarkSamplingInfo(
                     execution.Sampling.PolicyCompleted,
                     execution.Sampling.WarmupRunCount,
@@ -283,9 +309,28 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
 
         var inputSet = CreateInputs(modelPath, sessionLease.Session.InputMetadata, settings, "single");
 
+        var deviceBoundLimitations = new List<string>();
+        using DeviceBoundIoBinding? deviceBinding = settings.IoMode is BenchmarkIoMode.DeviceBound
+            ? DeviceBoundIoBinding.Create(
+                sessionLease.Session,
+                inputSet.Values,
+                sessionLease.Session.InputMetadata,
+                sessionLease.Session.OutputMetadata,
+                notes,
+                deviceBoundLimitations)
+            : null;
+        foreach (string limitation in deviceBoundLimitations)
+        {
+            notes.Add($"Device-bound I/O limitation: {limitation}");
+        }
+
+        Action<CancellationToken> pass = deviceBinding is { } bound
+            ? _ => bound.RunPass()
+            : _ => { using var results = sessionLease.Session.Run(inputSet.Values); };
+
         var phaseSnapshots = new List<(BenchmarkSamplingPhase, EngineCacheProbe.Snapshot)>();
         BenchmarkSamplingResult sampling = BenchmarkSamplingLoop.Run(
-            _ => { using var results = sessionLease.Session.Run(inputSet.Values); },
+            pass,
             runCount,
             settings,
             cancellationToken: cancellationToken,
@@ -321,6 +366,58 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             MetadataWarnings: warnings,
             ModelProfile: inputSet.ModelProfile);
     }
+
+    /// <summary>
+    /// Compare mode: runs the same single-graph benchmark twice under otherwise identical
+    /// policy, once with enable_cuda_graph=0 and once with =1, each in a fresh session so the
+    /// provider option is honestly applied. The on-lane becomes the primary measurement; both
+    /// lanes are recorded in metadata for attribution.
+    /// </summary>
+    private static BenchmarkExecution RunCudaGraphCompareExecution(
+        string modelPath,
+        BenchmarkProviderPreference preference,
+        int runCount,
+        BenchmarkExecutionSettings settings,
+        ICollection<string> notes,
+        CancellationToken cancellationToken)
+    {
+        BenchmarkSessionPlan basePlan = ActiveSessionPlan.Value ?? BenchmarkSessionPlan.Default;
+
+        notes.Add("CUDA graph compare: measuring graphs-off baseline lane.");
+        ActiveSessionPlan.Value = basePlan with { EnableCudaGraph = false };
+        BenchmarkExecution offLane = RunSingleSessionExecution(
+            modelPath, preference, runCount, settings, notes, cancellationToken);
+
+        notes.Add("CUDA graph compare: measuring graphs-on lane.");
+        ActiveSessionPlan.Value = basePlan with { EnableCudaGraph = true };
+        BenchmarkExecution onLane = RunSingleSessionExecution(
+            modelPath, preference, runCount, settings, notes, cancellationToken);
+        ActiveSessionPlan.Value = basePlan;
+
+        return onLane with
+        {
+            CudaGraphLanes =
+            [
+                ToCudaGraphLaneResult("graphs-off", offLane),
+                ToCudaGraphLaneResult("graphs-on", onLane)
+            ]
+        };
+    }
+
+    private static BenchmarkCudaGraphLaneResult ToCudaGraphLaneResult(string lane, BenchmarkExecution execution) =>
+        new(
+            Lane: lane,
+            EnableCudaGraph: execution.Graphs.Any(graph => graph.EnableCudaGraph),
+            SessionInitializationMilliseconds: execution.SessionInitializationMilliseconds,
+            TimingMode: BenchmarkTimingMode.DeviceBoundSynchronized,
+            Sampling: new BenchmarkSamplingInfo(
+                execution.Sampling.PolicyCompleted,
+                execution.Sampling.WarmupRunCount,
+                execution.Sampling.WarmupMilliseconds,
+                execution.Sampling.LatencySamplesMilliseconds.Count,
+                execution.Sampling.MeasuredWallTimeMilliseconds),
+            Statistics: BenchmarkLatencyCalculator.Calculate(execution.Sampling.LatencySamplesMilliseconds),
+            UnavailableReason: execution.Sampling.Failure?.Message);
 
     /// <summary>
     /// Run-scoped benchmark plan for TensorRT-RTX option normalization, artifact selection,
@@ -2223,7 +2320,8 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         double? AudioDurationSeconds,
         IReadOnlyList<BenchmarkGraphMetadata> Graphs,
         IReadOnlyList<string> MetadataWarnings,
-        BenchmarkModelProfile ModelProfile = BenchmarkModelProfile.Generic);
+        BenchmarkModelProfile ModelProfile = BenchmarkModelProfile.Generic,
+        IReadOnlyList<BenchmarkCudaGraphLaneResult>? CudaGraphLanes = null);
 
     private enum BenchmarkModelProfile
     {
