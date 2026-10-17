@@ -48,7 +48,7 @@ public static class BenchmarkConsole
         writer.WriteLine("  --input-seed <n>    Deterministic synthetic input seed. Defaults to 42.");
         writer.WriteLine("  --input-shape <s>   Repeatable per-input shape override, e.g. --input-shape chunk=1,3040,128. Pins dynamic dims to the shape an engine profile expects.");
         writer.WriteLine("  --io-mode <m>       Timing I/O mode: managed (host tensors) or device-bound (reserved for the CUDA-graph lane).");
-        writer.WriteLine("  --cuda-graphs <m>   CUDA graph mode for trt-rtx: off, on, or compare. Requires --io-mode device-bound.");
+        writer.WriteLine("  --cuda-graphs <m>   CUDA graph mode for trt-rtx: auto (default), off, on, or compare. on and compare require --io-mode device-bound.");
         writer.WriteLine("  --artifact <m>      EP-context artifact policy for trt-rtx: auto, source, or require.");
         writer.WriteLine("  --runtime-cache <m> Runtime cache mode for trt-rtx: reuse or isolated.");
         writer.WriteLine("  --runtime-cache-dir <path>  Custom TensorRT-RTX runtime cache directory.");

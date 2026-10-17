@@ -148,12 +148,12 @@ public static class Program
                 output.WriteLine($"Report written to: {report.ReportPath}");
             }
 
-            if (options.ReferenceToolRequired && !referenceSatisfied)
+            if (report.Status is BenchmarkStatus.Failed)
             {
-                return 2;
+                return 1;
             }
 
-            return report.Status is BenchmarkStatus.Failed ? 1 : 0;
+            return options.ReferenceToolRequired && !referenceSatisfied ? 2 : 0;
         }
         catch (Exception ex)
         {

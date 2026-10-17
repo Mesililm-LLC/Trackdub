@@ -23,7 +23,7 @@ internal static class BenchmarkMetadataBuilder
     internal const string SyntheticInputProfileId = "synthetic-v1";
     internal const string ZerosInputProfileId = "zeros-v1";
     internal const string ProfileInputProfileId = "trt-profile-opt-v1";
-    private const int ComparisonKeyVersion = 1;
+    private const int ComparisonKeyVersion = 2;
 
     internal static BenchmarkEnvironmentInfo CaptureEnvironment()
     {
@@ -295,7 +295,7 @@ internal static class BenchmarkMetadataBuilder
         }
 
         var payload = new StringBuilder();
-        payload.Append("v").Append(ComparisonKeyVersion).Append('|')
+        payload.Append('v').Append(ComparisonKeyVersion).Append('|')
             .Append(configuration.SelectedProvider).Append('|')
             .Append(configuration.TimingMode).Append('|')
             .Append(configuration.InputProfileId).Append('|')
@@ -305,11 +305,20 @@ internal static class BenchmarkMetadataBuilder
             .Append(environment.ConfiguredPluginFingerprint).Append('|')
             .Append(environment.HostOrtRuntimeVersion);
 
+        if (configuration.Execution.InputShapeOverrides is { Count: > 0 } shapeOverrides)
+        {
+            foreach ((string name, int[] dimensions) in shapeOverrides.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            {
+                payload.Append("|shape:").Append(name).Append('=').Append(string.Join('x', dimensions));
+            }
+        }
+
         foreach (BenchmarkGraphMetadata graph in graphs)
         {
             payload.Append("|graph:")
                 .Append(graph.Role).Append(',')
                 .Append(graph.SourceModelSha256).Append(',')
+                .Append(graph.ExternalDataSha256 ?? "none").Append(',')
                 .Append(graph.LoadKind).Append(',')
                 .Append(graph.CompileOptionsIdentity).Append(',')
                 .Append(graph.EnableCudaGraph);

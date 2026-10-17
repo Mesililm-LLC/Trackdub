@@ -378,6 +378,21 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             ModelProfile: inputSet.ModelProfile);
     }
 
+    private static BenchmarkSessionPlan CreateCompareLanePlan(
+        BenchmarkSessionPlan basePlan,
+        bool enableCudaGraph,
+        string laneName)
+    {
+        string? laneCacheDirectory = basePlan.RuntimeCacheDirectory;
+        if (basePlan.IsolatedRuntimeCache && laneCacheDirectory is not null)
+        {
+            laneCacheDirectory = Path.Join(laneCacheDirectory, laneName);
+            Directory.CreateDirectory(laneCacheDirectory);
+        }
+
+        return basePlan with { EnableCudaGraph = enableCudaGraph, RuntimeCacheDirectory = laneCacheDirectory };
+    }
+
     /// <summary>
     /// Compare mode: runs the same single-graph benchmark twice under otherwise identical
     /// policy, once with enable_cuda_graph=0 and once with =1, each in a fresh session so the
@@ -393,17 +408,24 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         CancellationToken cancellationToken)
     {
         BenchmarkSessionPlan basePlan = ActiveSessionPlan.Value ?? BenchmarkSessionPlan.Default;
+        BenchmarkExecution offLane;
+        BenchmarkExecution onLane;
+        try
+        {
+            notes.Add("CUDA graph compare: measuring graphs-off baseline lane.");
+            ActiveSessionPlan.Value = CreateCompareLanePlan(basePlan, enableCudaGraph: false, "graphs-off");
+            offLane = RunSingleSessionExecution(
+                modelPath, preference, runCount, settings, notes, cancellationToken);
 
-        notes.Add("CUDA graph compare: measuring graphs-off baseline lane.");
-        ActiveSessionPlan.Value = basePlan with { EnableCudaGraph = false };
-        BenchmarkExecution offLane = RunSingleSessionExecution(
-            modelPath, preference, runCount, settings, notes, cancellationToken);
-
-        notes.Add("CUDA graph compare: measuring graphs-on lane.");
-        ActiveSessionPlan.Value = basePlan with { EnableCudaGraph = true };
-        BenchmarkExecution onLane = RunSingleSessionExecution(
-            modelPath, preference, runCount, settings, notes, cancellationToken);
-        ActiveSessionPlan.Value = basePlan;
+            notes.Add("CUDA graph compare: measuring graphs-on lane.");
+            ActiveSessionPlan.Value = CreateCompareLanePlan(basePlan, enableCudaGraph: true, "graphs-on");
+            onLane = RunSingleSessionExecution(
+                modelPath, preference, runCount, settings, notes, cancellationToken);
+        }
+        finally
+        {
+            ActiveSessionPlan.Value = basePlan;
+        }
 
         string? offLoadKind = offLane.Graphs.FirstOrDefault()?.LoadKind;
         string? onLoadKind = onLane.Graphs.FirstOrDefault()?.LoadKind;
@@ -456,7 +478,8 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
     private sealed record BenchmarkSessionPlan(
         BenchmarkArtifactMode ArtifactMode,
         bool EnableCudaGraph,
-        string? RuntimeCacheDirectory)
+        string? RuntimeCacheDirectory,
+        bool IsolatedRuntimeCache = false)
     {
         public static BenchmarkSessionPlan Default { get; } = new(
             BenchmarkArtifactMode.Auto, EnableCudaGraph: false, RuntimeCacheDirectory: null);
@@ -531,7 +554,10 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         }
 
         return new BenchmarkSessionPlan(
-            trtSettings.ArtifactMode, enableCudaGraph, cacheDirectory);
+            trtSettings.ArtifactMode,
+            enableCudaGraph,
+            cacheDirectory,
+            IsolatedRuntimeCache: trtSettings.CacheMode is BenchmarkRuntimeCacheMode.Isolated);
     }
 
     private static string? ResolveReusedRuntimeCacheDirectory(
@@ -719,7 +745,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         }
 
         bool externalDataVerified = BenchmarkMetadataBuilder.TryVerifyExternalDataIdentity(
-            plan.SourcePath, out _, out string? externalReason);
+            plan.SourcePath, out string? externalDataSha256, out string? externalReason);
         if (externalReason is not null)
         {
             warnings.Add($"external weights identity unavailable for '{plan.SourcePath}': {externalReason}.");
@@ -739,6 +765,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             SourceModelPath = plan.SourcePath,
             SourceModelSha256 = sourceSha256,
             ExternalDataIdentityVerified = externalDataVerified,
+            ExternalDataSha256 = externalDataSha256,
             LoadedModelPath = plan.LoadPath,
             LoadKind = plan.LoadKind,
             ArtifactIdentity = plan.ArtifactIdentity,
@@ -1772,7 +1799,15 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         int decoderStartTokenId)
     {
         using var encoderResults = lease.EncoderSession.Run(encoderInputSet.Values);
-        var encoderHiddenStates = encoderResults.First().AsTensor<float>();
+        DisposableNamedOnnxValue encoderHidden = encoderResults.FirstOrDefault()
+            ?? throw new InvalidOperationException("Opus encoder produced no outputs.");
+        Tensor<float>? encoderHiddenStates = encoderHidden.AsTensor<float>();
+        if (encoderHiddenStates is null)
+        {
+            throw new InvalidOperationException(
+                $"Opus encoder output '{encoderHidden.Name}' is not a float tensor.");
+        }
+
         using var decoderInputs = CreateOpusDecoderInputs(
             lease.DecoderSession.InputMetadata,
             encoderHiddenStates,

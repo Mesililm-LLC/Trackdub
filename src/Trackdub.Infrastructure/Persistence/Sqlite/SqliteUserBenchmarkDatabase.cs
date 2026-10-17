@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 
 namespace Trackdub.Infrastructure.Persistence.Sqlite;
@@ -153,6 +154,16 @@ public sealed class SqliteUserBenchmarkDatabase
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    private static readonly Regex SqlIdentifierPattern = new(@"^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.CultureInvariant);
+
+    private static void RequireSqlIdentifier(string value)
+    {
+        if (!SqlIdentifierPattern.IsMatch(value))
+        {
+            throw new ArgumentException($"'{value}' is not a valid SQL identifier.", nameof(value));
+        }
+    }
+
     private static async Task EnsureColumnsAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -160,6 +171,13 @@ public sealed class SqliteUserBenchmarkDatabase
         (string Name, string Type)[] columns,
         CancellationToken cancellationToken)
     {
+        RequireSqlIdentifier(tableName);
+        foreach ((string name, string type) in columns)
+        {
+            RequireSqlIdentifier(name);
+            RequireSqlIdentifier(type);
+        }
+
         var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         await using (SqliteCommand pragma = connection.CreateCommand())
         {

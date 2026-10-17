@@ -121,10 +121,11 @@ internal static class BenchmarkReferenceToolRunner
         }
 
         Directory.CreateDirectory(request.EvidenceDirectory);
-        string stdoutLogPath = Path.Join(
-            request.EvidenceDirectory, $"reference-{request.Kind}-{request.GraphRole}.stdout.log");
-        string stderrLogPath = Path.Join(
-            request.EvidenceDirectory, $"reference-{request.Kind}-{request.GraphRole}.stderr.log");
+        // Several candidates can share one report directory (--all-variants), so the model path
+        // is part of the evidence name; otherwise each candidate overwrites the previous log.
+        string evidenceStem = $"reference-{request.Kind}-{request.GraphRole}-{ModelPathDigest(request.ModelPath)}";
+        string stdoutLogPath = Path.Join(request.EvidenceDirectory, $"{evidenceStem}.stdout.log");
+        string stderrLogPath = Path.Join(request.EvidenceDirectory, $"{evidenceStem}.stderr.log");
 
         string[] arguments = recipe.BuildArguments(request, help.Stdout);
         string[] skippedOptionalFlags = recipe.SkippedOptionalFlags(request, help.Stdout);
@@ -191,6 +192,9 @@ internal static class BenchmarkReferenceToolRunner
             }
         };
     }
+
+    private static string ModelPathDigest(string modelPath) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(modelPath)))[..12].ToLowerInvariant();
 
     internal static ToolRecipe RecipeFor(BenchmarkReferenceToolKind kind) => kind switch
     {

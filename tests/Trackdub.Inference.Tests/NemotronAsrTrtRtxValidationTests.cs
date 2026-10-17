@@ -125,7 +125,7 @@ public sealed class NemotronAsrTrtRtxValidationTests
         IReadOnlyDictionary<string, string> encoderProfiles,
         bool enableGraphs)
     {
-        OnnxExecutionSessionFactory.NemotronAsrSessionLease lease = await OnnxExecutionSessionFactory
+        using OnnxExecutionSessionFactory.NemotronAsrSessionLease lease = await OnnxExecutionSessionFactory
             .CreatePooledNemotronAsrAsync(
                 "nemotron-asr",
                 encoderPath,

@@ -122,6 +122,7 @@ public sealed record BenchmarkGraphMetadata
     public string? SourceModelPath { get; init; }
     public string? SourceModelSha256 { get; init; }
     public bool ExternalDataIdentityVerified { get; init; }
+    public string? ExternalDataSha256 { get; init; }
     public string? LoadedModelPath { get; init; }
     public string? LoadKind { get; init; }
     public string? ArtifactIdentity { get; init; }

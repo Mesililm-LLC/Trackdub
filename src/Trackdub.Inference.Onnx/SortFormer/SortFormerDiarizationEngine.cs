@@ -257,53 +257,52 @@ public sealed class SortFormerDiarizationEngine(IRuntimePlanner runtimePlanner,
 
             using (outputs)
             {
+                Tensor<float> rawPredictions = ResolveRequiredFloatTensor(outputs, "spkcache_fifo_chunk_preds");
+                Tensor<float> rawEmbeddings = ResolveRequiredFloatTensor(outputs, "chunk_pre_encode_embs");
+                int outputSpeakerCount = ResolveFeatureCount(rawPredictions);
+                if (outputSpeakerCount > MaxSupportedSpeakers)
+                {
+                    throw new InvalidOperationException(
+                        $"SortFormer ONNX export produced {outputSpeakerCount} speakers, exceeding the maximum supported count of {MaxSupportedSpeakers}.");
+                }
 
-            Tensor<float> rawPredictions = ResolveRequiredFloatTensor(outputs, "spkcache_fifo_chunk_preds");
-            Tensor<float> rawEmbeddings = ResolveRequiredFloatTensor(outputs, "chunk_pre_encode_embs");
-            int outputSpeakerCount = ResolveFeatureCount(rawPredictions);
-            if (outputSpeakerCount > MaxSupportedSpeakers)
-            {
-                throw new InvalidOperationException(
-                    $"SortFormer ONNX export produced {outputSpeakerCount} speakers, exceeding the maximum supported count of {MaxSupportedSpeakers}.");
-            }
+                if (predictionData.Count == 0)
+                {
+                    speakerCount = outputSpeakerCount;
+                }
+                else if (speakerCount != outputSpeakerCount)
+                {
+                    throw new InvalidOperationException("SortFormer ONNX export changed speaker count across streaming chunks.");
+                }
 
-            if (predictionData.Count == 0)
-            {
-                speakerCount = outputSpeakerCount;
-            }
-            else if (speakerCount != outputSpeakerCount)
-            {
-                throw new InvalidOperationException("SortFormer ONNX export changed speaker count across streaming chunks.");
-            }
+                int validModelFrameCount = CeilingDivide(currentFeatureFrameCount, StreamingFeatureSubsampling);
+                int keepModelFrameCount = Math.Min(StreamingChunkModelFrames, validModelFrameCount);
+                int predictionStartFrame = state.SpeakerCacheFrameCount + state.FifoFrameCount;
+                float[] chunkPredictions = ExtractTensorFrameSlice(
+                    rawPredictions,
+                    predictionStartFrame,
+                    keepModelFrameCount,
+                    speakerCount);
+                predictionData.AddRange(chunkPredictions);
 
-            int validModelFrameCount = CeilingDivide(currentFeatureFrameCount, StreamingFeatureSubsampling);
-            int keepModelFrameCount = Math.Min(StreamingChunkModelFrames, validModelFrameCount);
-            int predictionStartFrame = state.SpeakerCacheFrameCount + state.FifoFrameCount;
-            float[] chunkPredictions = ExtractTensorFrameSlice(
-                rawPredictions,
-                predictionStartFrame,
-                keepModelFrameCount,
-                speakerCount);
-            predictionData.AddRange(chunkPredictions);
+                float[] chunkEmbeddings = ExtractTensorFrameSlice(
+                    rawEmbeddings,
+                    0,
+                    keepModelFrameCount,
+                    StreamingEmbeddingDimension);
 
-            float[] chunkEmbeddings = ExtractTensorFrameSlice(
-                rawEmbeddings,
-                0,
-                keepModelFrameCount,
-                StreamingEmbeddingDimension);
-
-            float[] cacheAndFifoPredictions = ExtractTensorFrameSlice(
-                rawPredictions,
-                0,
-                predictionStartFrame,
-                speakerCount);
-            state.Update(
-                cacheAndFifoPredictions,
-                chunkPredictions,
-                speakerCount,
-                chunkEmbeddings,
-                keepModelFrameCount,
-                keepModelFrameCount);
+                float[] cacheAndFifoPredictions = ExtractTensorFrameSlice(
+                    rawPredictions,
+                    0,
+                    predictionStartFrame,
+                    speakerCount);
+                state.Update(
+                    cacheAndFifoPredictions,
+                    chunkPredictions,
+                    speakerCount,
+                    chunkEmbeddings,
+                    keepModelFrameCount,
+                    keepModelFrameCount);
             }
         }
 

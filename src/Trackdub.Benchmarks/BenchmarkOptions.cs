@@ -236,7 +236,7 @@ public sealed record BenchmarkOptions(
                     if (!TryReadValue(args, ref index, arg, errorWriter, out string cudaGraphText)
                         || !TryParseFlagEnum(cudaGraphText, out cudaGraphMode))
                     {
-                        errorWriter.WriteLine($"Unknown CUDA graph mode '{cudaGraphText}'. Expected off, on, or compare.");
+                        errorWriter.WriteLine($"Unknown CUDA graph mode '{cudaGraphText}'. Expected auto, off, on, or compare.");
                         options = DefaultWithHelp();
                         return false;
                     }
