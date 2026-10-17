@@ -11,8 +11,12 @@ public interface IBenchmarkRunnerService
 {
     /// <summary>
     /// Runs ONNX model inference benchmark using <see cref="Trackdub.Inference.Onnx.OnnxModelBenchmarkRunner"/>.
+    /// The report is persisted to ONNX benchmark history when a repository is configured.
     /// </summary>
     Task<BenchmarkReport> RunOnnxModelBenchmarkAsync(BenchmarkRequest request, CancellationToken ct = default);
+
+    /// <summary>Lists recent persisted ONNX model benchmark runs, newest first.</summary>
+    Task<IReadOnlyList<BenchmarkRunRecord>> ListOnnxBenchmarkHistoryAsync(int limit, CancellationToken ct = default);
 
     /// <summary>
     /// Runs audio preparation benchmark using <see cref="AudioPrepBenchmarkRunner"/>.

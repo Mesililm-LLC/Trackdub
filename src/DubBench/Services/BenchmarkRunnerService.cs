@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Trackdub.Benchmarks;
 using Trackdub.Domain;
+using Trackdub.Domain.Benchmarking;
 using Trackdub.Contracts.Benchmarking;
 using Trackdub.Contracts.Persistence;
 #if WINDOWS
@@ -22,11 +23,14 @@ public sealed class BenchmarkRunnerService : IBenchmarkRunnerService
     private readonly AudioPrepBenchmarkRunner _audioRunner;
     private readonly DubbingBenchmarkRunner _dubbingRunner;
     private readonly ControlledDubbingBenchmarkRunner _controlledRunner;
+    private readonly IUserBenchmarkRepository? _onnxHistory;
 
     public BenchmarkRunnerService(
         IBenchmarkEvidenceRepository? history = null,
-        Action<IServiceCollection>? serviceConfigurator = null)
+        Action<IServiceCollection>? serviceConfigurator = null,
+        IUserBenchmarkRepository? onnxHistory = null)
     {
+        _onnxHistory = onnxHistory;
 #if WINDOWS
         _onnxRunner = BenchmarkOnnxExecutionBootstrap.CreateOnnxRunner();
 #endif
@@ -61,7 +65,8 @@ public sealed class BenchmarkRunnerService : IBenchmarkRunnerService
                 GeneratedAtUtc: DateTimeOffset.UtcNow);
         }
 
-        return await _onnxRunner.RunAsync(request, ct).ConfigureAwait(false);
+        BenchmarkReport report = await _onnxRunner.RunAsync(request, ct).ConfigureAwait(false);
+        return await PersistOnnxHistoryAsync(report, ct).ConfigureAwait(false);
 #else
         await Task.CompletedTask.ConfigureAwait(false);
         return new BenchmarkReport(
@@ -105,4 +110,54 @@ public sealed class BenchmarkRunnerService : IBenchmarkRunnerService
         ArgumentNullException.ThrowIfNull(options);
         return _controlledRunner.RunAsync(options, ct);
     }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<BenchmarkRunRecord>> ListOnnxBenchmarkHistoryAsync(
+        int limit, CancellationToken ct = default)
+    {
+        if (_onnxHistory is null || limit <= 0)
+        {
+            return [];
+        }
+
+        return await _onnxHistory.ListRecentAsync(limit, ct).ConfigureAwait(false);
+    }
+
+#if WINDOWS
+    private async Task<BenchmarkReport> PersistOnnxHistoryAsync(BenchmarkReport report, CancellationToken ct)
+    {
+        if (_onnxHistory is null)
+        {
+            return report with
+            {
+                HistoryPersistence = new BenchmarkHistoryPersistenceResult(
+                    BenchmarkHistoryPersistenceStatus.NotRequested)
+            };
+        }
+
+        try
+        {
+            string modelId = Path.GetFileNameWithoutExtension(report.ModelPath) is { Length: > 0 } name
+                ? name
+                : report.ModelPath;
+            BenchmarkRunRecord record = BenchmarkRunRecord.FromReport(
+                report.RunId ?? Guid.NewGuid(), modelId, report);
+            await _onnxHistory.AddAsync(record, ct).ConfigureAwait(false);
+            return report with
+            {
+                RunId = record.Id,
+                HistoryPersistence = new BenchmarkHistoryPersistenceResult(
+                    BenchmarkHistoryPersistenceStatus.Saved)
+            };
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return report with
+            {
+                HistoryPersistence = new BenchmarkHistoryPersistenceResult(
+                    BenchmarkHistoryPersistenceStatus.Failed, ex.Message)
+            };
+        }
+    }
+#endif
 }
