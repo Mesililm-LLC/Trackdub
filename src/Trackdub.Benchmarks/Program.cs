@@ -1,3 +1,4 @@
+using Trackdub.Benchmarks.ReferenceTool;
 using Trackdub.Composition.StarterPacks;
 using Trackdub.Contracts;
 using Trackdub.Contracts.ApplicationContracts;
@@ -131,6 +132,8 @@ public static class Program
 
             BenchmarkReport report = await runner.RunAsync(request, cancellationToken);
             report = AddResolutionNote(report, candidate);
+            (report, bool referenceSatisfied) = await RunReferenceToolIfRequestedAsync(
+                options, report, candidate, output, cancellationToken);
             report = await PersistHistoryIfRequestedAsync(
                 options, report, $"onnx-model:{candidate.CandidateKey}", output, cancellationToken);
             await BenchmarkReportWriter.WriteAsync(report, options.ReportFormat, cancellationToken);
@@ -143,6 +146,11 @@ public static class Program
             if (options.ReportFormat is ReportFormat.Json or ReportFormat.Both)
             {
                 output.WriteLine($"Report written to: {report.ReportPath}");
+            }
+
+            if (options.ReferenceToolRequired && !referenceSatisfied)
+            {
+                return 2;
             }
 
             return report.Status is BenchmarkStatus.Failed ? 1 : 0;
@@ -834,6 +842,7 @@ public static class Program
         }
 
         var reports = new List<BenchmarkReport>(discovery.Candidates.Count);
+        var anyReferenceUnsatisfied = false;
         foreach (BenchmarkModelCandidate candidate in discovery.Candidates)
         {
             string reportPath = DeriveVariantReportPath(options.OutputPath, candidate);
@@ -847,6 +856,9 @@ public static class Program
 
             BenchmarkReport report = await runner.RunAsync(request, cancellationToken);
             report = AddResolutionNote(report, candidate);
+            (report, bool referenceSatisfied) = await RunReferenceToolIfRequestedAsync(
+                options, report, candidate, output, cancellationToken);
+            anyReferenceUnsatisfied |= !referenceSatisfied;
             report = await PersistHistoryIfRequestedAsync(
                 options, report, $"onnx-model:{candidate.CandidateKey}", output, cancellationToken);
             reports.Add(report);
@@ -872,7 +884,12 @@ public static class Program
             output.WriteLine($"Batch report written to: {batchReport.ReportPath}");
         }
 
-        return reports.Any(report => report.Status is BenchmarkStatus.Failed) ? 1 : 0;
+        if (reports.Any(report => report.Status is BenchmarkStatus.Failed))
+        {
+            return 1;
+        }
+
+        return options.ReferenceToolRequired && anyReferenceUnsatisfied ? 2 : 0;
     }
 
     private static async Task<BenchmarkModelCandidate> ResolveSingleCandidateAsync(
@@ -981,6 +998,7 @@ public static class Program
         int passed = 0;
         int failed = 0;
         int skipped = 0;
+        var anyReferenceUnsatisfied = false;
         var reports = new List<BenchmarkReport>(TrtRtxSmokeCatalog.StarterPackTurboGpu.Count);
 
         await output.WriteLineAsync($"TRT RTX smoke scope ({TrtRtxSmokeCatalog.StarterPackTurboGpu.Count} targets).").ConfigureAwait(false);
@@ -1019,6 +1037,9 @@ public static class Program
             {
                 report = await runner.RunAsync(request, cancellationToken).ConfigureAwait(false);
                 report = AddResolutionNote(report, candidate);
+                (report, bool referenceSatisfied) = await RunReferenceToolIfRequestedAsync(
+                    options, report, candidate, output, cancellationToken).ConfigureAwait(false);
+                anyReferenceUnsatisfied |= !referenceSatisfied;
                 report = await PersistHistoryIfRequestedAsync(
                     options, report, $"onnx-model:{candidate.CandidateKey}", output, cancellationToken)
                     .ConfigureAwait(false);
@@ -1077,7 +1098,95 @@ public static class Program
             return 1;
         }
 
-        return failed > 0 ? 1 : 0;
+        if (failed > 0)
+        {
+            return 1;
+        }
+
+        return options.ReferenceToolRequired && anyReferenceUnsatisfied ? 2 : 0;
+    }
+
+    /// <summary>
+    /// Runs the opt-in NVIDIA reference tool (<c>--reference-tool</c>) against the source model
+    /// file and attaches the honest result (including "tool not installed") to the report
+    /// metadata before history persistence so the evidence reaches every sink.
+    /// </summary>
+    private static async Task<(BenchmarkReport Report, bool Satisfied)> RunReferenceToolIfRequestedAsync(
+        BenchmarkOptions options,
+        BenchmarkReport report,
+        BenchmarkModelCandidate candidate,
+        TextWriter output,
+        CancellationToken cancellationToken)
+    {
+        if (options.ReferenceTool is BenchmarkReferenceToolKind.None)
+        {
+            return (report, Satisfied: true);
+        }
+
+        BenchmarkExecutionSettings execution = options.Execution ?? BenchmarkExecutionSettings.Default;
+        string evidenceDirectory = Path.GetDirectoryName(Path.GetFullPath(report.ReportPath))
+            ?? Environment.CurrentDirectory;
+        var request = new BenchmarkReferenceToolRunner.Request(
+            options.ReferenceTool,
+            options.ReferenceToolPath,
+            options.ReferenceToolRequired,
+            candidate.ModelPath,
+            "primary",
+            options.RunCount,
+            execution.InputSeed,
+            execution.IoMode is BenchmarkIoMode.DeviceBound,
+            evidenceDirectory);
+
+        BenchmarkReferenceToolResult result;
+        try
+        {
+            result = await BenchmarkReferenceToolRunner.RunAsync(request, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException
+            or System.ComponentModel.Win32Exception or UnauthorizedAccessException
+            or NotSupportedException)
+        {
+            result = new BenchmarkReferenceToolResult
+            {
+                Tool = options.ReferenceTool,
+                Status = BenchmarkReferenceStatus.Failed,
+                GraphRole = "primary",
+                Required = options.ReferenceToolRequired,
+                FailureReason = ex.Message
+            };
+        }
+
+        result = result with
+        {
+            Limitations = result.Limitations.Append(
+                "The reference tool measures the source model file; EP-context artifacts, "
+                + "provider options, and runtime-cache settings are not forwarded to it.").ToArray()
+        };
+
+        await output.WriteLineAsync(
+            $"Reference tool {result.Tool}: {result.Status}"
+            + (result.FailureReason is null ? string.Empty : $" ({result.FailureReason})"))
+            .ConfigureAwait(false);
+
+        BenchmarkRunMetadata metadata = report.Metadata ?? new BenchmarkRunMetadata();
+        metadata = metadata with
+        {
+            Configuration = (metadata.Configuration ?? new BenchmarkConfigurationInfo()) with
+            {
+                ReferenceToolRequested = true
+            },
+            ReferenceToolResults = metadata.ReferenceToolResults.Append(result).ToArray()
+        };
+
+        return (
+            report with { Metadata = metadata },
+            result.Status is BenchmarkReferenceStatus.Completed
+                or BenchmarkReferenceStatus.MetricsUnavailable);
     }
 
     /// <summary>

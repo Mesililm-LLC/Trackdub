@@ -138,6 +138,21 @@ public static class BenchmarkConsole
                 writer.WriteLine($"Comparison key: {report.Metadata.ComparisonKey}");
             }
         }
+        if (report.Metadata?.ReferenceToolResults.Count > 0)
+        {
+            foreach (var referenceResult in report.Metadata.ReferenceToolResults)
+            {
+                writer.WriteLine(
+                    $"Reference tool {referenceResult.Tool} [{referenceResult.GraphRole}]: {referenceResult.Status}"
+                    + (referenceResult.FailureReason is null ? string.Empty : $" ({referenceResult.FailureReason})")
+                    + (referenceResult.ExecutablePath is null ? string.Empty : $" at {referenceResult.ExecutablePath}"));
+                foreach (var metric in referenceResult.Metrics)
+                {
+                    writer.WriteLine(
+                        $"  {metric.Name}: {metric.Value.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)} {metric.Unit} ({metric.TimingDomain})");
+                }
+            }
+        }
         writer.WriteLine($"Report path: {report.ReportPath}");
 
         if (!string.IsNullOrWhiteSpace(report.FailureReason))
