@@ -2,7 +2,10 @@ using System.Diagnostics;
 using System.Text.Json;
 using Trackdub.Contracts.ApplicationContracts;
 using Trackdub.Domain;
+using Trackdub.Domain.Benchmarking;
 using Trackdub.Inference;
+using Trackdub.Inference.Onnx.Benchmarking;
+using Trackdub.Inference.Onnx.EpContext;
 using Trackdub.Inference.Onnx.Migraphx;
 using Trackdub.Inference.Onnx.Runtime.Planning;
 using Trackdub.Inference.Onnx.TensorRtRtx;
@@ -21,6 +24,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
 {
     private readonly ITensorRtRtxProviderBootstrap _tensorRtRtxProviderBootstrap;
     private static readonly AsyncLocal<WindowsMlExecutionDevicePolicy?> RunWindowsMlDevicePolicy = new();
+    private static readonly AsyncLocal<BenchmarkSessionPlan?> ActiveSessionPlan = new();
 
     public OnnxModelBenchmarkRunner()
         : this(TensorRtRtxProviderBootstrapFactory.Shared)
@@ -56,6 +60,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         finally
         {
             RunWindowsMlDevicePolicy.Value = null;
+            ActiveSessionPlan.Value = null;
         }
     }
 
@@ -77,51 +82,66 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            BenchmarkExecutionSettings settings = request.Execution ?? BenchmarkExecutionSettings.Default;
+            settings.Validate(request.RunCount);
+            if (settings.IoMode is not BenchmarkIoMode.Managed)
+            {
+                throw new NotSupportedException(
+                    "Device-bound I/O timing is not available in this benchmark build; request managed I/O.");
+            }
+
             fullModelPath = ResolveModelPath(fullModelPath, notes);
             await TryRegisterWindowsMlProvidersAsync(request.ProviderPreference, notes, cancellationToken).ConfigureAwait(false);
+
+            BenchmarkSessionPlan plan = CreateSessionPlan(request, settings, fullReportPath, notes);
+            ActiveSessionPlan.Value = plan;
 
             modelSizeBytes = new FileInfo(fullModelPath).Length;
             notes.Add($"Model file discovered at '{fullModelPath}'.");
 
             BenchmarkExecution execution = LooksLikeWhisperEncoder(fullModelPath)
-                ? RunWhisperExecution(fullModelPath, request.ProviderPreference, request.RunCount, notes)
+                ? RunWhisperExecution(fullModelPath, request.ProviderPreference, request.RunCount, settings, notes, cancellationToken)
                 : LooksLikeOpusEncoder(fullModelPath)
-                    ? RunOpusExecution(fullModelPath, request.ProviderPreference, request.RunCount, notes)
-                : RunSingleSessionExecution(fullModelPath, request.ProviderPreference, request.RunCount, notes);
+                    ? RunOpusExecution(fullModelPath, request.ProviderPreference, request.RunCount, settings, notes, cancellationToken)
+                : RunSingleSessionExecution(fullModelPath, request.ProviderPreference, request.RunCount, settings, notes, cancellationToken);
 
             requestedProvider = execution.RequestedProvider;
             selectedProvider = execution.SelectedProvider;
             modelSizeBytes = execution.ModelSizeBytes;
 
-            var realTimeFactorAverage = CalculateRealTimeFactorAverage(
-                execution.AudioDurationSeconds,
-                execution.WarmLatencyAverageMilliseconds);
+            BenchmarkMeasurements measurements = BenchmarkMeasurementFactory.Create(
+                execution.Sampling,
+                execution.SessionInitializationMilliseconds,
+                execution.ThroughputUnit,
+                execution.AudioDurationSeconds) with
+            {
+                EngineCacheOutcome = execution.Attribution.Outcome,
+                EngineCacheBytesAdded = execution.Attribution.BytesAdded,
+                EngineCacheFilesAdded = execution.Attribution.FilesAdded,
+                ColdLoadDominantPhase = execution.Attribution.DominantPhase
+            };
 
-            var measurements = new BenchmarkMeasurements(
-                ColdLoadMilliseconds: execution.ColdLoadMilliseconds,
-                WarmupMilliseconds: execution.WarmupMilliseconds,
-                WarmLatencyAverageMilliseconds: execution.WarmLatencyAverageMilliseconds,
-                WarmLatencyMinimumMilliseconds: execution.WarmLatencyMinimumMilliseconds,
-                WarmLatencyMaximumMilliseconds: execution.WarmLatencyMaximumMilliseconds,
-                AudioDurationSeconds: execution.AudioDurationSeconds,
-                RealTimeFactorAverage: realTimeFactorAverage,
-                EngineCacheOutcome: execution.EngineCacheOutcome,
-                EngineCacheBytesAdded: execution.EngineCacheBytesAdded,
-                EngineCacheFilesAdded: execution.EngineCacheFilesAdded,
-                ColdLoadDominantPhase: execution.ColdLoadDominantPhase);
+            bool succeeded = execution.Sampling.PolicyCompleted && execution.Sampling.Failure is null;
+            if (!succeeded && execution.Sampling.LatencySamplesMilliseconds.Count > 0)
+            {
+                notes.Add(
+                    $"Sampling stopped early: {execution.Sampling.LatencySamplesMilliseconds.Count} measured pass(es) retained as partial evidence.");
+            }
 
             return CreateReport(
                 scenario: execution.Scenario,
-                status: BenchmarkStatus.Completed,
+                status: succeeded ? BenchmarkStatus.Completed : BenchmarkStatus.Failed,
                 modelPath: fullModelPath,
                 reportPath: fullReportPath,
                 requestedProvider: requestedProvider,
                 selectedProvider: selectedProvider,
                 runCount: request.RunCount,
-                supportsExecution: true,
+                supportsExecution: succeeded || execution.Sampling.FirstRunMilliseconds is not null,
                 modelSizeBytes: modelSizeBytes,
                 measurements: measurements,
-                failureReason: null,
+                failureReason: succeeded
+                    ? null
+                    : execution.Sampling.Failure?.Message ?? "Measurement policy did not complete.",
                 notes: notes);
         }
         catch (OperationCanceledException)
@@ -203,55 +223,252 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         string modelPath,
         BenchmarkProviderPreference preference,
         int runCount,
-        ICollection<string> notes)
+        BenchmarkExecutionSettings settings,
+        ICollection<string> notes,
+        CancellationToken cancellationToken)
     {
-        EngineCacheProbe.Snapshot cacheBefore = EngineCacheProbe.Capture();
-        var coldLoadStopwatch = Stopwatch.StartNew();
-        using var sessionLease = CreateSession(modelPath, preference, notes);
-        coldLoadStopwatch.Stop();
+        BenchmarkGraphPlan graph = CreateGraphPlan(modelPath, preference, "single", notes);
+        string? probeDirectory = ActiveSessionPlan.Value?.RuntimeCacheDirectory;
+        EngineCacheProbe.Snapshot cacheBefore = EngineCacheProbe.Capture(probeDirectory);
+        var sessionInitStopwatch = Stopwatch.StartNew();
+        using var sessionLease = CreateSession(graph, preference, notes);
+        sessionInitStopwatch.Stop();
         ColdLoadAttribution attribution = AttributeColdLoad(
-            coldLoadStopwatch.Elapsed.TotalMilliseconds, sessionLease.SelectedProvider, cacheBefore, notes);
+            sessionInitStopwatch.Elapsed.TotalMilliseconds, sessionLease.SelectedProvider, cacheBefore, probeDirectory, notes);
 
-        var inputSet = CreateInputs(modelPath, sessionLease.Session.InputMetadata);
+        var inputSet = CreateInputs(modelPath, sessionLease.Session.InputMetadata, settings, "single");
 
-        var warmupStopwatch = Stopwatch.StartNew();
-        using (sessionLease.Session.Run(inputSet.Values))
-        {
-        }
-        warmupStopwatch.Stop();
+        var phaseSnapshots = new List<EngineCacheProbe.Snapshot>();
+        BenchmarkSamplingResult sampling = BenchmarkSamplingLoop.Run(
+            _ => { using var results = sessionLease.Session.Run(inputSet.Values); },
+            runCount,
+            settings,
+            cancellationToken: cancellationToken,
+            phaseObserver: _ => phaseSnapshots.Add(EngineCacheProbe.Capture(probeDirectory)));
 
-        var latencySamples = new List<double>(runCount);
-        for (var runIndex = 0; runIndex < runCount; runIndex++)
-        {
-            var measuredStopwatch = Stopwatch.StartNew();
-            using var results = sessionLease.Session.Run(inputSet.Values);
-            measuredStopwatch.Stop();
-
-            latencySamples.Add(measuredStopwatch.Elapsed.TotalMilliseconds);
-        }
+        ReportPostInitCacheActivity(attribution.CacheAfter, phaseSnapshots, notes);
 
         return new BenchmarkExecution(
             Scenario: "onnx-model",
             RequestedProvider: sessionLease.RequestedProvider,
             SelectedProvider: sessionLease.SelectedProvider,
             ModelSizeBytes: new FileInfo(modelPath).Length,
-            ColdLoadMilliseconds: coldLoadStopwatch.Elapsed.TotalMilliseconds,
-            WarmupMilliseconds: warmupStopwatch.Elapsed.TotalMilliseconds,
-            WarmLatencyAverageMilliseconds: latencySamples.Average(),
-            WarmLatencyMinimumMilliseconds: latencySamples.Min(),
-            WarmLatencyMaximumMilliseconds: latencySamples.Max(),
+            SessionInitializationMilliseconds: sessionInitStopwatch.Elapsed.TotalMilliseconds,
+            Attribution: attribution,
+            Sampling: sampling,
+            ThroughputUnit: inputSet.AudioDurationSeconds is not null
+                ? BenchmarkThroughputUnit.AudioSecondsPerSecond
+                : BenchmarkThroughputUnit.PassesPerSecond,
             AudioDurationSeconds: inputSet.AudioDurationSeconds,
-            EngineCacheOutcome: attribution.Outcome,
-            EngineCacheBytesAdded: attribution.BytesAdded,
-            EngineCacheFilesAdded: attribution.FilesAdded,
-            ColdLoadDominantPhase: attribution.DominantPhase);
+            Graphs: sessionLease.Graphs);
+    }
+
+    /// <summary>
+    /// Run-scoped benchmark plan for TensorRT-RTX option normalization, artifact selection,
+    /// and runtime-cache isolation. Stored in <see cref="ActiveSessionPlan"/> so every graph
+    /// in a composite workload resolves consistently.
+    /// </summary>
+    private sealed record BenchmarkSessionPlan(
+        BenchmarkArtifactMode ArtifactMode,
+        bool EnableCudaGraph,
+        string? RuntimeCacheDirectory)
+    {
+        public static BenchmarkSessionPlan Default { get; } = new(
+            BenchmarkArtifactMode.Auto, EnableCudaGraph: false, RuntimeCacheDirectory: null);
+    }
+
+    /// <summary>Per-graph resolution: source path, the actual load path, and normalized TRT options.</summary>
+    private sealed record BenchmarkGraphPlan(
+        string SourcePath,
+        string LoadPath,
+        string LoadKind,
+        string Role,
+        IReadOnlyDictionary<string, string>? TrtOptions);
+
+    private static BenchmarkSessionPlan CreateSessionPlan(
+        BenchmarkRequest request,
+        BenchmarkExecutionSettings settings,
+        string fullReportPath,
+        ICollection<string> notes)
+    {
+        BenchmarkTensorRtRtxSettings trtSettings = settings.EffectiveTensorRtRtx;
+        if (request.ProviderPreference is not BenchmarkProviderPreference.TensorRtRtx)
+        {
+            if (trtSettings.EnableCudaGraph)
+            {
+                throw new ArgumentException("CUDA graph options require the trt-rtx provider.");
+            }
+
+            if (trtSettings.ArtifactMode is not BenchmarkArtifactMode.Auto
+                || trtSettings.CacheMode is not BenchmarkRuntimeCacheMode.Reuse
+                || trtSettings.RuntimeCacheDirectory is not null)
+            {
+                notes.Add("TensorRT-RTX benchmark options are ignored for a non-trt-rtx provider.");
+            }
+
+            return BenchmarkSessionPlan.Default;
+        }
+
+        if (ShouldUseCatalogDevicePolicyForPreference(request.ProviderPreference))
+        {
+            bool unsupported = trtSettings.EnableCudaGraph
+                || trtSettings.ArtifactMode is not BenchmarkArtifactMode.Auto
+                || trtSettings.CacheMode is not BenchmarkRuntimeCacheMode.Reuse
+                || trtSettings.RuntimeCacheDirectory is not null;
+            if (unsupported)
+            {
+                throw new NotSupportedException(
+                    "The WinML catalog device-policy route cannot honor TensorRT-RTX artifact, runtime-cache, or CUDA graph benchmark settings.");
+            }
+
+            return BenchmarkSessionPlan.Default;
+        }
+
+        string? cacheDirectory = trtSettings.CacheMode switch
+        {
+            BenchmarkRuntimeCacheMode.Isolated =>
+                ResolveIsolatedRuntimeCacheDirectory(trtSettings, fullReportPath, notes),
+            BenchmarkRuntimeCacheMode.Reuse =>
+                ResolveReusedRuntimeCacheDirectory(trtSettings, notes),
+            _ => null
+        };
+
+        return new BenchmarkSessionPlan(
+            trtSettings.ArtifactMode, trtSettings.EnableCudaGraph, cacheDirectory);
+    }
+
+    private static string? ResolveReusedRuntimeCacheDirectory(
+        BenchmarkTensorRtRtxSettings trtSettings,
+        ICollection<string> notes)
+    {
+        if (trtSettings.RuntimeCacheDirectory is null)
+        {
+            return null;
+        }
+
+        Directory.CreateDirectory(trtSettings.RuntimeCacheDirectory);
+        notes.Add($"Runtime cache directory: '{trtSettings.RuntimeCacheDirectory}'.");
+        return trtSettings.RuntimeCacheDirectory;
+    }
+
+    private static string ResolveIsolatedRuntimeCacheDirectory(
+        BenchmarkTensorRtRtxSettings trtSettings,
+        string fullReportPath,
+        ICollection<string> notes)
+    {
+        string directory = trtSettings.RuntimeCacheDirectory
+            ?? Path.Join(
+                Path.GetDirectoryName(fullReportPath) ?? Environment.CurrentDirectory,
+                $"benchmark-runtime-cache-{Guid.NewGuid():N}");
+        if (Directory.Exists(directory) && Directory.EnumerateFileSystemEntries(directory).Any())
+        {
+            throw new InvalidOperationException(
+                $"Isolated runtime cache directory '{directory}' already exists and is not empty; " +
+                "refusing to reuse another run's artifacts.");
+        }
+
+        Directory.CreateDirectory(directory);
+        notes.Add($"Isolated runtime cache directory: '{directory}'.");
+        return directory;
+    }
+
+    /// <summary>
+    /// Resolves the per-graph TRT-RTX options (production profile plus benchmark overrides)
+    /// and selects the actual load path through the same compatibility checks production uses.
+    /// Artifact validation and profile resolution run before the session-init timer.
+    /// </summary>
+    private static BenchmarkGraphPlan CreateGraphPlan(
+        string sourceModelPath,
+        BenchmarkProviderPreference preference,
+        string role,
+        ICollection<string> notes)
+    {
+        BenchmarkSessionPlan plan = ActiveSessionPlan.Value ?? BenchmarkSessionPlan.Default;
+        if (preference is not BenchmarkProviderPreference.TensorRtRtx
+            || ShouldUseCatalogDevicePolicyForPreference(preference))
+        {
+            return new BenchmarkGraphPlan(sourceModelPath, sourceModelPath, "source", role, null);
+        }
+
+        IReadOnlyDictionary<string, string> additional = BuildBenchmarkTrtAdditionalOptions(sourceModelPath, plan);
+        IReadOnlyDictionary<string, string> effective =
+            OnnxExecutionSessionFactory.BuildTensorRtRtxOptions(additional, plan.EnableCudaGraph);
+
+        if (plan.ArtifactMode is BenchmarkArtifactMode.Source)
+        {
+            notes.Add($"Artifact policy 'source': bypassing EP-context artifacts for '{sourceModelPath}'.");
+            return new BenchmarkGraphPlan(sourceModelPath, sourceModelPath, "source", role, additional);
+        }
+
+        string? artifactPath = EpContextLoadPathResolver.TryResolveLoadPath(sourceModelPath, effective);
+        if (artifactPath is not null)
+        {
+            notes.Add($"EP-context artifact selected for {role}: '{artifactPath}'.");
+            return new BenchmarkGraphPlan(sourceModelPath, artifactPath, "ep-context-artifact", role, additional);
+        }
+
+        if (plan.ArtifactMode is BenchmarkArtifactMode.Require)
+        {
+            throw new InvalidOperationException(
+                $"EP-context artifact required but no compatible artifact was found for '{sourceModelPath}' ({role}).");
+        }
+
+        return new BenchmarkGraphPlan(sourceModelPath, sourceModelPath, "source", role, additional);
+    }
+
+    private static IReadOnlyDictionary<string, string> BuildBenchmarkTrtAdditionalOptions(
+        string sourceModelPath,
+        BenchmarkSessionPlan plan)
+    {
+        var additional = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (EpContextTrtProfiles.Resolve(sourceModelPath) is { } profile)
+        {
+            foreach ((string key, string value) in profile)
+            {
+                // The benchmark's explicit graph selection wins over production profile
+                // defaults such as the MADLAD graph opt-in.
+                if (!key.Equals("enable_cuda_graph", StringComparison.OrdinalIgnoreCase))
+                {
+                    additional[key] = value;
+                }
+            }
+        }
+
+        if (plan.RuntimeCacheDirectory is not null)
+        {
+            additional["nv_runtime_cache_path"] = plan.RuntimeCacheDirectory;
+        }
+
+        return additional;
+    }
+
+    private static void ReportPostInitCacheActivity(
+        EngineCacheProbe.Snapshot cacheAfterInit,
+        IReadOnlyList<EngineCacheProbe.Snapshot> phaseSnapshots,
+        ICollection<string> notes)
+    {
+        if (phaseSnapshots.Count == 0)
+        {
+            return;
+        }
+
+        EngineCacheProbe.Snapshot last = phaseSnapshots[^1];
+        long bytesAdded = Math.Max(0, last.TotalBytes - cacheAfterInit.TotalBytes);
+        int filesAdded = Math.Max(0, last.FileCount - cacheAfterInit.FileCount);
+        if (bytesAdded > 0 || filesAdded > 0)
+        {
+            notes.Add(
+                $"Runtime cache grew after session initialization (+{filesAdded} file(s), +{bytesAdded} byte(s)); " +
+                "first-run/warmup/measurement cache writes are recorded as activity, not a proven hit.");
+        }
     }
 
     private readonly record struct ColdLoadAttribution(
         string Outcome,
         long BytesAdded,
         int FilesAdded,
-        string DominantPhase);
+        string DominantPhase,
+        EngineCacheProbe.Snapshot CacheAfter);
 
     private static readonly string[] EngineCacheRelevantProviderLabels = ["tensorrt-rtx", "tensorrt", "migraphx"];
 
@@ -259,6 +476,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         double coldLoadMilliseconds,
         string selectedProvider,
         EngineCacheProbe.Snapshot cacheBefore,
+        string? probeDirectory,
         ICollection<string> notes)
     {
         // Classify from the provider the session actually selected, not the requested
@@ -266,20 +484,22 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         // cache, so scoring it as a GPU cache run can produce a false "hit".
         bool isEngineCacheRelevant = EngineCacheRelevantProviderLabels.Contains(
             selectedProvider, StringComparer.OrdinalIgnoreCase);
-        EngineCacheProbe.Snapshot cacheAfter = EngineCacheProbe.Capture();
+        EngineCacheProbe.Snapshot cacheAfter = EngineCacheProbe.Capture(probeDirectory);
         string outcome = EngineCacheProbe.ClassifyOutcome(cacheBefore, cacheAfter, isEngineCacheRelevant);
         string dominant = EngineCacheProbe.ClassifyDominantPhase(outcome);
         long bytesAdded = Math.Max(0, cacheAfter.TotalBytes - cacheBefore.TotalBytes);
         int filesAdded = Math.Max(0, cacheAfter.FileCount - cacheBefore.FileCount);
         notes.Add(EngineCacheProbe.FormatNote(coldLoadMilliseconds, outcome, cacheBefore, cacheAfter, dominant));
-        return new ColdLoadAttribution(outcome, bytesAdded, filesAdded, dominant);
+        return new ColdLoadAttribution(outcome, bytesAdded, filesAdded, dominant, cacheAfter);
     }
 
     private static BenchmarkExecution RunWhisperExecution(
         string encoderModelPath,
         BenchmarkProviderPreference preference,
         int runCount,
-        ICollection<string> notes)
+        BenchmarkExecutionSettings settings,
+        ICollection<string> notes,
+        CancellationToken cancellationToken)
     {
         var decoderModelPath = ResolveWhisperDecoderPath(encoderModelPath);
         var configPath = Path.Join(Path.GetDirectoryName(encoderModelPath)!, "..", "config.json");
@@ -287,52 +507,51 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
 
         notes.Add($"Whisper decoder discovered at '{decoderModelPath}'.");
 
-        EngineCacheProbe.Snapshot cacheBefore = EngineCacheProbe.Capture();
-        var coldLoadStopwatch = Stopwatch.StartNew();
-        using var whisperLease = CreateWhisperSessionLease(encoderModelPath, decoderModelPath, preference, notes);
-        coldLoadStopwatch.Stop();
+        BenchmarkGraphPlan encoderGraph = CreateGraphPlan(encoderModelPath, preference, "encoder", notes);
+        BenchmarkGraphPlan decoderGraph = CreateGraphPlan(decoderModelPath, preference, "decoder", notes);
+        string? probeDirectory = ActiveSessionPlan.Value?.RuntimeCacheDirectory;
+        EngineCacheProbe.Snapshot cacheBefore = EngineCacheProbe.Capture(probeDirectory);
+        var sessionInitStopwatch = Stopwatch.StartNew();
+        using var whisperLease = CreateWhisperSessionLease(encoderGraph, decoderGraph, preference, notes);
+        sessionInitStopwatch.Stop();
         ColdLoadAttribution attribution = AttributeColdLoad(
-            coldLoadStopwatch.Elapsed.TotalMilliseconds, whisperLease.SelectedProvider, cacheBefore, notes);
+            sessionInitStopwatch.Elapsed.TotalMilliseconds, whisperLease.SelectedProvider, cacheBefore, probeDirectory, notes);
 
-        var encoderInputSet = CreateInputs(encoderModelPath, whisperLease.EncoderSession.InputMetadata);
+        var encoderInputSet = CreateInputs(encoderModelPath, whisperLease.EncoderSession.InputMetadata, settings, "encoder");
         var decoderStartTokenId = ResolveWhisperDecoderStartTokenId(fullConfigPath);
 
-        var warmupStopwatch = Stopwatch.StartNew();
-        RunWhisperPass(whisperLease, encoderInputSet, decoderStartTokenId);
-        warmupStopwatch.Stop();
+        var phaseSnapshots = new List<EngineCacheProbe.Snapshot>();
+        BenchmarkSamplingResult sampling = BenchmarkSamplingLoop.Run(
+            _ => RunWhisperPass(whisperLease, encoderInputSet, decoderStartTokenId),
+            runCount,
+            settings,
+            cancellationToken: cancellationToken,
+            phaseObserver: _ => phaseSnapshots.Add(EngineCacheProbe.Capture(probeDirectory)));
 
-        var latencySamples = new List<double>(runCount);
-        for (var runIndex = 0; runIndex < runCount; runIndex++)
-        {
-            var measuredStopwatch = Stopwatch.StartNew();
-            RunWhisperPass(whisperLease, encoderInputSet, decoderStartTokenId);
-            measuredStopwatch.Stop();
-
-            latencySamples.Add(measuredStopwatch.Elapsed.TotalMilliseconds);
-        }
+        ReportPostInitCacheActivity(attribution.CacheAfter, phaseSnapshots, notes);
 
         return new BenchmarkExecution(
             Scenario: "whisper-encoder-decoder",
             RequestedProvider: whisperLease.RequestedProvider,
             SelectedProvider: whisperLease.SelectedProvider,
             ModelSizeBytes: new FileInfo(encoderModelPath).Length + new FileInfo(decoderModelPath).Length,
-            ColdLoadMilliseconds: coldLoadStopwatch.Elapsed.TotalMilliseconds,
-            WarmupMilliseconds: warmupStopwatch.Elapsed.TotalMilliseconds,
-            WarmLatencyAverageMilliseconds: latencySamples.Average(),
-            WarmLatencyMinimumMilliseconds: latencySamples.Min(),
-            WarmLatencyMaximumMilliseconds: latencySamples.Max(),
+            SessionInitializationMilliseconds: sessionInitStopwatch.Elapsed.TotalMilliseconds,
+            Attribution: attribution,
+            Sampling: sampling,
+            ThroughputUnit: encoderInputSet.AudioDurationSeconds is not null
+                ? BenchmarkThroughputUnit.AudioSecondsPerSecond
+                : BenchmarkThroughputUnit.PassesPerSecond,
             AudioDurationSeconds: encoderInputSet.AudioDurationSeconds,
-            EngineCacheOutcome: attribution.Outcome,
-            EngineCacheBytesAdded: attribution.BytesAdded,
-            EngineCacheFilesAdded: attribution.FilesAdded,
-            ColdLoadDominantPhase: attribution.DominantPhase);
+            Graphs: whisperLease.Graphs);
     }
 
     private static BenchmarkExecution RunOpusExecution(
         string encoderModelPath,
         BenchmarkProviderPreference preference,
         int runCount,
-        ICollection<string> notes)
+        BenchmarkExecutionSettings settings,
+        ICollection<string> notes,
+        CancellationToken cancellationToken)
     {
         var decoderModelPath = ResolveOpusDecoderPath(encoderModelPath);
         var configPath = Path.Join(Path.GetDirectoryName(encoderModelPath)!, "..", "config.json");
@@ -340,45 +559,40 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
 
         notes.Add($"Opus decoder discovered at '{decoderModelPath}'.");
 
-        EngineCacheProbe.Snapshot cacheBefore = EngineCacheProbe.Capture();
-        var coldLoadStopwatch = Stopwatch.StartNew();
-        using var opusLease = CreateOpusSessionLease(encoderModelPath, decoderModelPath, preference, notes);
-        coldLoadStopwatch.Stop();
+        BenchmarkGraphPlan encoderGraph = CreateGraphPlan(encoderModelPath, preference, "encoder", notes);
+        BenchmarkGraphPlan decoderGraph = CreateGraphPlan(decoderModelPath, preference, "decoder", notes);
+        string? probeDirectory = ActiveSessionPlan.Value?.RuntimeCacheDirectory;
+        EngineCacheProbe.Snapshot cacheBefore = EngineCacheProbe.Capture(probeDirectory);
+        var sessionInitStopwatch = Stopwatch.StartNew();
+        using var opusLease = CreateOpusSessionLease(encoderGraph, decoderGraph, preference, notes);
+        sessionInitStopwatch.Stop();
         ColdLoadAttribution attribution = AttributeColdLoad(
-            coldLoadStopwatch.Elapsed.TotalMilliseconds, opusLease.SelectedProvider, cacheBefore, notes);
+            sessionInitStopwatch.Elapsed.TotalMilliseconds, opusLease.SelectedProvider, cacheBefore, probeDirectory, notes);
 
-        var encoderInputSet = CreateInputs(encoderModelPath, opusLease.EncoderSession.InputMetadata);
+        var encoderInputSet = CreateInputs(encoderModelPath, opusLease.EncoderSession.InputMetadata, settings, "encoder");
         var decoderStartTokenId = ResolveOpusDecoderStartTokenId(fullConfigPath);
 
-        var warmupStopwatch = Stopwatch.StartNew();
-        RunOpusPass(opusLease, encoderInputSet, decoderStartTokenId);
-        warmupStopwatch.Stop();
+        var phaseSnapshots = new List<EngineCacheProbe.Snapshot>();
+        BenchmarkSamplingResult sampling = BenchmarkSamplingLoop.Run(
+            _ => RunOpusPass(opusLease, encoderInputSet, decoderStartTokenId),
+            runCount,
+            settings,
+            cancellationToken: cancellationToken,
+            phaseObserver: _ => phaseSnapshots.Add(EngineCacheProbe.Capture(probeDirectory)));
 
-        var latencySamples = new List<double>(runCount);
-        for (var runIndex = 0; runIndex < runCount; runIndex++)
-        {
-            var measuredStopwatch = Stopwatch.StartNew();
-            RunOpusPass(opusLease, encoderInputSet, decoderStartTokenId);
-            measuredStopwatch.Stop();
-
-            latencySamples.Add(measuredStopwatch.Elapsed.TotalMilliseconds);
-        }
+        ReportPostInitCacheActivity(attribution.CacheAfter, phaseSnapshots, notes);
 
         return new BenchmarkExecution(
             Scenario: "opus-mt-encoder-decoder",
             RequestedProvider: opusLease.RequestedProvider,
             SelectedProvider: opusLease.SelectedProvider,
             ModelSizeBytes: new FileInfo(encoderModelPath).Length + new FileInfo(decoderModelPath).Length,
-            ColdLoadMilliseconds: coldLoadStopwatch.Elapsed.TotalMilliseconds,
-            WarmupMilliseconds: warmupStopwatch.Elapsed.TotalMilliseconds,
-            WarmLatencyAverageMilliseconds: latencySamples.Average(),
-            WarmLatencyMinimumMilliseconds: latencySamples.Min(),
-            WarmLatencyMaximumMilliseconds: latencySamples.Max(),
+            SessionInitializationMilliseconds: sessionInitStopwatch.Elapsed.TotalMilliseconds,
+            Attribution: attribution,
+            Sampling: sampling,
+            ThroughputUnit: BenchmarkThroughputUnit.PassesPerSecond,
             AudioDurationSeconds: null,
-            EngineCacheOutcome: attribution.Outcome,
-            EngineCacheBytesAdded: attribution.BytesAdded,
-            EngineCacheFilesAdded: attribution.FilesAdded,
-            ColdLoadDominantPhase: attribution.DominantPhase);
+            Graphs: opusLease.Graphs);
     }
 
     private static bool ShouldUseCatalogDevicePolicyForPreference(BenchmarkProviderPreference preference)
@@ -411,31 +625,31 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
     }
 
     private static BenchmarkSessionLease CreateSession(
-        string modelPath,
+        BenchmarkGraphPlan graph,
         BenchmarkProviderPreference preference,
         ICollection<string> notes) =>
         preference switch
         {
-            BenchmarkProviderPreference.Cpu => CreateCpuSession(modelPath, notes),
-            BenchmarkProviderPreference.Dml => CreateDirectMlSession(modelPath, notes),
-            BenchmarkProviderPreference.TensorRtRtx => CreateTensorRtRtxSession(modelPath, notes),
-            BenchmarkProviderPreference.Migraphx => CreateMigraphxSession(modelPath, notes),
-            BenchmarkProviderPreference.Cuda => CreateNativeCudaSession(modelPath, notes),
-            BenchmarkProviderPreference.TensorRt => CreateNativeTensorRtSession(modelPath, notes),
-            BenchmarkProviderPreference.Qnn => CreateQnnSession(modelPath, notes),
-            BenchmarkProviderPreference.Auto => CreateAutoSession(modelPath, notes),
+            BenchmarkProviderPreference.Cpu => CreateCpuSession(graph, notes),
+            BenchmarkProviderPreference.Dml => CreateDirectMlSession(graph, notes),
+            BenchmarkProviderPreference.TensorRtRtx => CreateTensorRtRtxSession(graph, notes),
+            BenchmarkProviderPreference.Migraphx => CreateMigraphxSession(graph, notes),
+            BenchmarkProviderPreference.Cuda => CreateNativeCudaSession(graph, notes),
+            BenchmarkProviderPreference.TensorRt => CreateNativeTensorRtSession(graph, notes),
+            BenchmarkProviderPreference.Qnn => CreateQnnSession(graph, notes),
+            BenchmarkProviderPreference.Auto => CreateAutoSession(graph, notes),
             _ => throw new ArgumentOutOfRangeException(nameof(preference), preference, "Unknown provider preference.")
         };
 
-    private static BenchmarkSessionLease CreateCpuSession(string modelPath, ICollection<string> notes)
+    private static BenchmarkSessionLease CreateCpuSession(BenchmarkGraphPlan graph, ICollection<string> notes)
     {
         notes.Add("Provider route: explicit CPU execution provider.");
         using SessionOptions options = CreateSessionOptions(BenchmarkProviderPreference.Cpu);
-        var session = new InferenceSession(modelPath, options);
-        return new BenchmarkSessionLease(session, "cpu", "cpu");
+        var session = new InferenceSession(graph.LoadPath, options);
+        return new BenchmarkSessionLease(session, "cpu", "cpu", [graph]);
     }
 
-    private static BenchmarkSessionLease CreateDirectMlSession(string modelPath, ICollection<string> notes)
+    private static BenchmarkSessionLease CreateDirectMlSession(BenchmarkGraphPlan graph, ICollection<string> notes)
     {
         const BenchmarkProviderPreference preference = BenchmarkProviderPreference.Dml;
         notes.Add(GetCatalogGpuRouteNote(preference, "explicit WinML catalog DirectML execution provider."));
@@ -445,28 +659,28 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             OnnxExecutionSessionFactory.AppendDirectMlProvider(options);
         }
 
-        var session = new InferenceSession(modelPath, options);
+        var session = new InferenceSession(graph.LoadPath, options);
         string selectedProviderLabel = ResolveBenchmarkEffectiveProviderLabel(session, preference);
-        return new BenchmarkSessionLease(session, "dml", selectedProviderLabel);
+        return new BenchmarkSessionLease(session, "dml", selectedProviderLabel, [graph]);
     }
 
-    private static BenchmarkSessionLease CreateTensorRtRtxSession(string modelPath, ICollection<string> notes)
+    private static BenchmarkSessionLease CreateTensorRtRtxSession(BenchmarkGraphPlan graph, ICollection<string> notes)
     {
         notes.Add(GetCatalogGpuRouteNote(
             BenchmarkProviderPreference.TensorRtRtx,
             "explicit TensorRT RTX EP ABI plugin execution provider."));
-        ProviderSession providerSession = CreateTensorRtRtxProviderSession(modelPath, notes);
-        return new BenchmarkSessionLease(providerSession.Session, "trt-rtx", providerSession.SelectedProvider);
+        ProviderSession providerSession = CreateTensorRtRtxProviderSession(graph, notes);
+        return new BenchmarkSessionLease(providerSession.Session, "trt-rtx", providerSession.SelectedProvider, [graph]);
     }
 
-    private static BenchmarkSessionLease CreateMigraphxSession(string modelPath, ICollection<string> notes)
+    private static BenchmarkSessionLease CreateMigraphxSession(BenchmarkGraphPlan graph, ICollection<string> notes)
     {
         notes.Add(GetCatalogGpuRouteNote(
             BenchmarkProviderPreference.Migraphx,
             "explicit MIGraphX execution provider."));
-        var session = CreateMigraphxInferenceSession(modelPath, notes);
+        var session = CreateMigraphxInferenceSession(graph.LoadPath, notes);
         string selectedProviderLabel = ResolveBenchmarkEffectiveProviderLabel(session, BenchmarkProviderPreference.Migraphx);
-        return new BenchmarkSessionLease(session, "migraphx", selectedProviderLabel);
+        return new BenchmarkSessionLease(session, "migraphx", selectedProviderLabel, [graph]);
     }
 
     private static InferenceSession CreateMigraphxInferenceSession(string modelPath, ICollection<string> notes)
@@ -495,14 +709,14 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         return new InferenceSession(modelPath, options);
     }
 
-    private static BenchmarkSessionLease CreateQnnSession(string modelPath, ICollection<string> notes)
+    private static BenchmarkSessionLease CreateQnnSession(BenchmarkGraphPlan graph, ICollection<string> notes)
     {
         notes.Add(GetCatalogGpuRouteNote(
             BenchmarkProviderPreference.Qnn,
             "explicit WinML catalog QNN execution provider."));
-        var session = CreateQnnInferenceSession(modelPath, notes);
+        var session = CreateQnnInferenceSession(graph.LoadPath, notes);
         string selectedProviderLabel = ResolveBenchmarkEffectiveProviderLabel(session, BenchmarkProviderPreference.Qnn);
-        return new BenchmarkSessionLease(session, "qnn", selectedProviderLabel);
+        return new BenchmarkSessionLease(session, "qnn", selectedProviderLabel, [graph]);
     }
 
     private static InferenceSession CreateQnnInferenceSession(string modelPath, ICollection<string> notes)
@@ -544,18 +758,18 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         }
     }
 
-    private static BenchmarkSessionLease CreateNativeCudaSession(string modelPath, ICollection<string> notes)
+    private static BenchmarkSessionLease CreateNativeCudaSession(BenchmarkGraphPlan graph, ICollection<string> notes)
     {
         notes.Add("Provider route: explicit native ORT CUDA execution provider.");
-        var session = CreateNativeCudaInferenceSession(modelPath, notes);
-        return new BenchmarkSessionLease(session, "cuda", "cuda");
+        var session = CreateNativeCudaInferenceSession(graph.LoadPath, notes);
+        return new BenchmarkSessionLease(session, "cuda", "cuda", [graph]);
     }
 
-    private static BenchmarkSessionLease CreateNativeTensorRtSession(string modelPath, ICollection<string> notes)
+    private static BenchmarkSessionLease CreateNativeTensorRtSession(BenchmarkGraphPlan graph, ICollection<string> notes)
     {
         notes.Add("Provider route: explicit native ORT TensorRT execution provider.");
-        var session = CreateNativeTensorRtInferenceSession(modelPath, notes);
-        return new BenchmarkSessionLease(session, "tensorrt", "tensorrt");
+        var session = CreateNativeTensorRtInferenceSession(graph.LoadPath, notes);
+        return new BenchmarkSessionLease(session, "tensorrt", "tensorrt", [graph]);
     }
 
     private static InferenceSession CreateNativeCudaInferenceSession(string modelPath, ICollection<string> notes)
@@ -648,7 +862,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         }
     }
 
-    private static BenchmarkSessionLease CreateAutoSession(string modelPath, ICollection<string> notes)
+    private static BenchmarkSessionLease CreateAutoSession(BenchmarkGraphPlan graph, ICollection<string> notes)
     {
         const BenchmarkProviderPreference preference = BenchmarkProviderPreference.Auto;
         notes.Add("Provider route: auto selected.");
@@ -657,25 +871,25 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         {
             notes.Add("Auto route: catalog device policy (ORT auto-selects among registered catalog EPs).");
             using SessionOptions options = CreateSessionOptions(preference);
-            var session = new InferenceSession(modelPath, options);
+            var session = new InferenceSession(graph.LoadPath, options);
             string selectedProviderLabel = ResolveBenchmarkEffectiveProviderLabel(session, preference);
-            return new BenchmarkSessionLease(session, "auto", selectedProviderLabel);
+            return new BenchmarkSessionLease(session, "auto", selectedProviderLabel, [graph]);
         }
 
         try
         {
             using SessionOptions options = CreateSessionOptions(preference);
             OnnxExecutionSessionFactory.AppendDirectMlProvider(options);
-            var session = new InferenceSession(modelPath, options);
+            var session = new InferenceSession(graph.LoadPath, options);
             notes.Add("Auto route resolved to DirectML.");
-            return new BenchmarkSessionLease(session, "auto", "dml");
+            return new BenchmarkSessionLease(session, "auto", "dml", [graph]);
         }
         catch (Exception ex) when (ex is OnnxRuntimeException or InvalidOperationException or EntryPointNotFoundException or DllNotFoundException)
         {
             notes.Add($"Auto route fell back to CPU because DirectML was unavailable: {ex.Message}");
             using SessionOptions cpuOptions = CreateSessionOptions(BenchmarkProviderPreference.Cpu);
-            var session = new InferenceSession(modelPath, cpuOptions);
-            return new BenchmarkSessionLease(session, "auto", "cpu");
+            var session = new InferenceSession(graph.LoadPath, cpuOptions);
+            return new BenchmarkSessionLease(session, "auto", "cpu", [graph]);
         }
     }
 
@@ -698,20 +912,22 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
     }
 
     private static ProviderSession CreateTensorRtRtxProviderSession(
-        string modelPath,
+        BenchmarkGraphPlan graph,
         ICollection<string> notes)
     {
         const BenchmarkProviderPreference preference = BenchmarkProviderPreference.TensorRtRtx;
+        BenchmarkSessionPlan plan = ActiveSessionPlan.Value ?? BenchmarkSessionPlan.Default;
         using SessionOptions options = CreateSessionOptions(preference);
         if (ShouldUseCatalogDevicePolicyForPreference(preference))
         {
-            var session = new InferenceSession(modelPath, options);
+            var session = new InferenceSession(graph.LoadPath, options);
             string effectiveProviderLabel = ResolveBenchmarkEffectiveProviderLabel(session, preference);
             notes.Add($"Selected provider: {effectiveProviderLabel} (catalog device policy).");
             return new ProviderSession(session, effectiveProviderLabel);
         }
 
-        ExecutionProviderKind selectedProvider = OnnxExecutionSessionFactory.AppendTensorRtRtxOrFallbackProvider(options);
+        ExecutionProviderKind selectedProvider = OnnxExecutionSessionFactory.AppendTensorRtRtxOrFallbackProvider(
+            options, graph.TrtOptions, plan.EnableCudaGraph);
         string selectedProviderLabel = FormatExecutionProvider(selectedProvider);
         if (selectedProvider is not ExecutionProviderKind.TensorRTRtx)
         {
@@ -719,7 +935,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
                 $"TensorRT RTX EP ABI plugin device is not visible in OrtEnv.GetEpDevices(); refusing fallback to {selectedProviderLabel} for explicit trt-rtx benchmark.");
         }
 
-        return new ProviderSession(new InferenceSession(modelPath, options), selectedProviderLabel);
+        return new ProviderSession(new InferenceSession(graph.LoadPath, options), selectedProviderLabel);
     }
 
     private static string FormatProviderPreference(BenchmarkProviderPreference preference) =>
@@ -766,15 +982,10 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
 
     private static double? CalculateRealTimeFactorAverage(
         double? audioDurationSeconds,
-        double averageLatencyMilliseconds)
-    {
-        if (audioDurationSeconds is null || audioDurationSeconds <= 0)
-        {
-            return null;
-        }
-
-        return (averageLatencyMilliseconds / 1000d) / audioDurationSeconds.Value;
-    }
+        double? averageLatencyMilliseconds) =>
+        audioDurationSeconds is > 0 && averageLatencyMilliseconds is { } average
+            ? (average / 1000d) / audioDurationSeconds.Value
+            : null;
 
     private static BenchmarkReport CreateReport(
         string scenario,
@@ -806,7 +1017,9 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
 
     private static BenchmarkInputSet CreateInputs(
         string modelPath,
-        IReadOnlyDictionary<string, NodeMetadata> inputMetadata)
+        IReadOnlyDictionary<string, NodeMetadata> inputMetadata,
+        BenchmarkExecutionSettings settings,
+        string graphRole)
     {
         var values = new List<NamedOnnxValue>(inputMetadata.Count);
         var modelProfile = DetermineModelProfile(modelPath, inputMetadata);
@@ -814,7 +1027,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
 
         foreach (var pair in inputMetadata)
         {
-            values.Add(CreateInputValue(modelProfile, pair.Key, pair.Value));
+            values.Add(CreateInputValue(modelProfile, pair.Key, pair.Value, settings, graphRole));
         }
 
         if (modelProfile is BenchmarkModelProfile.SileroVad)
@@ -832,7 +1045,9 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
     private static NamedOnnxValue CreateInputValue(
         BenchmarkModelProfile modelProfile,
         string inputName,
-        NodeMetadata metadata)
+        NodeMetadata metadata,
+        BenchmarkExecutionSettings settings,
+        string graphRole)
     {
         if (!metadata.IsTensor)
         {
@@ -841,24 +1056,37 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
 
         return metadata.ElementDataType switch
         {
-            TensorElementType.Float => NamedOnnxValue.CreateFromTensor(inputName, CreateFloatTensor(modelProfile, inputName, metadata)),
-            TensorElementType.Float16 => NamedOnnxValue.CreateFromTensor(inputName, CreateFloat16Tensor(modelProfile, inputName, metadata)),
+            TensorElementType.Float => NamedOnnxValue.CreateFromTensor(inputName, CreateFloatTensor(modelProfile, inputName, metadata, settings, graphRole)),
+            TensorElementType.Float16 => NamedOnnxValue.CreateFromTensor(inputName, CreateFloat16Tensor(modelProfile, inputName, metadata, settings, graphRole)),
             TensorElementType.Int32 => NamedOnnxValue.CreateFromTensor(inputName, CreateInt32Tensor(modelProfile, inputName, metadata)),
             TensorElementType.Int64 => NamedOnnxValue.CreateFromTensor(inputName, CreateInt64Tensor(modelProfile, inputName, metadata)),
             _ => throw new NotSupportedException($"Input '{inputName}' uses unsupported tensor element type '{metadata.ElementDataType}'.")
         };
     }
 
+    private static float ResolveSyntheticScale(BenchmarkModelProfile modelProfile, string inputName) =>
+        modelProfile is BenchmarkModelProfile.SileroVad
+        && inputName.Equals("input", StringComparison.Ordinal)
+            ? 0.1f
+            : 1f;
+
     private static DenseTensor<float> CreateFloatTensor(
         BenchmarkModelProfile modelProfile,
         string inputName,
-        NodeMetadata metadata)
+        NodeMetadata metadata,
+        BenchmarkExecutionSettings settings,
+        string graphRole)
     {
         var dimensions = ResolveDimensions(modelProfile, inputName, metadata);
         var count = CountElements(dimensions);
         var data = new float[count];
 
-        if (modelProfile is BenchmarkModelProfile.SileroVad && inputName.Equals("input", StringComparison.Ordinal))
+        if (settings.InputMode is BenchmarkInputMode.Synthetic)
+        {
+            BenchmarkInputGenerator.Fill(
+                data, settings.InputSeed, graphRole, inputName, ResolveSyntheticScale(modelProfile, inputName));
+        }
+        else if (modelProfile is BenchmarkModelProfile.SileroVad && inputName.Equals("input", StringComparison.Ordinal))
         {
             if (data.Length > 0)
             {
@@ -879,13 +1107,25 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
     private static DenseTensor<Float16> CreateFloat16Tensor(
         BenchmarkModelProfile modelProfile,
         string inputName,
-        NodeMetadata metadata)
+        NodeMetadata metadata,
+        BenchmarkExecutionSettings settings,
+        string graphRole)
     {
         var dimensions = ResolveDimensions(modelProfile, inputName, metadata);
         var count = CountElements(dimensions);
         var data = new Float16[count];
 
-        if (modelProfile is BenchmarkModelProfile.WhisperEncoder && IsWhisperAudioFeaturesInput(inputName))
+        if (settings.InputMode is BenchmarkInputMode.Synthetic)
+        {
+            var floats = new float[count];
+            BenchmarkInputGenerator.Fill(
+                floats, settings.InputSeed, graphRole, inputName, ResolveSyntheticScale(modelProfile, inputName));
+            for (var index = 0; index < data.Length; index++)
+            {
+                data[index] = (Float16)floats[index];
+            }
+        }
+        else if (modelProfile is BenchmarkModelProfile.WhisperEncoder && IsWhisperAudioFeaturesInput(inputName))
         {
             for (var index = 0; index < data.Length; index++)
             {
@@ -1330,152 +1570,158 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
     }
 
     private static WhisperSessionLease CreateWhisperSessionLease(
-        string encoderModelPath,
-        string decoderModelPath,
+        BenchmarkGraphPlan encoderGraph,
+        BenchmarkGraphPlan decoderGraph,
         BenchmarkProviderPreference preference,
         ICollection<string> notes) =>
         preference switch
         {
-            BenchmarkProviderPreference.Cpu => CreateCpuWhisperSessionLease(encoderModelPath, decoderModelPath, notes),
-            BenchmarkProviderPreference.Dml => CreateDirectMlWhisperSessionLease(encoderModelPath, decoderModelPath, notes),
-            BenchmarkProviderPreference.TensorRtRtx => CreateTensorRtRtxWhisperSessionLease(encoderModelPath, decoderModelPath, notes),
-            BenchmarkProviderPreference.Migraphx => CreateMigraphxWhisperSessionLease(encoderModelPath, decoderModelPath, notes),
-            BenchmarkProviderPreference.Cuda => CreateNativeCudaWhisperSessionLease(encoderModelPath, decoderModelPath, notes),
-            BenchmarkProviderPreference.TensorRt => CreateNativeTensorRtWhisperSessionLease(encoderModelPath, decoderModelPath, notes),
-            BenchmarkProviderPreference.Qnn => CreateQnnWhisperSessionLease(encoderModelPath, decoderModelPath, notes),
-            BenchmarkProviderPreference.Auto => CreateAutoWhisperSessionLease(encoderModelPath, decoderModelPath, notes),
+            BenchmarkProviderPreference.Cpu => CreateCpuWhisperSessionLease(encoderGraph, decoderGraph, notes),
+            BenchmarkProviderPreference.Dml => CreateDirectMlWhisperSessionLease(encoderGraph, decoderGraph, notes),
+            BenchmarkProviderPreference.TensorRtRtx => CreateTensorRtRtxWhisperSessionLease(encoderGraph, decoderGraph, notes),
+            BenchmarkProviderPreference.Migraphx => CreateMigraphxWhisperSessionLease(encoderGraph, decoderGraph, notes),
+            BenchmarkProviderPreference.Cuda => CreateNativeCudaWhisperSessionLease(encoderGraph, decoderGraph, notes),
+            BenchmarkProviderPreference.TensorRt => CreateNativeTensorRtWhisperSessionLease(encoderGraph, decoderGraph, notes),
+            BenchmarkProviderPreference.Qnn => CreateQnnWhisperSessionLease(encoderGraph, decoderGraph, notes),
+            BenchmarkProviderPreference.Auto => CreateAutoWhisperSessionLease(encoderGraph, decoderGraph, notes),
             _ => throw new ArgumentOutOfRangeException(nameof(preference), preference, "Unknown provider preference.")
         };
 
     private static OpusSessionLease CreateOpusSessionLease(
-        string encoderModelPath,
-        string decoderModelPath,
+        BenchmarkGraphPlan encoderGraph,
+        BenchmarkGraphPlan decoderGraph,
         BenchmarkProviderPreference preference,
         ICollection<string> notes) =>
         preference switch
         {
-            BenchmarkProviderPreference.Cpu => CreateCpuOpusSessionLease(encoderModelPath, decoderModelPath, notes),
-            BenchmarkProviderPreference.Dml => CreateDirectMlOpusSessionLease(encoderModelPath, decoderModelPath, notes),
-            BenchmarkProviderPreference.TensorRtRtx => CreateTensorRtRtxOpusSessionLease(encoderModelPath, decoderModelPath, notes),
-            BenchmarkProviderPreference.Migraphx => CreateMigraphxOpusSessionLease(encoderModelPath, decoderModelPath, notes),
-            BenchmarkProviderPreference.Cuda => CreateNativeCudaOpusSessionLease(encoderModelPath, decoderModelPath, notes),
-            BenchmarkProviderPreference.TensorRt => CreateNativeTensorRtOpusSessionLease(encoderModelPath, decoderModelPath, notes),
-            BenchmarkProviderPreference.Qnn => CreateQnnOpusSessionLease(encoderModelPath, decoderModelPath, notes),
-            BenchmarkProviderPreference.Auto => CreateAutoOpusSessionLease(encoderModelPath, decoderModelPath, notes),
+            BenchmarkProviderPreference.Cpu => CreateCpuOpusSessionLease(encoderGraph, decoderGraph, notes),
+            BenchmarkProviderPreference.Dml => CreateDirectMlOpusSessionLease(encoderGraph, decoderGraph, notes),
+            BenchmarkProviderPreference.TensorRtRtx => CreateTensorRtRtxOpusSessionLease(encoderGraph, decoderGraph, notes),
+            BenchmarkProviderPreference.Migraphx => CreateMigraphxOpusSessionLease(encoderGraph, decoderGraph, notes),
+            BenchmarkProviderPreference.Cuda => CreateNativeCudaOpusSessionLease(encoderGraph, decoderGraph, notes),
+            BenchmarkProviderPreference.TensorRt => CreateNativeTensorRtOpusSessionLease(encoderGraph, decoderGraph, notes),
+            BenchmarkProviderPreference.Qnn => CreateQnnOpusSessionLease(encoderGraph, decoderGraph, notes),
+            BenchmarkProviderPreference.Auto => CreateAutoOpusSessionLease(encoderGraph, decoderGraph, notes),
             _ => throw new ArgumentOutOfRangeException(nameof(preference), preference, "Unknown provider preference.")
         };
 
     private static WhisperSessionLease CreateCpuWhisperSessionLease(
-        string encoderModelPath,
-        string decoderModelPath,
+        BenchmarkGraphPlan encoderGraph,
+        BenchmarkGraphPlan decoderGraph,
         ICollection<string> notes)
     {
         notes.Add("Provider route: explicit CPU execution provider.");
         using SessionOptions encoderOptions = CreateSessionOptions(BenchmarkProviderPreference.Cpu);
         using SessionOptions decoderOptions = CreateSessionOptions(BenchmarkProviderPreference.Cpu);
         return new WhisperSessionLease(
-            new InferenceSession(encoderModelPath, encoderOptions),
-            new InferenceSession(decoderModelPath, decoderOptions),
+            new InferenceSession(encoderGraph.LoadPath, encoderOptions),
+            new InferenceSession(decoderGraph.LoadPath, decoderOptions),
             "cpu",
-            "cpu");
+            "cpu",
+            [encoderGraph, decoderGraph]);
     }
 
     private static WhisperSessionLease CreateDirectMlWhisperSessionLease(
-        string encoderModelPath,
-        string decoderModelPath,
+        BenchmarkGraphPlan encoderGraph,
+        BenchmarkGraphPlan decoderGraph,
         ICollection<string> notes)
     {
         const BenchmarkProviderPreference preference = BenchmarkProviderPreference.Dml;
         notes.Add(GetCatalogGpuRouteNote(preference, "explicit WinML catalog DirectML execution provider."));
-        var encoderSession = CreateDirectMlSession(encoderModelPath);
-        var decoderSession = CreateDirectMlSession(decoderModelPath);
+        var encoderSession = CreateDirectMlSession(encoderGraph);
+        var decoderSession = CreateDirectMlSession(decoderGraph);
         string selectedProviderLabel = ResolvePairSelectedProvider(
             ResolveBenchmarkEffectiveProviderLabel(encoderSession, preference),
             ResolveBenchmarkEffectiveProviderLabel(decoderSession, preference),
             notes);
-        return new WhisperSessionLease(encoderSession, decoderSession, "dml", selectedProviderLabel);
+        return new WhisperSessionLease(encoderSession, decoderSession, "dml", selectedProviderLabel, [encoderGraph, decoderGraph]);
     }
 
     private static WhisperSessionLease CreateTensorRtRtxWhisperSessionLease(
-        string encoderModelPath,
-        string decoderModelPath,
+        BenchmarkGraphPlan encoderGraph,
+        BenchmarkGraphPlan decoderGraph,
         ICollection<string> notes)
     {
         notes.Add("Provider route: explicit TensorRT RTX EP ABI plugin execution provider.");
-        ProviderSession encoderSession = CreateTensorRtRtxProviderSession(encoderModelPath, notes);
-        ProviderSession decoderSession = CreateTensorRtRtxProviderSession(decoderModelPath, notes);
+        ProviderSession encoderSession = CreateTensorRtRtxProviderSession(encoderGraph, notes);
+        ProviderSession decoderSession = CreateTensorRtRtxProviderSession(decoderGraph, notes);
         return new WhisperSessionLease(
             encoderSession.Session,
             decoderSession.Session,
             "trt-rtx",
-            ResolvePairSelectedProvider(encoderSession.SelectedProvider, decoderSession.SelectedProvider, notes));
+            ResolvePairSelectedProvider(encoderSession.SelectedProvider, decoderSession.SelectedProvider, notes),
+            [encoderGraph, decoderGraph]);
     }
 
     private static WhisperSessionLease CreateNativeCudaWhisperSessionLease(
-        string encoderModelPath,
-        string decoderModelPath,
+        BenchmarkGraphPlan encoderGraph,
+        BenchmarkGraphPlan decoderGraph,
         ICollection<string> notes)
     {
         notes.Add("Provider route: explicit native ORT CUDA execution provider.");
         return new WhisperSessionLease(
-            CreateNativeCudaInferenceSession(encoderModelPath, notes),
-            CreateNativeCudaInferenceSession(decoderModelPath, notes),
+            CreateNativeCudaInferenceSession(encoderGraph.LoadPath, notes),
+            CreateNativeCudaInferenceSession(decoderGraph.LoadPath, notes),
             "cuda",
-            "cuda");
+            "cuda",
+            [encoderGraph, decoderGraph]);
     }
 
     private static WhisperSessionLease CreateNativeTensorRtWhisperSessionLease(
-        string encoderModelPath,
-        string decoderModelPath,
+        BenchmarkGraphPlan encoderGraph,
+        BenchmarkGraphPlan decoderGraph,
         ICollection<string> notes)
     {
         notes.Add("Provider route: explicit native ORT TensorRT execution provider.");
         return new WhisperSessionLease(
-            CreateNativeTensorRtInferenceSession(encoderModelPath, notes),
-            CreateNativeTensorRtInferenceSession(decoderModelPath, notes),
+            CreateNativeTensorRtInferenceSession(encoderGraph.LoadPath, notes),
+            CreateNativeTensorRtInferenceSession(decoderGraph.LoadPath, notes),
             "tensorrt",
-            "tensorrt");
+            "tensorrt",
+            [encoderGraph, decoderGraph]);
     }
 
     private static WhisperSessionLease CreateMigraphxWhisperSessionLease(
-        string encoderModelPath,
-        string decoderModelPath,
+        BenchmarkGraphPlan encoderGraph,
+        BenchmarkGraphPlan decoderGraph,
         ICollection<string> notes)
     {
         notes.Add("Provider route: explicit MIGraphX execution provider.");
         return new WhisperSessionLease(
-            CreateMigraphxInferenceSession(encoderModelPath, notes),
-            CreateMigraphxInferenceSession(decoderModelPath, notes),
+            CreateMigraphxInferenceSession(encoderGraph.LoadPath, notes),
+            CreateMigraphxInferenceSession(decoderGraph.LoadPath, notes),
             "migraphx",
-            "migraphx");
+            "migraphx",
+            [encoderGraph, decoderGraph]);
     }
 
     private static WhisperSessionLease CreateQnnWhisperSessionLease(
-        string encoderModelPath,
-        string decoderModelPath,
+        BenchmarkGraphPlan encoderGraph,
+        BenchmarkGraphPlan decoderGraph,
         ICollection<string> notes)
     {
         notes.Add("Provider route: explicit WinML catalog QNN execution provider.");
         return new WhisperSessionLease(
-            CreateQnnInferenceSession(encoderModelPath, notes),
-            CreateQnnInferenceSession(decoderModelPath, notes),
+            CreateQnnInferenceSession(encoderGraph.LoadPath, notes),
+            CreateQnnInferenceSession(decoderGraph.LoadPath, notes),
             "qnn",
-            "qnn");
+            "qnn",
+            [encoderGraph, decoderGraph]);
     }
 
     private static WhisperSessionLease CreateAutoWhisperSessionLease(
-        string encoderModelPath,
-        string decoderModelPath,
+        BenchmarkGraphPlan encoderGraph,
+        BenchmarkGraphPlan decoderGraph,
         ICollection<string> notes)
     {
         notes.Add("Provider route: auto selected.");
 
         try
         {
-            var encoderSession = CreateDirectMlSession(encoderModelPath);
-            var decoderSession = CreateDirectMlSession(decoderModelPath);
+            var encoderSession = CreateDirectMlSession(encoderGraph);
+            var decoderSession = CreateDirectMlSession(decoderGraph);
             notes.Add("Auto route resolved to DirectML.");
-            return new WhisperSessionLease(encoderSession, decoderSession, "auto", "dml");
+            return new WhisperSessionLease(encoderSession, decoderSession, "auto", "dml", [encoderGraph, decoderGraph]);
         }
         catch (Exception ex) when (ex is OnnxRuntimeException or InvalidOperationException or EntryPointNotFoundException or DllNotFoundException)
         {
@@ -1483,124 +1729,131 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             using SessionOptions encoderOptions = CreateSessionOptions(BenchmarkProviderPreference.Cpu);
             using SessionOptions decoderOptions = CreateSessionOptions(BenchmarkProviderPreference.Cpu);
             return new WhisperSessionLease(
-                new InferenceSession(encoderModelPath, encoderOptions),
-                new InferenceSession(decoderModelPath, decoderOptions),
+                new InferenceSession(encoderGraph.LoadPath, encoderOptions),
+                new InferenceSession(decoderGraph.LoadPath, decoderOptions),
                 "auto",
-                "cpu");
+                "cpu",
+                [encoderGraph, decoderGraph]);
         }
     }
 
     private static OpusSessionLease CreateCpuOpusSessionLease(
-        string encoderModelPath,
-        string decoderModelPath,
+        BenchmarkGraphPlan encoderGraph,
+        BenchmarkGraphPlan decoderGraph,
         ICollection<string> notes)
     {
         notes.Add("Provider route: explicit CPU execution provider.");
         using SessionOptions encoderOptions = CreateSessionOptions(BenchmarkProviderPreference.Cpu);
         using SessionOptions decoderOptions = CreateSessionOptions(BenchmarkProviderPreference.Cpu);
         return new OpusSessionLease(
-            new InferenceSession(encoderModelPath, encoderOptions),
-            new InferenceSession(decoderModelPath, decoderOptions),
+            new InferenceSession(encoderGraph.LoadPath, encoderOptions),
+            new InferenceSession(decoderGraph.LoadPath, decoderOptions),
             "cpu",
-            "cpu");
+            "cpu",
+            [encoderGraph, decoderGraph]);
     }
 
     private static OpusSessionLease CreateDirectMlOpusSessionLease(
-        string encoderModelPath,
-        string decoderModelPath,
+        BenchmarkGraphPlan encoderGraph,
+        BenchmarkGraphPlan decoderGraph,
         ICollection<string> notes)
     {
         const BenchmarkProviderPreference preference = BenchmarkProviderPreference.Dml;
         notes.Add(GetCatalogGpuRouteNote(preference, "explicit WinML catalog DirectML execution provider."));
-        var encoderSession = CreateDirectMlSession(encoderModelPath);
-        var decoderSession = CreateDirectMlSession(decoderModelPath);
+        var encoderSession = CreateDirectMlSession(encoderGraph);
+        var decoderSession = CreateDirectMlSession(decoderGraph);
         string selectedProviderLabel = ResolvePairSelectedProvider(
             ResolveBenchmarkEffectiveProviderLabel(encoderSession, preference),
             ResolveBenchmarkEffectiveProviderLabel(decoderSession, preference),
             notes);
-        return new OpusSessionLease(encoderSession, decoderSession, "dml", selectedProviderLabel);
+        return new OpusSessionLease(encoderSession, decoderSession, "dml", selectedProviderLabel, [encoderGraph, decoderGraph]);
     }
 
     private static OpusSessionLease CreateTensorRtRtxOpusSessionLease(
-        string encoderModelPath,
-        string decoderModelPath,
+        BenchmarkGraphPlan encoderGraph,
+        BenchmarkGraphPlan decoderGraph,
         ICollection<string> notes)
     {
         notes.Add("Provider route: explicit TensorRT RTX EP ABI plugin execution provider.");
-        ProviderSession encoderSession = CreateTensorRtRtxProviderSession(encoderModelPath, notes);
-        ProviderSession decoderSession = CreateTensorRtRtxProviderSession(decoderModelPath, notes);
+        ProviderSession encoderSession = CreateTensorRtRtxProviderSession(encoderGraph, notes);
+        ProviderSession decoderSession = CreateTensorRtRtxProviderSession(decoderGraph, notes);
         return new OpusSessionLease(
             encoderSession.Session,
             decoderSession.Session,
             "trt-rtx",
-            ResolvePairSelectedProvider(encoderSession.SelectedProvider, decoderSession.SelectedProvider, notes));
+            ResolvePairSelectedProvider(encoderSession.SelectedProvider, decoderSession.SelectedProvider, notes),
+            [encoderGraph, decoderGraph]);
     }
 
     private static OpusSessionLease CreateMigraphxOpusSessionLease(
-        string encoderModelPath,
-        string decoderModelPath,
+        BenchmarkGraphPlan encoderGraph,
+        BenchmarkGraphPlan decoderGraph,
         ICollection<string> notes)
     {
         notes.Add("Provider route: explicit MIGraphX execution provider.");
         return new OpusSessionLease(
-            CreateMigraphxInferenceSession(encoderModelPath, notes),
-            CreateMigraphxInferenceSession(decoderModelPath, notes),
+            CreateMigraphxInferenceSession(encoderGraph.LoadPath, notes),
+            CreateMigraphxInferenceSession(decoderGraph.LoadPath, notes),
             "migraphx",
-            "migraphx");
+            "migraphx",
+            [encoderGraph, decoderGraph]);
     }
 
     private static OpusSessionLease CreateQnnOpusSessionLease(
-        string encoderModelPath,
-        string decoderModelPath,
+        BenchmarkGraphPlan encoderGraph,
+        BenchmarkGraphPlan decoderGraph,
         ICollection<string> notes)
     {
         notes.Add("Provider route: explicit WinML catalog QNN execution provider.");
         return new OpusSessionLease(
-            CreateQnnInferenceSession(encoderModelPath, notes),
-            CreateQnnInferenceSession(decoderModelPath, notes),
+            CreateQnnInferenceSession(encoderGraph.LoadPath, notes),
+            CreateQnnInferenceSession(decoderGraph.LoadPath, notes),
             "qnn",
-            "qnn");
+            "qnn",
+            [encoderGraph, decoderGraph]);
     }
 
     private static OpusSessionLease CreateNativeCudaOpusSessionLease(
-        string encoderModelPath,
-        string decoderModelPath,
+        BenchmarkGraphPlan encoderGraph,
+        BenchmarkGraphPlan decoderGraph,
         ICollection<string> notes)
     {
         notes.Add("Provider route: explicit native ORT CUDA execution provider.");
         return new OpusSessionLease(
-            CreateNativeCudaInferenceSession(encoderModelPath, notes),
-            CreateNativeCudaInferenceSession(decoderModelPath, notes),
+            CreateNativeCudaInferenceSession(encoderGraph.LoadPath, notes),
+            CreateNativeCudaInferenceSession(decoderGraph.LoadPath, notes),
             "cuda",
-            "cuda");
+            "cuda",
+            [encoderGraph, decoderGraph]);
     }
 
     private static OpusSessionLease CreateNativeTensorRtOpusSessionLease(
-        string encoderModelPath,
-        string decoderModelPath,
+        BenchmarkGraphPlan encoderGraph,
+        BenchmarkGraphPlan decoderGraph,
         ICollection<string> notes)
     {
         notes.Add("Provider route: explicit native ORT TensorRT execution provider.");
         return new OpusSessionLease(
-            CreateNativeTensorRtInferenceSession(encoderModelPath, notes),
-            CreateNativeTensorRtInferenceSession(decoderModelPath, notes),
+            CreateNativeTensorRtInferenceSession(encoderGraph.LoadPath, notes),
+            CreateNativeTensorRtInferenceSession(decoderGraph.LoadPath, notes),
             "tensorrt",
-            "tensorrt");
+            "tensorrt",
+            [encoderGraph, decoderGraph]);
     }
 
     private static OpusSessionLease CreateAutoOpusSessionLease(
-        string encoderModelPath,
-        string decoderModelPath,
+        BenchmarkGraphPlan encoderGraph,
+        BenchmarkGraphPlan decoderGraph,
         ICollection<string> notes)
     {
         notes.Add("Provider route: auto selected.");
 
         try
         {
-            var encoderSession = CreateDirectMlSession(encoderModelPath);
-            var decoderSession = CreateDirectMlSession(decoderModelPath);
+            var encoderSession = CreateDirectMlSession(encoderGraph);
+            var decoderSession = CreateDirectMlSession(decoderGraph);
             notes.Add("Auto route resolved to DirectML.");
-            return new OpusSessionLease(encoderSession, decoderSession, "auto", "dml");
+            return new OpusSessionLease(encoderSession, decoderSession, "auto", "dml", [encoderGraph, decoderGraph]);
         }
         catch (Exception ex) when (ex is OnnxRuntimeException or InvalidOperationException or EntryPointNotFoundException or DllNotFoundException)
         {
@@ -1608,14 +1861,15 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             using SessionOptions encoderOptions = CreateSessionOptions(BenchmarkProviderPreference.Cpu);
             using SessionOptions decoderOptions = CreateSessionOptions(BenchmarkProviderPreference.Cpu);
             return new OpusSessionLease(
-                new InferenceSession(encoderModelPath, encoderOptions),
-                new InferenceSession(decoderModelPath, decoderOptions),
+                new InferenceSession(encoderGraph.LoadPath, encoderOptions),
+                new InferenceSession(decoderGraph.LoadPath, decoderOptions),
                 "auto",
-                "cpu");
+                "cpu",
+                [encoderGraph, decoderGraph]);
         }
     }
 
-    private static InferenceSession CreateDirectMlSession(string modelPath)
+    private static InferenceSession CreateDirectMlSession(BenchmarkGraphPlan graph)
     {
         const BenchmarkProviderPreference preference = BenchmarkProviderPreference.Dml;
         using SessionOptions options = CreateSessionOptions(preference);
@@ -1624,7 +1878,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             OnnxExecutionSessionFactory.AppendDirectMlProvider(options);
         }
 
-        return new InferenceSession(modelPath, options);
+        return new InferenceSession(graph.LoadPath, options);
     }
 
     private static string ResolvePairSelectedProvider(
@@ -1720,7 +1974,8 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
     private sealed record BenchmarkSessionLease(
         InferenceSession Session,
         string RequestedProvider,
-        string SelectedProvider) : IDisposable
+        string SelectedProvider,
+        IReadOnlyList<BenchmarkGraphPlan> Graphs) : IDisposable
     {
         public void Dispose() => Session.Dispose();
     }
@@ -1733,7 +1988,8 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         InferenceSession EncoderSession,
         InferenceSession DecoderSession,
         string RequestedProvider,
-        string SelectedProvider) : IDisposable
+        string SelectedProvider,
+        IReadOnlyList<BenchmarkGraphPlan> Graphs) : IDisposable
     {
         public void Dispose()
         {
@@ -1746,7 +2002,8 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         InferenceSession EncoderSession,
         InferenceSession DecoderSession,
         string RequestedProvider,
-        string SelectedProvider) : IDisposable
+        string SelectedProvider,
+        IReadOnlyList<BenchmarkGraphPlan> Graphs) : IDisposable
     {
         public void Dispose()
         {
@@ -1760,16 +2017,12 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         string RequestedProvider,
         string SelectedProvider,
         long ModelSizeBytes,
-        double ColdLoadMilliseconds,
-        double WarmupMilliseconds,
-        double WarmLatencyAverageMilliseconds,
-        double WarmLatencyMinimumMilliseconds,
-        double WarmLatencyMaximumMilliseconds,
+        double SessionInitializationMilliseconds,
+        ColdLoadAttribution Attribution,
+        BenchmarkSamplingResult Sampling,
+        BenchmarkThroughputUnit ThroughputUnit,
         double? AudioDurationSeconds,
-        string? EngineCacheOutcome = null,
-        long? EngineCacheBytesAdded = null,
-        int? EngineCacheFilesAdded = null,
-        string? ColdLoadDominantPhase = null);
+        IReadOnlyList<BenchmarkGraphPlan> Graphs);
 
     private enum BenchmarkModelProfile
     {
