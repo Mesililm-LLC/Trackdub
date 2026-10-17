@@ -289,14 +289,13 @@ legacy `--runs <n>`:
 
 ### Device-bound I/O
 
-`--io-mode device-bound` binds pinned host tensors through `OrtIoBinding`, requests the
-host-to-device copy per pass via `SynchronizeBoundInputs`, binds outputs to
-session-reported memory, and fences device work with `SynchronizeBoundOutputs`. The pass
-therefore measures device execution rather than enqueue-only latency, and reports
-`TimingMode: DeviceBoundSynchronized` in JSON metadata. Note: on TRT-RTX the input sync
-is a no-op (the engine runs on its own fixed device buffers); that is acceptable for
-latency sampling since input contents do not change kernel timing, but the production
-inference paths use explicitly allocated device OrtValues + `OrtEnv.CopyTensors` instead.
+`--io-mode device-bound` stages inputs in pinned host tensors, copies them per pass into
+bound device OrtValues with `OrtEnv.CopyTensors`, binds outputs to session-reported
+memory, and fences device work with `SynchronizeBoundOutputs`. Explicit device staging is
+required because `SynchronizeBoundInputs` is a no-op for host-bound OrtValues on TRT-RTX
+(the engine runs on its own fixed device buffers). The measured pass therefore covers the
+real host-to-device copy plus device execution, and reports
+`TimingMode: DeviceBoundSynchronized` in JSON metadata.
 
 Prerequisites and limits:
 

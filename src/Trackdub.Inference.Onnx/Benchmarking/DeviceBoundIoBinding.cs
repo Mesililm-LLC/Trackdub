@@ -6,33 +6,36 @@ namespace Trackdub.Inference.Onnx.Benchmarking;
 
 /// <summary>
 /// Device-bound I/O path for benchmark sampling on provider sessions that report device
-/// memory for their inputs (TensorRT-RTX today). Host tensors stay pinned and bound and
-/// <see cref="OrtIoBinding.SynchronizeBoundInputs"/> requests the host-to-device copy
-/// each pass; on TRT-RTX that sync is a no-op for host-bound OrtValues (the engine runs
-/// on its own fixed device buffers), which is acceptable for latency sampling — input
-/// contents do not affect kernel timing — but this path must not be used where delivered
-/// data matters. <see cref="OrtIoBinding.SynchronizeBoundOutputs"/> fences device work
-/// after the bound run, so the measured pass covers device execution instead of
-/// enqueue-only latency. Lifetime is owned: host tensors and the binding are disposed
-/// with this object.
+/// memory for their inputs (TensorRT-RTX today). On TRT-RTX,
+/// <see cref="OrtIoBinding.SynchronizeBoundInputs"/> is a no-op for host-bound OrtValues —
+/// the engine runs on its own fixed device buffers — so inputs are staged in pinned host
+/// OrtValues and copied host-to-device with <see cref="OrtEnv.CopyTensors"/> into bound
+/// device OrtValues each pass, the same pattern production engines use. Outputs bind to
+/// session-reported memory and <see cref="OrtIoBinding.SynchronizeBoundOutputs"/> fences
+/// device work after the run. The measured pass therefore covers the real H2D copy plus
+/// device execution. Lifetime is owned: host and device tensors and the binding are
+/// disposed with this object.
 /// </summary>
 public sealed class DeviceBoundIoBinding : IDisposable
 {
     private readonly InferenceSession _session;
     private readonly OrtIoBinding _binding;
     private readonly RunOptions _runOptions;
-    private readonly List<OrtValue> _hostValues;
+    private readonly OrtValue[] _hostValues;
+    private readonly OrtValue[] _deviceValues;
     private bool _disposed;
 
     private DeviceBoundIoBinding(
         InferenceSession session,
         OrtIoBinding binding,
-        List<OrtValue> hostValues)
+        OrtValue[] hostValues,
+        OrtValue[] deviceValues)
     {
         _session = session;
         _binding = binding;
         _runOptions = new RunOptions();
         _hostValues = hostValues;
+        _deviceValues = deviceValues;
     }
 
     /// <summary>
@@ -58,8 +61,16 @@ public sealed class DeviceBoundIoBinding : IDisposable
                 "Session reports host-resident inputs only; device-bound I/O timing is unavailable.");
         }
 
+        OrtAllocator deviceAllocator = OrtEnv.Instance().GetSharedAllocator(deviceMemoryInfos[0]);
+        if (deviceAllocator.IsInvalid)
+        {
+            throw new NotSupportedException(
+                $"No shared allocator registered for '{deviceMemoryInfos[0].Name}'.");
+        }
+
         OrtIoBinding binding = session.CreateIoBinding();
         var hostValues = new List<OrtValue>();
+        var deviceValues = new List<OrtValue>();
 
         try
         {
@@ -73,7 +84,11 @@ public sealed class DeviceBoundIoBinding : IDisposable
 
                 OrtValue host = CreateHostValue(input, meta.ElementType);
                 hostValues.Add(host);
-                binding.BindInput(input.Name, host);
+                OrtValue device = OrtValue.CreateAllocatedTensorValue(
+                    deviceAllocator, ToTensorElementType(meta.ElementType),
+                    host.GetTensorTypeAndShape().Shape);
+                deviceValues.Add(device);
+                binding.BindInput(input.Name, device);
                 if (!IsDeviceMemory(inputInfo))
                 {
                     limitations.Add($"input '{input.Name}' is host-resident per session memory info");
@@ -96,25 +111,27 @@ public sealed class DeviceBoundIoBinding : IDisposable
         catch
         {
             foreach (OrtValue value in hostValues) value.Dispose();
+            foreach (OrtValue value in deviceValues) value.Dispose();
             binding.Dispose();
             throw;
         }
 
         notes.Add(
-            "Device-bound I/O: inputs pinned and copied by bound-input synchronization; "
+            "Device-bound I/O: inputs staged on host and copied with OrtEnv.CopyTensors; "
             + "outputs bound to session-reported memory.");
-        return new DeviceBoundIoBinding(session, binding, hostValues);
+        return new DeviceBoundIoBinding(
+            session, binding, hostValues.ToArray(), deviceValues.ToArray());
     }
 
     /// <summary>
-    /// One measured pass: copy bound inputs to device, run with the binding, then fence
-    /// output readiness so the wall-clock sample covers device work.
+    /// One measured pass: copy staged inputs host-to-device, run with the binding, then
+    /// fence output readiness so the wall-clock sample covers device work.
     /// </summary>
     public void RunPass()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        _binding.SynchronizeBoundInputs();
+        OrtEnv.Instance().CopyTensors(_hostValues, _deviceValues, default);
         _session.RunWithBinding(_runOptions, _binding);
         _binding.SynchronizeBoundOutputs();
     }
@@ -128,6 +145,7 @@ public sealed class DeviceBoundIoBinding : IDisposable
 
         _disposed = true;
         foreach (OrtValue value in _hostValues) value.Dispose();
+        foreach (OrtValue value in _deviceValues) value.Dispose();
         _binding.Dispose();
         _runOptions.Dispose();
     }
@@ -181,4 +199,12 @@ public sealed class DeviceBoundIoBinding : IDisposable
         long[] shape = Array.ConvertAll(tensor.Dimensions.ToArray(), dim => (long)dim);
         return OrtValue.CreateTensorValueFromMemory(OrtMemoryInfo.DefaultInstance, tensor.Buffer, shape);
     }
+
+    private static TensorElementType ToTensorElementType(Type elementType) =>
+        elementType == typeof(float) ? TensorElementType.Float
+        : elementType == typeof(Float16) || elementType == typeof(Half) ? TensorElementType.Float16
+        : elementType == typeof(int) ? TensorElementType.Int32
+        : elementType == typeof(long) ? TensorElementType.Int64
+        : throw new NotSupportedException(
+            $"Device-bound I/O does not support '{elementType.Name}' inputs in this build.");
 }
