@@ -12,7 +12,7 @@ Read-only readiness audit. **Modify nothing.** This runs on `core-diagnostics`, 
 - `.opencode/context/domain/inference-stack.md` — provider/stage topology, execution providers, runtime flavors, stage ordering.
 - `.opencode/context/templates/evidence-report.md` — output shape. Use it.
 
-Grounding sources, in conflict order (source/tests > task instructions > Linear > documentation):
+Grounding sources, in conflict order (source/tests > task instructions > documentation):
 - `src/Trackdub.Inference/Runtime/ModelManifest/bundled-models.manifest.json` — the bundled inventory.
 - `AGENTS.md` "Model Governance".
 - `tools/ci/audit-bundled-model-manifest.py`, `tools/ci/validate-manifest-schema.py`, `tools/ci/verify-manifest-hashes.py`.

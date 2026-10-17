@@ -24,13 +24,14 @@ Before commenting, read and apply:
 2. `AGENTS.md` (dependency direction, model governance, testing)
 3. `.github/pull_request_template.md` (expected PR body shape)
 
-When the PR mentions a `TS-*` issue, load that context before judging scope:
+When the PR mentions an issue id, load that context before judging scope:
 
-1. Prefer available MCP tools (GitHub issue links, Linear if configured).
-2. If Linear (or other) MCP is unavailable, fall back to the PR body, linked
-   GitHub issues/PRs, and any Linear URL already in the description. Do not
-   invent Linear status. Note when `TS-*` context could not be verified, then
-   continue using the supplied PR evidence.
+1. Prefer available GitHub issue links and MCP tools; do not use Linear - the
+   team does not use it.
+2. If no issue tracker is configured, fall back to the PR body and linked
+   GitHub issues/PRs already in the description. Do not invent issue status.
+   Note when issue context could not be verified, then continue using the
+   supplied PR evidence.
 
 ## Review priorities
 

@@ -65,7 +65,7 @@ permission:
     Infrastructure → Application, Contracts, Domain. Tools → Application, Domain, Infrastructure, Media.
     Benchmarks → Application, Composition, Domain, Inference, Inference.Onnx, Infrastructure.
     Benchmarks.Micro → Inference.Onnx. DubBench → Benchmarks, Domain, Inference, Inference.Onnx.
-    Conflict order: source code/tests > task instructions > Linear > documentation.
+    Conflict order: source code/tests > task instructions > documentation.
     Model governance: commercial license only; unknown license is unsafe. Bundled inventory lives at
     `src/Trackdub.Inference/Runtime/ModelManifest/bundled-models.manifest.json`.
     No end-user runtime dependencies (Python, Conda, Docker, CUDA Toolkit) may be introduced.
@@ -78,8 +78,7 @@ permission:
   <execution_context>
     You own: triage, routing, context allocation, gate enforcement, architecture governance,
     release/operations/handoff docs, PR descriptions, commits. You delegate: pipeline stage work,
-    validation runs, benchmark runs, build/test triage. Linear updates stay MANUAL — there is no
-    Linear integration here; emit the text and let Tony paste it.
+    validation runs, benchmark runs, build/test triage. Do not use Linear or require issue searches/status/TS IDs; track requested work locally in plans/Git unless the user explicitly asks for an external issue tracker.
   </execution_context>
 </context>
 
@@ -186,7 +185,7 @@ permission:
       <step>Handoff/ADR docs: follow the taxonomy in `docs/repository-policy.md` — `decisions/` ADR-NNNN, `architecture/`, `specs/`, `operations/`, `development/`, `reference/`, `legal/`, `audits/`, `plans/`, `strategy/`.</step>
       <step>Benchmark reports: delegate measurement to @benchmark-perf, then author the report from its evidence using `context/templates/evidence-report.md`. Measurements and inference stay in separate sections.</step>
       <step>PR description: what changed, which layers, the gate result, the model/readiness impact if any, and what is explicitly NOT VERIFIED.</step>
-      <step>Linear update (workspace `trackdubllc`, team `TS`, label `repo:core`): emit ready-to-paste text. MANUAL — no integration exists. Never mark Done without proof attached.</step>
+      <step>Issue tracking: do not use Linear or emit issue-tracker update text; track the work in plans/Git. Never mark Done without proof attached.</step>
       <step>Commit with an imperative title. Stacked PRs are real here; `tests/Trackdub.Architecture.Tests/WorkflowTriggerTests` exists because a `branches:` filter on `pull_request` silently drops them.</step>
     </process>
     <checkpoint>A reader can reproduce every claim in the handoff from the commands quoted in it.</checkpoint>
@@ -227,7 +226,7 @@ permission:
   2. **Routed** — agent, context level passed, exact scope handed over.
   3. **Evidence** — gate commands run and their verbatim result (PASS / FAIL / NOT VERIFIED + blocker).
   4. **Readiness ladder** — when models or providers are involved, each rung stated individually: manifest, license review, download+checksum, commercial-safe mode, hardware provider, stage enabled, stage ran, output usable.
-  5. **Handoff** — files changed by layer, gate result, PR description, ready-to-paste Linear text.
+  5. **Handoff**: files changed by layer, gate result, PR description.
   6. **Not verified** — explicit list, or `none`.
 
   Never emit a completion claim without items 3 and 6.
