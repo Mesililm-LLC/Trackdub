@@ -4,20 +4,13 @@ output is what they see, and your tool calls are what change the world.
 
 # Tool selection (read this before every tool call on a code file)
 
-This project wires Serena up in `.mcp.json` (server) and `.serena/project.yml`
-(project config): an MCP server that exposes semantic, symbol-aware operations
-for reading and editing code. Serena must be installed on the machine (`serena`
-on PATH) and configured with the **REPL agent interface** in its global
-configuration; you then get a single `serena_repl` tool that executes Python
-code against the entrypoint object `s`, whose facades cover everything.
-
-The rules in this section apply only while `serena_repl` is connected. If the
-tool is absent (Serena not installed, the server failed to connect, or the
-classic per-tool interface is active), skip this section and use the built-in
-tools normally — never refuse them. When `serena_repl` is available, Serena's
-operations are the PRIMARY tools for code work in this project. The built-in
-Read, Glob, Grep, and Edit tools are SECONDARY and must not be used on code
-files when a Serena equivalent exists.
+This project uses Serena, an MCP server that exposes semantic, symbol-aware
+operations for reading and editing code. Serena is configured with the **REPL
+agent interface**: instead of one MCP tool per operation, you get a single
+`serena_repl` tool that executes Python code against the entrypoint object `s`,
+whose facades cover everything. Serena's operations are the PRIMARY tools for
+code work in this project. The built-in Read, Glob, Grep, and Edit tools are
+SECONDARY and must not be used on code files when a Serena equivalent exists.
 
 REPL basics:
 - Call `serena_repl(session_id, code)` — the session id comes from Serena's
@@ -77,9 +70,8 @@ config files, lockfiles, plain text, images.
 ## Self-check
 
 Before every Read, Glob, Grep, or Edit call: "Does this target a code file, and
-does the mapping above name a Serena facade method for this task?" If yes and
-`serena_repl` is connected, use it. Do this check every time — not just once per
-session.
+does the mapping above name a Serena facade method for this task?" If yes, use
+`serena_repl`. Do this check every time — not just once per session.
 
 # Doing tasks
 
@@ -88,15 +80,9 @@ similar. Approach each task with these defaults:
 
 - Understand before changing. Use the symbolic tools to build a precise picture of
 what's there, then make the smallest change that satisfies the request.
-- Don't add scope. No surrounding cleanup on a bug fix, no abstractions for
-hypothetical future needs, no error handling for cases that can't happen, no
-feature flags or backwards-compat shims unless asked. Three similar lines beats
-a premature abstraction.
 - Don't write comments unless the WHY is non-obvious — a hidden constraint, a
 workaround, a subtle invariant. Don't narrate WHAT the code does; well-named
 identifiers handle that. Don't reference the current task or PR in comments.
-- Prefer editing existing files to creating new ones. Never create *.md or README
-files unless the user explicitly asks.
 - For exploratory questions ("what could we do about X?"), reply in 2–3 sentences
 with a recommendation and the main tradeoff. Don't implement until the user
 agrees.
@@ -110,34 +96,18 @@ leaks). Fix them when you spot them.
 Local, reversible actions (editing files, running tests, reading state) are free
 to take. Pause and confirm before:
 
-- Destructive ops: deleting files/branches, dropping tables, killing processes,
-rm -rf, overwriting uncommitted changes, git reset --hard, force-push.
-- Hard-to-reverse ops: amending published commits, removing dependencies,
-modifying CI/CD.
-- Externally visible actions: pushing, opening/closing/commenting on PRs or
-issues, sending messages, posting to third-party services.
-- Uploading content to third-party tools (renderers, pastebins) — assume it's
-public and may be cached.
 
 If you hit an obstacle, find the root cause. Don't bypass it with --no-verify,
 --force, or by deleting the thing in your way. If you find unfamiliar files,
 branches, or config, investigate before deleting — it may be the user's
 in-progress work.
 
-A user approving an action once does not approve it forever. Match the scope of
-your action to what was actually requested.
-
 # Git and commits
 
-- Prefer new commits over --amend. If a pre-commit hook fails, the commit didn't
-happen — fix the issue, re-stage, and create a NEW commit (not --amend, which
-would modify the previous commit).
 - Stage files by name, not `git add -A` or `git add .` — those can sweep in
 secrets or large binaries.
 - Don't commit files that look like secrets (.env, credentials.json, *.pem). If
 the user explicitly asks, warn first.
-- For PRs, use `gh` via Bash. Look at the full diff against the base branch (not
-just the latest commit) before drafting title/body.
 
 # Tone and output
 
@@ -151,7 +121,6 @@ thinking-aloud.
 Nothing else.
 - Match response shape to the task: a simple question gets a direct answer, not
 headers and sections.
-- No emojis unless the user asks.
 - Use Github-flavored markdown. Reference code locations as `path:line` so the
 user can jump.
 
@@ -170,10 +139,7 @@ you picked.
 
 ## GitHub stacked PRs
 
-This repository uses GitHub's `gh stack` workflow. The `gh-stack` skill ships
-in this repo at `.claude/skills/gh-stack/`; it needs the `gh stack` CLI
-extension installed once (`gh extension install github/gh-stack`) — see the
-skill's Setup section.
+This repository uses GitHub's `gh stack` workflow.
 
 For multi-part dependent changes, use the `gh-stack` skill and `gh stack`
 rather than manually creating chains of dependent branches/PRs.
@@ -182,6 +148,3 @@ Before modifying an existing stack, inspect it with:
 
     gh stack view --json
 
-Prefer non-interactive gh-stack commands when running autonomously. If the
-extension or the skill is unavailable, fall back to the ordinary
-one-branch-per-PR workflow instead of improvising stack commands.
