@@ -89,7 +89,7 @@
       resolution at startup.
       See docs/third-party-runtimes.md for redistribution and license notes.
     -->
-    <PackageVersion Include="LibVLCSharp" Version="3.10.1" />
+    <PackageVersion Include="LibVLCSharp" Version="3.10.2" />
 
     <PackageVersion Include="VideoLAN.LibVLC.Windows" Version="3.0.23.1" />
     <PackageVersion Include="VideoLAN.LibVLC.Mac" Version="3.1.3.1" />
