@@ -191,11 +191,34 @@ public sealed class BenchmarkOptionsTests
         Assert.False(success);
     }
 
+    [Fact]
+    public void TryParse_InputShapeOverridesAndProfileMode()
+    {
+        var args = new[]
+        {
+            "--model", "model.onnx",
+            "--input-mode", "profile",
+            "--input-shape", "chunk=1,3040,128",
+            "--input-shape", "spkcache=1,188,512"
+        };
+
+        bool success = BenchmarkOptions.TryParse(args, TextWriter.Null, out BenchmarkOptions options);
+
+        Assert.True(success);
+        Assert.Equal(BenchmarkInputMode.Profile, options.Execution!.InputMode);
+        Assert.NotNull(options.Execution.InputShapeOverrides);
+        Assert.Equal([1, 3040, 128], options.Execution.InputShapeOverrides!["chunk"]);
+        Assert.Equal([1, 188, 512], options.Execution.InputShapeOverrides["spkcache"]);
+    }
+
     [Theory]
     [InlineData("--duration-ms", "-1")]
     [InlineData("--warmup-runs", "0")]
     [InlineData("--warmup-ms", "-5")]
     [InlineData("--input-mode", "bogus")]
+    [InlineData("--input-shape", "chunk")]
+    [InlineData("--input-shape", "=1,2")]
+    [InlineData("--input-shape", "chunk=1,0,128")]
     [InlineData("--io-mode", "bogus")]
     [InlineData("--cuda-graphs", "bogus")]
     [InlineData("--artifact", "bogus")]

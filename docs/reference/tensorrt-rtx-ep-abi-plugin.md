@@ -277,7 +277,8 @@ legacy `--runs <n>`:
 | `--runs <n>` | Measured pass target (default policy also applies duration/warmup floors) |
 | `--duration-ms <n>` | Minimum measured wall time; the sampler keeps collecting past `n` runs until reached |
 | `--warmup-runs <n>` / `--warmup-ms <n>` | Warmup floor by count and/or wall time; warmup samples are excluded from statistics |
-| `--input-mode synthetic\|zeros` | Deterministic seeded synthetic inputs (default) or the legacy all-zeros recipe; `--input-seed <n>` fixes the synthetic stream |
+| `--input-mode synthetic\|zeros\|profile` | Deterministic seeded synthetic inputs (default), the legacy all-zeros recipe, or `profile` = feed inputs at the model family's registered `trt_profile_opt_shapes` (nemotron encoder, sortformer, MADLAD); `--input-seed <n>` fixes the synthetic stream |
+| `--input-shape <name>=<d1,d2,...>` | Repeatable per-input shape override applied on top of the selected input mode; pins dynamic dims to the shape a baked engine profile expects (e.g. `--input-shape chunk=1,3040,128`) |
 | `--io-mode managed\|device-bound` | Managed `session.Run` end-to-end timing vs device-bound `OrtIoBinding` timing |
 | `--cuda-graphs auto\|off\|on\|compare` | `enable_cuda_graph` for the TRT-RTX EP; `auto` (default) enables graphs when the run is device-bound on a single-graph trt-rtx session; `compare` measures both lanes in fresh sessions |
 | `--artifact auto\|source\|require` | EP-context artifact selection (`auto` = production resolver, `source` = force source model, `require` = fail without a compatible artifact) |

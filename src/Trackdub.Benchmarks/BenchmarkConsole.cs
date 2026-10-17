@@ -23,7 +23,7 @@ public static class BenchmarkConsole
         writer.WriteLine($"  Trackdub.Benchmarks tts-bench --jobs <jobs.jsonl> --results <results.jsonl> [--model <alias>] [--provider {string.Join("|", ExecutionProviderTokens.CliTags)}] [--warmup-runs <n>] [--repeat-runs <n>]");
         writer.WriteLine("  Trackdub.Benchmarks tts-bench --help");
         writer.WriteLine("  Trackdub.Benchmarks --help");
-        writer.WriteLine($"  Trackdub.Benchmarks --model <path-or-scope> [--variant <name> | --all-variants] [--output <path>] [--provider cpu|auto|dml|migraphx|trt-rtx] [--windows-ml-device-policy {WindowsMlExecutionDevicePolicySettings.FormatSupportedKeys("|")}] [--runs <n>] [--duration-ms <n>] [--warmup-runs <n>] [--warmup-ms <n>] [--input-mode synthetic|zeros] [--input-seed <n>] [--io-mode managed|device-bound] [--cuda-graphs auto|off|on|compare] [--artifact auto|source|require] [--runtime-cache reuse|isolated] [--runtime-cache-dir <path>] [--reference-tool tensorrt-rtx|ort-perf-test] [--reference-tool-path <path>] [--reference-tool-required] [--history] [--format console|json|both]");
+        writer.WriteLine($"  Trackdub.Benchmarks --model <path-or-scope> [--variant <name> | --all-variants] [--output <path>] [--provider cpu|auto|dml|migraphx|trt-rtx] [--windows-ml-device-policy {WindowsMlExecutionDevicePolicySettings.FormatSupportedKeys("|")}] [--runs <n>] [--duration-ms <n>] [--warmup-runs <n>] [--warmup-ms <n>] [--input-mode synthetic|zeros|profile] [--input-seed <n>] [--input-shape <name>=<d1,d2,...>] [--io-mode managed|device-bound] [--cuda-graphs auto|off|on|compare] [--artifact auto|source|require] [--runtime-cache reuse|isolated] [--runtime-cache-dir <path>] [--reference-tool tensorrt-rtx|ort-perf-test] [--reference-tool-path <path>] [--reference-tool-required] [--history] [--format console|json|both]");
         writer.WriteLine($"  Trackdub.Benchmarks --scope {TrtRtxSmokeCatalog.ScopeName} [--output <path>] [--provider trt-rtx] [--runs <n>] [--format console|json|both]");
         writer.WriteLine();
         writer.WriteLine("Ingest command:");
@@ -44,8 +44,9 @@ public static class BenchmarkConsole
         writer.WriteLine("  --duration-ms <n>   Additional measurement duration floor in milliseconds (0 allowed).");
         writer.WriteLine("  --warmup-runs <n>   Additional warmup passes after the first run. Defaults to 1.");
         writer.WriteLine("  --warmup-ms <n>     Warmup duration floor in milliseconds. Defaults to 200.");
-        writer.WriteLine("  --input-mode <m>    Measured input recipe: synthetic (deterministic, seeded) or zeros (legacy fills). Defaults to synthetic.");
+        writer.WriteLine("  --input-mode <m>    Measured input recipe: synthetic (deterministic, seeded), zeros (legacy fills), or profile (registered trt-rtx opt shapes). Defaults to synthetic.");
         writer.WriteLine("  --input-seed <n>    Deterministic synthetic input seed. Defaults to 42.");
+        writer.WriteLine("  --input-shape <s>   Repeatable per-input shape override, e.g. --input-shape chunk=1,3040,128. Pins dynamic dims to the shape an engine profile expects.");
         writer.WriteLine("  --io-mode <m>       Timing I/O mode: managed (host tensors) or device-bound (reserved for the CUDA-graph lane).");
         writer.WriteLine("  --cuda-graphs <m>   CUDA graph mode for trt-rtx: off, on, or compare. Requires --io-mode device-bound.");
         writer.WriteLine("  --artifact <m>      EP-context artifact policy for trt-rtx: auto, source, or require.");

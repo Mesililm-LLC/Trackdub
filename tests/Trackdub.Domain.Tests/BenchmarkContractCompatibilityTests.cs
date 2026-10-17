@@ -112,6 +112,21 @@ public sealed class BenchmarkContractCompatibilityTests
     }
 
     [Fact]
+    public void InputShapeOverridesValidateDimensions()
+    {
+        var valid = new BenchmarkExecutionSettings(
+            InputShapeOverrides: new Dictionary<string, int[]> { ["chunk"] = [1, 3040, 128] });
+        valid.Validate(3);
+
+        Assert.Throws<ArgumentException>(() => new BenchmarkExecutionSettings(
+            InputShapeOverrides: new Dictionary<string, int[]> { ["chunk"] = [0] }).Validate(3));
+        Assert.Throws<ArgumentException>(() => new BenchmarkExecutionSettings(
+            InputShapeOverrides: new Dictionary<string, int[]> { [""] = [1] }).Validate(3));
+        Assert.Throws<ArgumentException>(() => new BenchmarkExecutionSettings(
+            InputShapeOverrides: new Dictionary<string, int[]> { ["chunk"] = [] }).Validate(3));
+    }
+
+    [Fact]
     public void HistoryMappingRetainsNewMetricsAndCallerAssignedId()
     {
         var id = Guid.NewGuid();

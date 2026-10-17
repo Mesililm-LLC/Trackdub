@@ -51,6 +51,7 @@ public sealed record BenchmarkOptions(
         var warmupMilliseconds = 200;
         var inputMode = BenchmarkInputMode.Synthetic;
         var inputSeed = 42;
+        var inputShapeOverrides = new Dictionary<string, int[]>(StringComparer.Ordinal);
         var ioMode = BenchmarkIoMode.Managed;
         var artifactMode = BenchmarkArtifactMode.Auto;
         var runtimeCacheMode = BenchmarkRuntimeCacheMode.Reuse;
@@ -189,7 +190,7 @@ public sealed record BenchmarkOptions(
                     if (!TryReadValue(args, ref index, arg, errorWriter, out string inputModeText)
                         || !TryParseFlagEnum(inputModeText, out inputMode))
                     {
-                        errorWriter.WriteLine($"Unknown input mode '{inputModeText}'. Expected synthetic or zeros.");
+                        errorWriter.WriteLine($"Unknown input mode '{inputModeText}'. Expected synthetic, zeros, or profile.");
                         options = DefaultWithHelp();
                         return false;
                     }
@@ -205,6 +206,19 @@ public sealed record BenchmarkOptions(
                         return false;
                     }
 
+                    break;
+
+                case "--input-shape":
+                    if (!TryReadValue(args, ref index, arg, errorWriter, out string inputShapeText)
+                        || !TryParseInputShape(inputShapeText, out string shapeName, out int[] shapeDims))
+                    {
+                        errorWriter.WriteLine(
+                            $"Invalid input shape override '{inputShapeText}'. Expected <name>=<d1,d2,...> with dimensions >= 1.");
+                        options = DefaultWithHelp();
+                        return false;
+                    }
+
+                    inputShapeOverrides[shapeName] = shapeDims;
                     break;
 
                 case "--io-mode":
@@ -375,7 +389,7 @@ public sealed record BenchmarkOptions(
                 Execution = BuildExecutionSettings(
                     runCountSpecified, durationMilliseconds, warmupRuns, warmupMilliseconds,
                     inputMode, inputSeed, ioMode, artifactMode, runtimeCacheMode,
-                    runtimeCacheDirectory, cudaGraphMode)
+                    runtimeCacheDirectory, cudaGraphMode, inputShapeOverrides)
             };
             return true;
         }
@@ -437,7 +451,7 @@ public sealed record BenchmarkOptions(
             Execution = BuildExecutionSettings(
                 runCountSpecified, durationMilliseconds, warmupRuns, warmupMilliseconds,
                 inputMode, inputSeed, ioMode, artifactMode, runtimeCacheMode,
-                runtimeCacheDirectory, cudaGraphMode),
+                runtimeCacheDirectory, cudaGraphMode, inputShapeOverrides),
             HistoryRequested = historyRequested,
             CudaGraphMode = cudaGraphMode,
             ReferenceTool = referenceTool,
@@ -465,7 +479,8 @@ public sealed record BenchmarkOptions(
         BenchmarkArtifactMode artifactMode,
         BenchmarkRuntimeCacheMode runtimeCacheMode,
         string? runtimeCacheDirectory,
-        BenchmarkCudaGraphMode cudaGraphMode) =>
+        BenchmarkCudaGraphMode cudaGraphMode,
+        IReadOnlyDictionary<string, int[]> inputShapeOverrides) =>
         new(
             MinimumWarmupRuns: warmupRuns,
             MinimumWarmupMilliseconds: warmupMilliseconds,
@@ -477,7 +492,35 @@ public sealed record BenchmarkOptions(
                 CudaGraphMode: cudaGraphMode,
                 ArtifactMode: artifactMode,
                 CacheMode: runtimeCacheMode,
-                RuntimeCacheDirectory: runtimeCacheDirectory));
+                RuntimeCacheDirectory: runtimeCacheDirectory),
+            InputShapeOverrides: inputShapeOverrides.Count == 0 ? null : inputShapeOverrides);
+
+    private static bool TryParseInputShape(string value, out string name, out int[] dimensions)
+    {
+        name = string.Empty;
+        dimensions = [];
+        var separatorIndex = value.IndexOf('=', StringComparison.Ordinal);
+        if (separatorIndex <= 0)
+        {
+            return false;
+        }
+
+        name = value[..separatorIndex].Trim();
+        if (name.Length == 0)
+        {
+            return false;
+        }
+
+        var parts = value[(separatorIndex + 1)..].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0
+            || !parts.All(p => int.TryParse(p, out _)))
+        {
+            return false;
+        }
+
+        dimensions = parts.Select(int.Parse).ToArray();
+        return dimensions.All(d => d >= 1);
+    }
 
     /// <summary>Parses kebab/underscore CLI values like "device-bound" onto enum members.</summary>
     private static bool TryParseFlagEnum<TEnum>(string value, out TEnum result)

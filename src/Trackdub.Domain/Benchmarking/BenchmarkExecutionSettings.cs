@@ -3,7 +3,12 @@ namespace Trackdub.Domain.Benchmarking;
 public enum BenchmarkInputMode
 {
     Synthetic,
-    Zeros
+    Zeros,
+    /// <summary>
+    /// Resolve runtime shapes from the registered production trt-rtx optimization profile
+    /// (min/opt/max) for the model family; fails when no profile is registered.
+    /// </summary>
+    Profile
 }
 
 public enum BenchmarkIoMode
@@ -71,7 +76,8 @@ public sealed record BenchmarkExecutionSettings(
     BenchmarkInputMode InputMode = BenchmarkInputMode.Synthetic,
     int InputSeed = 42,
     BenchmarkIoMode IoMode = BenchmarkIoMode.Managed,
-    BenchmarkTensorRtRtxSettings? TensorRtRtx = null)
+    BenchmarkTensorRtRtxSettings? TensorRtRtx = null,
+    IReadOnlyDictionary<string, int[]>? InputShapeOverrides = null)
 {
     public static BenchmarkExecutionSettings Default { get; } = new();
 
@@ -90,6 +96,18 @@ public sealed record BenchmarkExecutionSettings(
             || !Enum.IsDefined(EffectiveTensorRtRtx.CudaGraphMode))
         {
             throw new ArgumentException("Unrecognized benchmark execution setting.");
+        }
+
+        if (InputShapeOverrides is not null)
+        {
+            foreach ((string name, int[] dims) in InputShapeOverrides)
+            {
+                if (string.IsNullOrWhiteSpace(name) || dims.Length == 0 || dims.Any(d => d < 1))
+                {
+                    throw new ArgumentException(
+                        $"Input shape override '{name}' must name a non-empty input and use dimensions >= 1.");
+                }
+            }
         }
 
         if (EffectiveTensorRtRtx.EnableCudaGraph && IoMode != BenchmarkIoMode.DeviceBound)

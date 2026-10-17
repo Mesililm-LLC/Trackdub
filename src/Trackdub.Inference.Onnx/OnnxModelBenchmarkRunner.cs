@@ -110,6 +110,12 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
 
             modelSizeBytes = new FileInfo(fullModelPath).Length;
             notes.Add($"Model file discovered at '{fullModelPath}'.");
+            if (settings.InputShapeOverrides is { Count: > 0 } shapeOverrides)
+            {
+                notes.Add("Input shape overrides applied: " + string.Join(
+                    ", ",
+                    shapeOverrides.Select(pair => $"{pair.Key}=[{string.Join('x', pair.Value)}]")));
+            }
 
             BenchmarkExecution execution;
             if (settings.EffectiveTensorRtRtx.CudaGraphMode is BenchmarkCudaGraphMode.Compare)
@@ -170,9 +176,12 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
                 TimingMode = settings.IoMode is BenchmarkIoMode.DeviceBound
                     ? BenchmarkTimingMode.DeviceBoundSynchronized
                     : BenchmarkTimingMode.ManagedOrtRunEndToEnd,
-                InputProfileId = settings.InputMode is BenchmarkInputMode.Synthetic
-                    ? BenchmarkMetadataBuilder.SyntheticInputProfileId
-                    : BenchmarkMetadataBuilder.ZerosInputProfileId,
+                InputProfileId = settings.InputMode switch
+                {
+                    BenchmarkInputMode.Synthetic => BenchmarkMetadataBuilder.SyntheticInputProfileId,
+                    BenchmarkInputMode.Profile => BenchmarkMetadataBuilder.ProfileInputProfileId,
+                    _ => BenchmarkMetadataBuilder.ZerosInputProfileId
+                },
                 ModelProfileId = FormatModelProfile(execution.ModelProfile)
             };
             BenchmarkEnvironmentInfo environment = BenchmarkMetadataBuilder.CaptureEnvironment();
@@ -1327,6 +1336,14 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         BenchmarkExecutionSettings settings,
         string graphRole)
     {
+        if (settings.InputMode is BenchmarkInputMode.Profile)
+        {
+            settings = settings with
+            {
+                InputShapeOverrides = ResolveProfileShapeOverrides(modelPath, settings.InputShapeOverrides)
+            };
+        }
+
         var values = new List<NamedOnnxValue>(inputMetadata.Count);
         var modelProfile = DetermineModelProfile(modelPath, inputMetadata);
         double? audioDurationSeconds = null;
@@ -1348,6 +1365,33 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         return new BenchmarkInputSet(values, audioDurationSeconds, modelProfile);
     }
 
+    /// <summary>
+    /// Merges registered production profile opt shapes with explicit caller overrides; the explicit
+    /// flags win. Fails honestly when the model family has no registered profile.
+    /// </summary>
+    private static IReadOnlyDictionary<string, int[]> ResolveProfileShapeOverrides(
+        string modelPath,
+        IReadOnlyDictionary<string, int[]>? explicitOverrides)
+    {
+        if (EpContextTrtProfiles.ResolveOptShapes(modelPath) is not { } profileShapes)
+        {
+            throw new NotSupportedException(
+                $"Input mode 'profile' requires a registered trt-rtx optimization profile; none is registered for '{modelPath}'. "
+                + "Use --input-shape overrides or another input mode.");
+        }
+
+        var merged = new Dictionary<string, int[]>(profileShapes, StringComparer.Ordinal);
+        if (explicitOverrides is not null)
+        {
+            foreach ((string key, int[] value) in explicitOverrides)
+            {
+                merged[key] = value;
+            }
+        }
+
+        return merged;
+    }
+
     private static NamedOnnxValue CreateInputValue(
         BenchmarkModelProfile modelProfile,
         string inputName,
@@ -1364,8 +1408,8 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         {
             TensorElementType.Float => NamedOnnxValue.CreateFromTensor(inputName, CreateFloatTensor(modelProfile, inputName, metadata, settings, graphRole)),
             TensorElementType.Float16 => NamedOnnxValue.CreateFromTensor(inputName, CreateFloat16Tensor(modelProfile, inputName, metadata, settings, graphRole)),
-            TensorElementType.Int32 => NamedOnnxValue.CreateFromTensor(inputName, CreateInt32Tensor(modelProfile, inputName, metadata)),
-            TensorElementType.Int64 => NamedOnnxValue.CreateFromTensor(inputName, CreateInt64Tensor(modelProfile, inputName, metadata)),
+            TensorElementType.Int32 => NamedOnnxValue.CreateFromTensor(inputName, CreateInt32Tensor(modelProfile, inputName, metadata, settings)),
+            TensorElementType.Int64 => NamedOnnxValue.CreateFromTensor(inputName, CreateInt64Tensor(modelProfile, inputName, metadata, settings)),
             _ => throw new NotSupportedException($"Input '{inputName}' uses unsupported tensor element type '{metadata.ElementDataType}'.")
         };
     }
@@ -1383,7 +1427,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         BenchmarkExecutionSettings settings,
         string graphRole)
     {
-        var dimensions = ResolveDimensions(modelProfile, inputName, metadata);
+        var dimensions = ResolveDimensions(modelProfile, inputName, metadata, settings);
         var count = CountElements(dimensions);
         var data = new float[count];
 
@@ -1417,7 +1461,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         BenchmarkExecutionSettings settings,
         string graphRole)
     {
-        var dimensions = ResolveDimensions(modelProfile, inputName, metadata);
+        var dimensions = ResolveDimensions(modelProfile, inputName, metadata, settings);
         var count = CountElements(dimensions);
         var data = new Float16[count];
 
@@ -1445,9 +1489,10 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
     private static DenseTensor<long> CreateInt64Tensor(
         BenchmarkModelProfile modelProfile,
         string inputName,
-        NodeMetadata metadata)
+        NodeMetadata metadata,
+        BenchmarkExecutionSettings settings)
     {
-        var dimensions = ResolveDimensions(modelProfile, inputName, metadata);
+        var dimensions = ResolveDimensions(modelProfile, inputName, metadata, settings);
         var count = CountElements(dimensions);
         var data = new long[count];
 
@@ -1466,9 +1511,10 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
     private static DenseTensor<int> CreateInt32Tensor(
         BenchmarkModelProfile modelProfile,
         string inputName,
-        NodeMetadata metadata)
+        NodeMetadata metadata,
+        BenchmarkExecutionSettings settings)
     {
-        var dimensions = ResolveDimensions(modelProfile, inputName, metadata);
+        var dimensions = ResolveDimensions(modelProfile, inputName, metadata, settings);
         var count = CountElements(dimensions);
         var data = new int[count];
 
@@ -1485,8 +1531,18 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         return new DenseTensor<int>(data, dimensions);
     }
 
-    private static int[] ResolveDimensions(BenchmarkModelProfile modelProfile, string inputName, NodeMetadata metadata)
+    private static int[] ResolveDimensions(
+        BenchmarkModelProfile modelProfile,
+        string inputName,
+        NodeMetadata metadata,
+        BenchmarkExecutionSettings settings)
     {
+        if (settings.InputShapeOverrides is { } overrides
+            && overrides.TryGetValue(inputName, out int[]? overrideShape))
+        {
+            return (int[])overrideShape.Clone();
+        }
+
         if (modelProfile is BenchmarkModelProfile.SileroVad)
         {
             if (inputName.Equals("input", StringComparison.Ordinal))

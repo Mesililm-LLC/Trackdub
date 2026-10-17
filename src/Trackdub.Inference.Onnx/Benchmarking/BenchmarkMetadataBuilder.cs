@@ -22,6 +22,7 @@ internal static class BenchmarkMetadataBuilder
 {
     internal const string SyntheticInputProfileId = "synthetic-v1";
     internal const string ZerosInputProfileId = "zeros-v1";
+    internal const string ProfileInputProfileId = "trt-profile-opt-v1";
     private const int ComparisonKeyVersion = 1;
 
     internal static BenchmarkEnvironmentInfo CaptureEnvironment()

@@ -49,4 +49,40 @@ internal static class EpContextTrtProfiles
 
         return null;
     }
+
+    /// <summary>
+    /// Parses the registered opt profile ("name:1x2x3,...") into per-input shapes, so benchmark
+    /// input generation can match the engine's baked optimization point.
+    /// </summary>
+    internal static IReadOnlyDictionary<string, int[]>? ResolveOptShapes(string sourceModelPath)
+    {
+        if (Resolve(sourceModelPath) is not { } options
+            || !options.TryGetValue("trt_profile_opt_shapes", out string? spec))
+        {
+            return null;
+        }
+
+        var shapes = new Dictionary<string, int[]>(StringComparer.Ordinal);
+        foreach (string entry in spec.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var colon = entry.IndexOf(':');
+            if (colon <= 0)
+            {
+                continue;
+            }
+
+            var dims = entry[(colon + 1)..]
+                .Split('x', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(part => int.TryParse(part, out int value) ? value : -1)
+                .ToArray();
+            if (dims.Length == 0 || dims.Any(d => d < 0))
+            {
+                continue;
+            }
+
+            shapes[entry[..colon]] = dims;
+        }
+
+        return shapes.Count == 0 ? null : shapes;
+    }
 }
