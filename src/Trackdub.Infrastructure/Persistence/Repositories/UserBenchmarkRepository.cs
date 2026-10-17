@@ -1,5 +1,6 @@
 using Trackdub.Contracts.Persistence;
 using Trackdub.Domain;
+using Trackdub.Domain.Benchmarking;
 using Trackdub.Infrastructure.Persistence.Sqlite;
 using Dapper;
 using Microsoft.Data.Sqlite;
@@ -37,7 +38,25 @@ public sealed class UserBenchmarkRepository(SqliteUserBenchmarkDatabase database
                 GeneratedAtUtc,
                 EvidenceId,
                 FingerprintHash,
-                Scenario)
+                Scenario,
+                FirstRunMilliseconds,
+                WarmupMilliseconds,
+                WarmupRunCount,
+                SampleCount,
+                WarmLatencyP50Milliseconds,
+                WarmLatencyP90Milliseconds,
+                WarmLatencyP95Milliseconds,
+                WarmLatencyP99Milliseconds,
+                MeasuredWallTimeMilliseconds,
+                PassesPerSecond,
+                ThroughputUnitsPerSecond,
+                AudioDurationSeconds,
+                RealTimeFactorAverage,
+                ThroughputUnit,
+                TimingMode,
+                InputProfileId,
+                ComparisonKey,
+                MetadataJson)
             VALUES (
                 @Id,
                 @ModelId,
@@ -57,7 +76,25 @@ public sealed class UserBenchmarkRepository(SqliteUserBenchmarkDatabase database
                 @GeneratedAtUtc,
                 @EvidenceId,
                 @FingerprintHash,
-                @Scenario)
+                @Scenario,
+                @FirstRunMilliseconds,
+                @WarmupMilliseconds,
+                @WarmupRunCount,
+                @SampleCount,
+                @WarmLatencyP50Milliseconds,
+                @WarmLatencyP90Milliseconds,
+                @WarmLatencyP95Milliseconds,
+                @WarmLatencyP99Milliseconds,
+                @MeasuredWallTimeMilliseconds,
+                @PassesPerSecond,
+                @ThroughputUnitsPerSecond,
+                @AudioDurationSeconds,
+                @RealTimeFactorAverage,
+                @ThroughputUnit,
+                @TimingMode,
+                @InputProfileId,
+                @ComparisonKey,
+                @MetadataJson)
             ON CONFLICT(Id) DO UPDATE SET
                 ModelId = excluded.ModelId,
                 ModelPath = excluded.ModelPath,
@@ -76,7 +113,25 @@ public sealed class UserBenchmarkRepository(SqliteUserBenchmarkDatabase database
                 GeneratedAtUtc = excluded.GeneratedAtUtc,
                 EvidenceId = excluded.EvidenceId,
                 FingerprintHash = excluded.FingerprintHash,
-                Scenario = excluded.Scenario;
+                Scenario = excluded.Scenario,
+                FirstRunMilliseconds = excluded.FirstRunMilliseconds,
+                WarmupMilliseconds = excluded.WarmupMilliseconds,
+                WarmupRunCount = excluded.WarmupRunCount,
+                SampleCount = excluded.SampleCount,
+                WarmLatencyP50Milliseconds = excluded.WarmLatencyP50Milliseconds,
+                WarmLatencyP90Milliseconds = excluded.WarmLatencyP90Milliseconds,
+                WarmLatencyP95Milliseconds = excluded.WarmLatencyP95Milliseconds,
+                WarmLatencyP99Milliseconds = excluded.WarmLatencyP99Milliseconds,
+                MeasuredWallTimeMilliseconds = excluded.MeasuredWallTimeMilliseconds,
+                PassesPerSecond = excluded.PassesPerSecond,
+                ThroughputUnitsPerSecond = excluded.ThroughputUnitsPerSecond,
+                AudioDurationSeconds = excluded.AudioDurationSeconds,
+                RealTimeFactorAverage = excluded.RealTimeFactorAverage,
+                ThroughputUnit = excluded.ThroughputUnit,
+                TimingMode = excluded.TimingMode,
+                InputProfileId = excluded.InputProfileId,
+                ComparisonKey = excluded.ComparisonKey,
+                MetadataJson = excluded.MetadataJson;
             """,
             new
             {
@@ -98,7 +153,25 @@ public sealed class UserBenchmarkRepository(SqliteUserBenchmarkDatabase database
                 GeneratedAtUtc = SqliteValueConverters.ToDbValue(run.GeneratedAtUtc),
                 EvidenceId = evidenceId is null ? null : SqliteValueConverters.ToDbValue(evidenceId.Value),
                 FingerprintHash = fingerprintHash,
-                Scenario = scenario
+                Scenario = scenario,
+                run.FirstRunMilliseconds,
+                run.WarmupMilliseconds,
+                run.WarmupRunCount,
+                run.SampleCount,
+                run.WarmLatencyP50Milliseconds,
+                run.WarmLatencyP90Milliseconds,
+                run.WarmLatencyP95Milliseconds,
+                run.WarmLatencyP99Milliseconds,
+                run.MeasuredWallTimeMilliseconds,
+                run.PassesPerSecond,
+                run.ThroughputUnitsPerSecond,
+                run.AudioDurationSeconds,
+                run.RealTimeFactorAverage,
+                ThroughputUnit = run.ThroughputUnit?.ToString(),
+                TimingMode = run.TimingMode?.ToString(),
+                run.InputProfileId,
+                run.ComparisonKey,
+                MetadataJson = BenchmarkRunMetadataSerializer.Serialize(run.Metadata)
             },
             cancellationToken: cancellationToken)).ConfigureAwait(false);
     }
@@ -145,7 +218,25 @@ public sealed class UserBenchmarkRepository(SqliteUserBenchmarkDatabase database
                 WarmLatencyMinimumMilliseconds,
                 WarmLatencyMaximumMilliseconds,
                 FailureReason,
-                GeneratedAtUtc
+                GeneratedAtUtc,
+                FirstRunMilliseconds,
+                WarmupMilliseconds,
+                WarmupRunCount,
+                SampleCount,
+                WarmLatencyP50Milliseconds,
+                WarmLatencyP90Milliseconds,
+                WarmLatencyP95Milliseconds,
+                WarmLatencyP99Milliseconds,
+                MeasuredWallTimeMilliseconds,
+                PassesPerSecond,
+                ThroughputUnitsPerSecond,
+                AudioDurationSeconds,
+                RealTimeFactorAverage,
+                ThroughputUnit,
+                TimingMode,
+                InputProfileId,
+                ComparisonKey,
+                MetadataJson
             FROM BenchmarkRuns
             WHERE EvidenceId = @EvidenceId
             ORDER BY Scenario, GeneratedAtUtc;
@@ -186,7 +277,25 @@ public sealed class UserBenchmarkRepository(SqliteUserBenchmarkDatabase database
                 WarmLatencyMinimumMilliseconds,
                 WarmLatencyMaximumMilliseconds,
                 FailureReason,
-                GeneratedAtUtc
+                GeneratedAtUtc,
+                FirstRunMilliseconds,
+                WarmupMilliseconds,
+                WarmupRunCount,
+                SampleCount,
+                WarmLatencyP50Milliseconds,
+                WarmLatencyP90Milliseconds,
+                WarmLatencyP95Milliseconds,
+                WarmLatencyP99Milliseconds,
+                MeasuredWallTimeMilliseconds,
+                PassesPerSecond,
+                ThroughputUnitsPerSecond,
+                AudioDurationSeconds,
+                RealTimeFactorAverage,
+                ThroughputUnit,
+                TimingMode,
+                InputProfileId,
+                ComparisonKey,
+                MetadataJson
             FROM BenchmarkRuns
             ORDER BY GeneratedAtUtc DESC, Id DESC
             LIMIT @Limit;
@@ -219,13 +328,15 @@ public sealed class UserBenchmarkRepository(SqliteUserBenchmarkDatabase database
     internal static string BuildProfilerModelId(Guid evidenceId, string fingerprintHash, string scenarioName) =>
         $"hardware-profiler:{evidenceId:D}:{fingerprintHash}:{scenarioName}";
 
-    private static BenchmarkRunRecord MapRow(BenchmarkRunRow row) =>
-        new(
+    private static BenchmarkRunRecord MapRow(BenchmarkRunRow row)
+    {
+        BenchmarkRunMetadataReadResult metadata = BenchmarkRunMetadataSerializer.Deserialize(row.MetadataJson);
+        return new BenchmarkRunRecord(
             SqliteValueConverters.ParseGuid(row.Id),
             row.ModelId,
             row.ModelPath,
             row.ReportPath,
-            Enum.TryParse(row.Status, ignoreCase: false, out BenchmarkStatus status)
+            Enum.TryParse(row.Status, ignoreCase: false, out BenchmarkStatus status) && Enum.IsDefined(status)
                 ? status
                 : BenchmarkStatus.Failed,
             row.RequestedProvider,
@@ -238,7 +349,33 @@ public sealed class UserBenchmarkRepository(SqliteUserBenchmarkDatabase database
             row.WarmLatencyMinimumMilliseconds,
             row.WarmLatencyMaximumMilliseconds,
             row.FailureReason,
-            SqliteValueConverters.ParseDateTimeOffset(row.GeneratedAtUtc));
+            SqliteValueConverters.ParseDateTimeOffset(row.GeneratedAtUtc))
+        {
+            FirstRunMilliseconds = row.FirstRunMilliseconds,
+            WarmupMilliseconds = row.WarmupMilliseconds,
+            WarmupRunCount = ToNullableInt(row.WarmupRunCount),
+            SampleCount = ToNullableInt(row.SampleCount),
+            WarmLatencyP50Milliseconds = row.WarmLatencyP50Milliseconds,
+            WarmLatencyP90Milliseconds = row.WarmLatencyP90Milliseconds,
+            WarmLatencyP95Milliseconds = row.WarmLatencyP95Milliseconds,
+            WarmLatencyP99Milliseconds = row.WarmLatencyP99Milliseconds,
+            MeasuredWallTimeMilliseconds = row.MeasuredWallTimeMilliseconds,
+            PassesPerSecond = row.PassesPerSecond,
+            ThroughputUnitsPerSecond = row.ThroughputUnitsPerSecond,
+            AudioDurationSeconds = row.AudioDurationSeconds,
+            RealTimeFactorAverage = row.RealTimeFactorAverage,
+            ThroughputUnit = ParseEnum<BenchmarkThroughputUnit>(row.ThroughputUnit),
+            TimingMode = ParseEnum<BenchmarkTimingMode>(row.TimingMode),
+            InputProfileId = row.InputProfileId,
+            ComparisonKey = row.ComparisonKey,
+            Metadata = BenchmarkRunMetadataSerializer.ToRecordMetadata(metadata)
+        };
+    }
+
+    private static int? ToNullableInt(long? value) => value is null ? null : (int)value.Value;
+
+    private static TEnum? ParseEnum<TEnum>(string? value) where TEnum : struct, Enum =>
+        value is not null && Enum.TryParse(value, ignoreCase: false, out TEnum parsed) && Enum.IsDefined(parsed) ? parsed : null;
 
     private sealed record BenchmarkRunRow(
         string Id,
@@ -256,5 +393,23 @@ public sealed class UserBenchmarkRepository(SqliteUserBenchmarkDatabase database
         double? WarmLatencyMinimumMilliseconds,
         double? WarmLatencyMaximumMilliseconds,
         string? FailureReason,
-        string GeneratedAtUtc);
+        string GeneratedAtUtc,
+        double? FirstRunMilliseconds,
+        double? WarmupMilliseconds,
+        long? WarmupRunCount,
+        long? SampleCount,
+        double? WarmLatencyP50Milliseconds,
+        double? WarmLatencyP90Milliseconds,
+        double? WarmLatencyP95Milliseconds,
+        double? WarmLatencyP99Milliseconds,
+        double? MeasuredWallTimeMilliseconds,
+        double? PassesPerSecond,
+        double? ThroughputUnitsPerSecond,
+        double? AudioDurationSeconds,
+        double? RealTimeFactorAverage,
+        string? ThroughputUnit,
+        string? TimingMode,
+        string? InputProfileId,
+        string? ComparisonKey,
+        string? MetadataJson);
 }
