@@ -147,6 +147,22 @@ public sealed class BenchmarkOptionsTests
     }
 
     [Fact]
+    public void TryParse_CudaGraphsDefaultsToAutoAndParsesAuto()
+    {
+        bool defaultSuccess = BenchmarkOptions.TryParse(
+            ["--model", "model.onnx"], TextWriter.Null, out BenchmarkOptions defaults);
+        Assert.True(defaultSuccess);
+        Assert.Equal(BenchmarkCudaGraphMode.Auto, defaults.CudaGraphMode);
+        Assert.Equal(BenchmarkCudaGraphMode.Auto, defaults.Execution!.EffectiveTensorRtRtx.CudaGraphMode);
+        Assert.False(defaults.Execution.EffectiveTensorRtRtx.EnableCudaGraph);
+
+        bool success = BenchmarkOptions.TryParse(
+            ["--model", "model.onnx", "--cuda-graphs", "auto"], TextWriter.Null, out BenchmarkOptions options);
+        Assert.True(success);
+        Assert.Equal(BenchmarkCudaGraphMode.Auto, options.CudaGraphMode);
+    }
+
+    [Fact]
     public void TryParse_ReferenceToolFlags()
     {
         var args = new[]

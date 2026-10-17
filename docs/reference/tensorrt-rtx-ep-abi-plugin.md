@@ -279,7 +279,7 @@ legacy `--runs <n>`:
 | `--warmup-runs <n>` / `--warmup-ms <n>` | Warmup floor by count and/or wall time; warmup samples are excluded from statistics |
 | `--input-mode synthetic\|zeros` | Deterministic seeded synthetic inputs (default) or the legacy all-zeros recipe; `--input-seed <n>` fixes the synthetic stream |
 | `--io-mode managed\|device-bound` | Managed `session.Run` end-to-end timing vs device-bound `OrtIoBinding` timing |
-| `--cuda-graphs off\|on\|compare` | `enable_cuda_graph` for the TRT-RTX EP; `compare` measures both lanes in fresh sessions |
+| `--cuda-graphs auto\|off\|on\|compare` | `enable_cuda_graph` for the TRT-RTX EP; `auto` (default) enables graphs when the run is device-bound on a single-graph trt-rtx session; `compare` measures both lanes in fresh sessions |
 | `--artifact auto\|source\|require` | EP-context artifact selection (`auto` = production resolver, `source` = force source model, `require` = fail without a compatible artifact) |
 | `--runtime-cache reuse\|isolated` | `nv_runtime_cache_path` reuse vs an isolated per-run cache directory (`--runtime-cache-dir`) |
 | `--reference-tool tensorrt-rtx\|ort-perf-test` | Optional NVIDIA reference-tool run attached to the report (`--reference-tool-path`, `--reference-tool-required`) |
@@ -309,7 +309,9 @@ Prerequisites and limits:
 
 `--cuda-graphs on|compare` requires `--io-mode device-bound` (persistent bound buffers
 are the same precondition production applies for `enable_cuda_graph=1`); settings
-validation rejects the combination with managed I/O. `compare` runs a graphs-off lane
+validation rejects the combination with managed I/O. The `auto` default enables graphs
+only when the run is already device-bound on a single-graph trt-rtx session and records
+the resolution in report notes; on managed runs it stays off. `compare` runs a graphs-off lane
 then a graphs-on lane, each in a fresh session so `enable_cuda_graph` is honestly
 applied, and records per-lane sampling/statistics under `metadata.cudaGraphLanes` in
 the JSON report plus a `CUDA graph comparison` block in console output.

@@ -56,7 +56,25 @@ public sealed class BenchmarkContractCompatibilityTests
         Assert.Equal(BenchmarkInputMode.Synthetic, settings.InputMode);
         Assert.Equal(BenchmarkIoMode.Managed, settings.IoMode);
         Assert.False(settings.EffectiveTensorRtRtx.EnableCudaGraph);
+        Assert.Equal(BenchmarkCudaGraphMode.Auto, settings.EffectiveTensorRtRtx.CudaGraphMode);
         settings.Validate(3);
+    }
+
+    [Fact]
+    public void CudaGraphAutoResolvesFromDeviceBoundEligibility()
+    {
+        var auto = new BenchmarkTensorRtRtxSettings(CudaGraphMode: BenchmarkCudaGraphMode.Auto);
+        Assert.True(auto.ResolveCudaGraphEnable(deviceBoundEligible: true));
+        Assert.False(auto.ResolveCudaGraphEnable(deviceBoundEligible: false));
+        Assert.False(auto.EnableCudaGraph);
+
+        var off = new BenchmarkTensorRtRtxSettings(CudaGraphMode: BenchmarkCudaGraphMode.Off);
+        Assert.False(off.ResolveCudaGraphEnable(deviceBoundEligible: true));
+
+        // Auto never requires device-bound I/O: it resolves off under managed timing.
+        new BenchmarkExecutionSettings(
+            IoMode: BenchmarkIoMode.Managed,
+            TensorRtRtx: auto).Validate(3);
     }
 
     [Fact]

@@ -25,8 +25,8 @@ public sealed record BenchmarkOptions(
     /// <summary>Opt-in persistence of this run into the user benchmark history store.</summary>
     public bool HistoryRequested { get; init; }
 
-    /// <summary>CUDA-graph lane requested on the command line; Off/On map onto settings directly.</summary>
-    public BenchmarkCudaGraphMode CudaGraphMode { get; init; } = BenchmarkCudaGraphMode.Off;
+    /// <summary>CUDA-graph lane requested on the command line; Auto resolves from device-bound eligibility.</summary>
+    public BenchmarkCudaGraphMode CudaGraphMode { get; init; } = BenchmarkCudaGraphMode.Auto;
 
     /// <summary>Optional NVIDIA reference-tool run attached to the primary benchmark.</summary>
     public BenchmarkReferenceToolKind ReferenceTool { get; init; } = BenchmarkReferenceToolKind.None;
@@ -55,7 +55,7 @@ public sealed record BenchmarkOptions(
         var artifactMode = BenchmarkArtifactMode.Auto;
         var runtimeCacheMode = BenchmarkRuntimeCacheMode.Reuse;
         string? runtimeCacheDirectory = null;
-        var cudaGraphMode = BenchmarkCudaGraphMode.Off;
+        var cudaGraphMode = BenchmarkCudaGraphMode.Auto;
         var referenceTool = BenchmarkReferenceToolKind.None;
         string? referenceToolPath = null;
         var referenceToolRequired = false;

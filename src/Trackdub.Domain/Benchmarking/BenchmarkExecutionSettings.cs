@@ -27,6 +27,8 @@ public enum BenchmarkRuntimeCacheMode
 
 public enum BenchmarkCudaGraphMode
 {
+    /// <summary>Enable graphs when the run is device-bound on a single-graph trt-rtx session; otherwise off.</summary>
+    Auto,
     Off,
     On,
     Compare
@@ -40,13 +42,25 @@ public enum BenchmarkThroughputUnit
 }
 
 public sealed record BenchmarkTensorRtRtxSettings(
-    BenchmarkCudaGraphMode CudaGraphMode = BenchmarkCudaGraphMode.Off,
+    BenchmarkCudaGraphMode CudaGraphMode = BenchmarkCudaGraphMode.Auto,
     BenchmarkArtifactMode ArtifactMode = BenchmarkArtifactMode.Auto,
     BenchmarkRuntimeCacheMode CacheMode = BenchmarkRuntimeCacheMode.Reuse,
     string? RuntimeCacheDirectory = null)
 {
-    /// <summary>Any lane that requests a CUDA-graph session (On or the on-half of Compare).</summary>
+    /// <summary>Any lane that explicitly requests a CUDA-graph session (On or the on-half of Compare).</summary>
     public bool EnableCudaGraph => CudaGraphMode is BenchmarkCudaGraphMode.On or BenchmarkCudaGraphMode.Compare;
+
+    /// <summary>
+    /// Resolve the effective enable_cuda_graph flag. Auto enables graphs only when the run
+    /// satisfies the documented precondition (persistent device-bound I/O on a single-graph
+    /// trt-rtx session); explicit modes keep their requested value.
+    /// </summary>
+    public bool ResolveCudaGraphEnable(bool deviceBoundEligible) => CudaGraphMode switch
+    {
+        BenchmarkCudaGraphMode.On or BenchmarkCudaGraphMode.Compare => true,
+        BenchmarkCudaGraphMode.Auto => deviceBoundEligible,
+        _ => false
+    };
 }
 
 /// <summary>Explicit budgets; a zero measurement duration preserves exact requested counts.</summary>

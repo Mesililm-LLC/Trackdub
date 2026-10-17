@@ -103,7 +103,9 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
 
             await TryRegisterWindowsMlProvidersAsync(request.ProviderPreference, notes, cancellationToken).ConfigureAwait(false);
 
-            BenchmarkSessionPlan plan = CreateSessionPlan(request, settings, fullReportPath, notes);
+            BenchmarkSessionPlan plan = CreateSessionPlan(
+                request, settings, fullReportPath, notes,
+                deviceBoundEligible: deviceBound && !isCompositeGraph);
             ActiveSessionPlan.Value = plan;
 
             modelSizeBytes = new FileInfo(fullModelPath).Length;
@@ -448,7 +450,8 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         BenchmarkRequest request,
         BenchmarkExecutionSettings settings,
         string fullReportPath,
-        ICollection<string> notes)
+        ICollection<string> notes,
+        bool deviceBoundEligible = false)
     {
         BenchmarkTensorRtRtxSettings trtSettings = settings.EffectiveTensorRtRtx;
         if (request.ProviderPreference is not BenchmarkProviderPreference.TensorRtRtx)
@@ -492,8 +495,16 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             _ => null
         };
 
+        bool enableCudaGraph = trtSettings.ResolveCudaGraphEnable(deviceBoundEligible);
+        if (trtSettings.CudaGraphMode is BenchmarkCudaGraphMode.Auto)
+        {
+            notes.Add(enableCudaGraph
+                ? "CUDA graph auto mode: enabled for device-bound single-graph trt-rtx run."
+                : "CUDA graph auto mode: disabled; the run does not meet the persistent device-bound I/O precondition.");
+        }
+
         return new BenchmarkSessionPlan(
-            trtSettings.ArtifactMode, trtSettings.EnableCudaGraph, cacheDirectory);
+            trtSettings.ArtifactMode, enableCudaGraph, cacheDirectory);
     }
 
     private static string? ResolveReusedRuntimeCacheDirectory(
