@@ -161,14 +161,24 @@ public sealed class UserBenchmarkRepositoryTests
                 BenchmarkStatus.Completed, "auto", "dml", 4, true, 64,
                 1.0, 2.0, 1.5, 2.5, null, DateTimeOffset.Parse("2026-10-17T00:00:00Z"))
             {
-                FirstRunMilliseconds = 10.0, WarmupMilliseconds = 200.0, WarmupRunCount = 1, SampleCount = 4,
-                WarmLatencyP50Milliseconds = 25.0, WarmLatencyP90Milliseconds = 37.0,
-                WarmLatencyP95Milliseconds = 38.5, WarmLatencyP99Milliseconds = 39.7,
-                MeasuredWallTimeMilliseconds = 200.0, PassesPerSecond = 20.0,
-                ThroughputUnitsPerSecond = 600.0, AudioDurationSeconds = 30.0,
-                RealTimeFactorAverage = 25.0 / 30000.0, ThroughputUnit = BenchmarkThroughputUnit.AudioSecondsPerSecond,
+                FirstRunMilliseconds = 10.0,
+                WarmupMilliseconds = 200.0,
+                WarmupRunCount = 1,
+                SampleCount = 4,
+                WarmLatencyP50Milliseconds = 25.0,
+                WarmLatencyP90Milliseconds = 37.0,
+                WarmLatencyP95Milliseconds = 38.5,
+                WarmLatencyP99Milliseconds = 39.7,
+                MeasuredWallTimeMilliseconds = 200.0,
+                PassesPerSecond = 20.0,
+                ThroughputUnitsPerSecond = 600.0,
+                AudioDurationSeconds = 30.0,
+                RealTimeFactorAverage = 25.0 / 30000.0,
+                ThroughputUnit = BenchmarkThroughputUnit.AudioSecondsPerSecond,
                 TimingMode = BenchmarkTimingMode.ManagedOrtRunEndToEnd,
-                InputProfileId = "synthetic-v1", ComparisonKey = "dml|fp16", Metadata = metadata
+                InputProfileId = "synthetic-v1",
+                ComparisonKey = "dml|fp16",
+                Metadata = metadata
             };
 
             await repository.AddAsync(run, token);
