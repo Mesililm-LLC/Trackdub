@@ -33,7 +33,12 @@ public sealed record BenchmarkHistoryPersistenceResult(
     BenchmarkHistoryPersistenceStatus Status,
     string? FailureReason = null);
 
-/// <summary>One lane of a CUDA-graph on/off comparison, measured with identical policy.</summary>
+/// <summary>
+/// One lane of a CUDA-graph on/off comparison, measured with identical policy.
+/// LoadKind/ArtifactIdentity record which model artifact the lane actually loaded: compile
+/// options differ per lane by design, so artifact resolution can legitimately pick different
+/// EP-context files — these fields make any divergence visible instead of implicit.
+/// </summary>
 public sealed record BenchmarkCudaGraphLaneResult(
     string Lane,
     bool EnableCudaGraph,
@@ -41,7 +46,9 @@ public sealed record BenchmarkCudaGraphLaneResult(
     BenchmarkTimingMode TimingMode,
     BenchmarkSamplingInfo? Sampling,
     BenchmarkLatencyStatistics? Statistics,
-    string? UnavailableReason = null);
+    string? UnavailableReason = null,
+    string? LoadKind = null,
+    string? ArtifactIdentity = null);
 
 /// <summary>Versioned, typed evidence accompanying one ONNX workload measurement.</summary>
 public sealed record BenchmarkRunMetadata

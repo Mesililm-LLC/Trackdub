@@ -405,6 +405,19 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             modelPath, preference, runCount, settings, notes, cancellationToken);
         ActiveSessionPlan.Value = basePlan;
 
+        string? offLoadKind = offLane.Graphs.FirstOrDefault()?.LoadKind;
+        string? onLoadKind = onLane.Graphs.FirstOrDefault()?.LoadKind;
+        string? offArtifact = offLane.Graphs.FirstOrDefault()?.ArtifactIdentity;
+        string? onArtifact = onLane.Graphs.FirstOrDefault()?.ArtifactIdentity;
+        if (!string.Equals(offLoadKind, onLoadKind, StringComparison.Ordinal)
+            || !string.Equals(offArtifact, onArtifact, StringComparison.Ordinal))
+        {
+            notes.Add(
+                $"CUDA graph compare lanes loaded different artifacts: " +
+                $"off=[{offLoadKind ?? "none"}:{offArtifact ?? "none"}] " +
+                $"on=[{onLoadKind ?? "none"}:{onArtifact ?? "none"}].");
+        }
+
         return onLane with
         {
             CudaGraphLanes =
@@ -415,10 +428,12 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         };
     }
 
-    private static BenchmarkCudaGraphLaneResult ToCudaGraphLaneResult(string lane, BenchmarkExecution execution) =>
-        new(
+    private static BenchmarkCudaGraphLaneResult ToCudaGraphLaneResult(string lane, BenchmarkExecution execution)
+    {
+        BenchmarkGraphMetadata? graph = execution.Graphs.FirstOrDefault();
+        return new(
             Lane: lane,
-            EnableCudaGraph: execution.Graphs.Any(graph => graph.EnableCudaGraph),
+            EnableCudaGraph: execution.Graphs.Any(g => g.EnableCudaGraph),
             SessionInitializationMilliseconds: execution.SessionInitializationMilliseconds,
             TimingMode: BenchmarkTimingMode.DeviceBoundSynchronized,
             Sampling: new BenchmarkSamplingInfo(
@@ -428,7 +443,10 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
                 execution.Sampling.LatencySamplesMilliseconds.Count,
                 execution.Sampling.MeasuredWallTimeMilliseconds),
             Statistics: BenchmarkLatencyCalculator.Calculate(execution.Sampling.LatencySamplesMilliseconds),
-            UnavailableReason: execution.Sampling.Failure?.Message);
+            UnavailableReason: execution.Sampling.Failure?.Message,
+            LoadKind: graph?.LoadKind,
+            ArtifactIdentity: graph?.ArtifactIdentity);
+    }
 
     /// <summary>
     /// Run-scoped benchmark plan for TensorRT-RTX option normalization, artifact selection,

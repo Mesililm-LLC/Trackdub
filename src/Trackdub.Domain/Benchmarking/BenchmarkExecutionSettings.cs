@@ -68,7 +68,13 @@ public sealed record BenchmarkTensorRtRtxSettings(
     };
 }
 
-/// <summary>Explicit budgets; a zero measurement duration preserves exact requested counts.</summary>
+/// <summary>
+/// Explicit budgets; a zero measurement duration preserves exact requested counts.
+/// The shared <see cref="Default"/> warm-up floor (1 run, 200 ms) applies to every caller,
+/// including non-CLI consumers such as DubBench and HardwareProfiler: a ~1 ms/pass model
+/// still runs roughly 200 warm-up passes before measured sampling, so interactive runs
+/// cost up to ~200 ms more wall time in exchange for a settled first measurement.
+/// </summary>
 public sealed record BenchmarkExecutionSettings(
     int MinimumWarmupRuns = 1,
     int MinimumWarmupMilliseconds = 200,

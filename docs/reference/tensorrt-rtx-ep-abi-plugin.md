@@ -282,18 +282,21 @@ legacy `--runs <n>`:
 | `--io-mode managed\|device-bound` | Managed `session.Run` end-to-end timing vs device-bound `OrtIoBinding` timing |
 | `--cuda-graphs auto\|off\|on\|compare` | `enable_cuda_graph` for the TRT-RTX EP; `auto` (default) enables graphs when the run is device-bound on a single-graph trt-rtx session; `compare` measures both lanes in fresh sessions |
 | `--artifact auto\|source\|require` | EP-context artifact selection (`auto` = production resolver, `source` = force source model, `require` = fail without a compatible artifact) |
-| `--runtime-cache reuse\|isolated` | `nv_runtime_cache_path` reuse vs an isolated per-run cache directory (`--runtime-cache-dir`) |
+| `--runtime-cache reuse\|isolated` | `nv_runtime_cache_path` reuse vs an isolated per-run cache directory (`--runtime-cache-dir`). Isolated dirs (`benchmark-runtime-cache-<guid>` next to the report) are retained after the run — they hold the TRT engine cache evidence for that measurement; delete them manually when no longer needed |
 | `--reference-tool tensorrt-rtx\|ort-perf-test` | Optional NVIDIA reference-tool run attached to the report (`--reference-tool-path`, `--reference-tool-required`) |
 | `--history` | Persist the run into the user benchmark history SQLite store |
 | `--format console\|json\|both` | Console summary, JSON report, or both |
 
 ### Device-bound I/O
 
-`--io-mode device-bound` binds pinned host tensors through `OrtIoBinding`, copies inputs
-per pass via `SynchronizeBoundInputs`, binds outputs to session-reported memory, and
-fences device work with `SynchronizeBoundOutputs`. The pass therefore measures device
-execution rather than enqueue-only latency, and reports `TimingMode:
-DeviceBoundSynchronized` in JSON metadata.
+`--io-mode device-bound` binds pinned host tensors through `OrtIoBinding`, requests the
+host-to-device copy per pass via `SynchronizeBoundInputs`, binds outputs to
+session-reported memory, and fences device work with `SynchronizeBoundOutputs`. The pass
+therefore measures device execution rather than enqueue-only latency, and reports
+`TimingMode: DeviceBoundSynchronized` in JSON metadata. Note: on TRT-RTX the input sync
+is a no-op (the engine runs on its own fixed device buffers); that is acceptable for
+latency sampling since input contents do not change kernel timing, but the production
+inference paths use explicitly allocated device OrtValues + `OrtEnv.CopyTensors` instead.
 
 Prerequisites and limits:
 

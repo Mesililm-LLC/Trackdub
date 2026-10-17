@@ -134,9 +134,12 @@ public sealed class DeviceBoundIoBinding : IDisposable
     private static bool IsDeviceMemory(OrtMemoryInfo info) =>
         !info.Equals(OrtMemoryInfo.DefaultInstance);
 
-    private static OrtValue CreateHostValue(NamedOnnxValue input, Type elementType)
+    internal static OrtValue CreateHostValue(NamedOnnxValue input, Type elementType)
     {
         if (elementType == typeof(float)) return CreateHostValue<float>(input);
+        // ORT's fp16 tensor type is Float16; System.Half is accepted for callers that
+        // construct inputs that way. Both share the same 16-bit storage layout.
+        if (elementType == typeof(Float16)) return CreateHostValue<Float16>(input);
         if (elementType == typeof(Half)) return CreateHostValue<Half>(input);
         if (elementType == typeof(int)) return CreateHostValue<int>(input);
         if (elementType == typeof(long)) return CreateHostValue<long>(input);

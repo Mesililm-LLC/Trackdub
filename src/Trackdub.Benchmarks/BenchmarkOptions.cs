@@ -430,9 +430,13 @@ public sealed record BenchmarkOptions(
             return false;
         }
 
-        // With no explicit --runs, the standard policy is at least 10 measured samples;
-        // an explicit --runs keeps exact-count behavior (including --runs 1 smoke runs).
-        int effectiveRunCount = runCountSpecified ? runCount : 10;
+        // Sampling floors come from the shared domain policy so CLI and other callers
+        // cannot drift: absent --runs means >=10 samples plus a 3s measurement floor;
+        // explicit --runs keeps exact-count behavior (including --runs 1 smoke runs).
+        BenchmarkSamplingPolicy sampling = BenchmarkSamplingPolicy.Resolve(
+            runCountSpecified ? runCount : null,
+            durationMilliseconds);
+        int effectiveRunCount = sampling.MinimumSamples;
 
         options = new BenchmarkOptions(
             string.IsNullOrWhiteSpace(modelPath) ? string.Empty : modelPath.Trim(),
@@ -449,7 +453,7 @@ public sealed record BenchmarkOptions(
             DryRun: dryRun)
         {
             Execution = BuildExecutionSettings(
-                runCountSpecified, durationMilliseconds, warmupRuns, warmupMilliseconds,
+                sampling, warmupRuns, warmupMilliseconds,
                 inputMode, inputSeed, ioMode, artifactMode, runtimeCacheMode,
                 runtimeCacheDirectory, cudaGraphMode, inputShapeOverrides),
             HistoryRequested = historyRequested,
@@ -469,8 +473,7 @@ public sealed record BenchmarkOptions(
     /// an explicit --runs without --duration-ms preserves exact-count runs.
     /// </summary>
     private static BenchmarkExecutionSettings BuildExecutionSettings(
-        bool runCountSpecified,
-        int? durationMilliseconds,
+        BenchmarkSamplingPolicy sampling,
         int warmupRuns,
         int warmupMilliseconds,
         BenchmarkInputMode inputMode,
@@ -484,7 +487,7 @@ public sealed record BenchmarkOptions(
         new(
             MinimumWarmupRuns: warmupRuns,
             MinimumWarmupMilliseconds: warmupMilliseconds,
-            MinimumMeasurementMilliseconds: durationMilliseconds ?? (runCountSpecified ? 0 : 3000),
+            MinimumMeasurementMilliseconds: sampling.MinimumMeasurementMilliseconds,
             InputMode: inputMode,
             InputSeed: inputSeed,
             IoMode: ioMode,
