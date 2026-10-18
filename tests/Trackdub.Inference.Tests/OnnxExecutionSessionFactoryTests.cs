@@ -899,6 +899,37 @@ public sealed class OnnxExecutionSessionFactoryTests
     }
 
     [Theory]
+    [InlineData("10.13.3", "10", true)]
+    [InlineData("10", "10.13.3", false)]
+    [InlineData("10.13.3", "10.9.9", true)]
+    [InlineData("10.13.3.0.0", "10.13.3", true)]
+    [InlineData("10.13.3", "10.13.3.0.0", false)]
+    [InlineData("10.13.3", "10.13.3", false)]
+    public void IsNewerTensorRtVersion_compares_dotted_versions_component_wise(string candidate, string current, bool expected)
+    {
+        Assert.Equal(expected, OnnxExecutionSessionFactory.IsNewerTensorRtVersion(candidate, current));
+    }
+
+    [Fact]
+    public void BuildTensorRtOptions_translates_enable_cuda_graph_and_drops_rtx_only_keys_for_classic_trt()
+    {
+        IReadOnlyDictionary<string, string> options = OnnxExecutionSessionFactory.BuildTensorRtOptions(
+            new Dictionary<string, string>
+            {
+                ["enable_cuda_graph"] = "1",
+                ["nv_profile_min_shapes"] = "input_ids:1x1",
+                ["nv_runtime_cache_path"] = @"C:\rtx-cache",
+                ["trt_profile_max_shapes"] = "input_ids:1x512",
+            },
+            "Ampere|535.104.05|trt-10.13.3|ort-1.31.0");
+
+        Assert.Equal("1", options["trt_cuda_graph_enable"]);
+        Assert.Equal("input_ids:1x512", options["trt_profile_max_shapes"]);
+        Assert.False(options.ContainsKey("enable_cuda_graph"));
+        Assert.DoesNotContain(options.Keys, key => key.StartsWith("nv_", StringComparison.Ordinal));
+    }
+
+    [Theory]
     [InlineData(WindowsMlExecutionDevicePolicy.Explicit, ExecutionProviderKind.DirectMl, false)]
     [InlineData(WindowsMlExecutionDevicePolicy.MaxPerformance, ExecutionProviderKind.DirectMl, false)]
     [InlineData(WindowsMlExecutionDevicePolicy.MaxPerformance, ExecutionProviderKind.TensorRTRtx, false)]

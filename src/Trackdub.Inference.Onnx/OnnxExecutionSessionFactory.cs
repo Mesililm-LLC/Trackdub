@@ -2459,7 +2459,7 @@ internal static class OnnxExecutionSessionFactory
     // Compares dotted numeric versions component-wise so "10.13.3" outranks "10" and
     // "10.13.3.0.0" outranks "10.13.3" only by its numeric components, not by string length.
     // Ordinal string order breaks ties so the selection does not depend on directory enumeration order.
-    private static bool IsNewerTensorRtVersion(string candidate, string current)
+    internal static bool IsNewerTensorRtVersion(string candidate, string current)
     {
         string[] candidateParts = candidate.Split('.');
         string[] currentParts = current.Split('.');
