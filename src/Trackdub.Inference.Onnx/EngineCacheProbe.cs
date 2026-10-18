@@ -16,9 +16,12 @@ public static class EngineCacheProbe
         int FileCount,
         long TotalBytes);
 
-    public static Snapshot Capture()
+    public static Snapshot Capture() => Capture(null);
+
+    /// <summary>Captures an explicit runtime-cache directory, or the configured default when null.</summary>
+    public static Snapshot Capture(string? directory)
     {
-        string? directory = ResolveCacheDirectory();
+        directory ??= ResolveCacheDirectory();
         if (directory is null || !Directory.Exists(directory))
         {
             return new Snapshot(directory, DirectoryExists: false, FileCount: 0, TotalBytes: 0);

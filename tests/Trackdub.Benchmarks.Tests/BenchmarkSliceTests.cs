@@ -5,6 +5,7 @@ using Trackdub.Benchmarks;
 using Trackdub.Composition.StarterPacks;
 using Trackdub.Contracts.ApplicationContracts;
 using Trackdub.Domain;
+using Trackdub.Domain.Benchmarking;
 using Trackdub.Inference.Runtime.ModelManifest;
 using Trackdub.TestDoubles;
 #if WINDOWS
@@ -58,6 +59,178 @@ public sealed class BenchmarkOptionsTests
         Assert.Equal(TrtRtxSmokeCatalog.ScopeName, options.Scope);
         Assert.Equal(string.Empty, options.ModelPath);
         Assert.Equal(BenchmarkProviderPreference.TensorRtRtx, options.ProviderPreference);
+    }
+
+    [Fact]
+    public void TryParse_DefaultRun_AppliesStandardSamplingPolicy()
+    {
+        var args = new[] { "--model", "model.onnx" };
+
+        bool success = BenchmarkOptions.TryParse(args, TextWriter.Null, out BenchmarkOptions options);
+
+        Assert.True(success);
+        Assert.Equal(10, options.RunCount);
+        Assert.NotNull(options.Execution);
+        Assert.Equal(3000, options.Execution!.MinimumMeasurementMilliseconds);
+        Assert.Equal(1, options.Execution.MinimumWarmupRuns);
+        Assert.Equal(200, options.Execution.MinimumWarmupMilliseconds);
+        Assert.Equal(BenchmarkInputMode.Synthetic, options.Execution.InputMode);
+        Assert.Equal(42, options.Execution.InputSeed);
+    }
+
+    [Fact]
+    public void TryParse_ExplicitRunsWithoutDuration_PreservesExactCount()
+    {
+        var args = new[] { "--model", "model.onnx", "--runs", "1" };
+
+        bool success = BenchmarkOptions.TryParse(args, TextWriter.Null, out BenchmarkOptions options);
+
+        Assert.True(success);
+        Assert.Equal(1, options.RunCount);
+        Assert.Equal(0, options.Execution!.MinimumMeasurementMilliseconds);
+    }
+
+    [Fact]
+    public void TryParse_DurationWithoutRuns_KeepsSampleMinimumAndDurationFloor()
+    {
+        var args = new[] { "--model", "model.onnx", "--duration-ms", "1500" };
+
+        bool success = BenchmarkOptions.TryParse(args, TextWriter.Null, out BenchmarkOptions options);
+
+        Assert.True(success);
+        Assert.Equal(10, options.RunCount);
+        Assert.Equal(1500, options.Execution!.MinimumMeasurementMilliseconds);
+    }
+
+    [Fact]
+    public void TryParse_RunsAndDuration_TreatsRunsAsMinimumWithFloor()
+    {
+        var args = new[] { "--model", "model.onnx", "--runs", "3", "--duration-ms", "500" };
+
+        bool success = BenchmarkOptions.TryParse(args, TextWriter.Null, out BenchmarkOptions options);
+
+        Assert.True(success);
+        Assert.Equal(3, options.RunCount);
+        Assert.Equal(500, options.Execution!.MinimumMeasurementMilliseconds);
+    }
+
+    [Fact]
+    public void TryParse_ParsesNewExecutionFlags()
+    {
+        var args = new[]
+        {
+            "--model", "model.onnx",
+            "--warmup-runs", "3", "--warmup-ms", "0",
+            "--input-mode", "zeros", "--input-seed", "7",
+            "--io-mode", "device-bound",
+            "--cuda-graphs", "on",
+            "--artifact", "require",
+            "--runtime-cache", "isolated",
+            "--runtime-cache-dir", "cache-dir",
+            "--history"
+        };
+
+        bool success = BenchmarkOptions.TryParse(args, TextWriter.Null, out BenchmarkOptions options);
+
+        Assert.True(success);
+        Assert.Equal(3, options.Execution!.MinimumWarmupRuns);
+        Assert.Equal(0, options.Execution.MinimumWarmupMilliseconds);
+        Assert.Equal(BenchmarkInputMode.Zeros, options.Execution.InputMode);
+        Assert.Equal(7, options.Execution.InputSeed);
+        Assert.Equal(BenchmarkIoMode.DeviceBound, options.Execution.IoMode);
+        Assert.True(options.Execution.EffectiveTensorRtRtx.EnableCudaGraph);
+        Assert.Equal(BenchmarkArtifactMode.Require, options.Execution.EffectiveTensorRtRtx.ArtifactMode);
+        Assert.Equal(BenchmarkRuntimeCacheMode.Isolated, options.Execution.EffectiveTensorRtRtx.CacheMode);
+        Assert.Equal("cache-dir", options.Execution.EffectiveTensorRtRtx.RuntimeCacheDirectory);
+        Assert.True(options.HistoryRequested);
+        Assert.Equal(BenchmarkCudaGraphMode.On, options.CudaGraphMode);
+    }
+
+    [Fact]
+    public void TryParse_CudaGraphsDefaultsToAutoAndParsesAuto()
+    {
+        bool defaultSuccess = BenchmarkOptions.TryParse(
+            ["--model", "model.onnx"], TextWriter.Null, out BenchmarkOptions defaults);
+        Assert.True(defaultSuccess);
+        Assert.Equal(BenchmarkCudaGraphMode.Auto, defaults.CudaGraphMode);
+        Assert.Equal(BenchmarkCudaGraphMode.Auto, defaults.Execution!.EffectiveTensorRtRtx.CudaGraphMode);
+        Assert.False(defaults.Execution.EffectiveTensorRtRtx.EnableCudaGraph);
+
+        bool success = BenchmarkOptions.TryParse(
+            ["--model", "model.onnx", "--cuda-graphs", "auto"], TextWriter.Null, out BenchmarkOptions options);
+        Assert.True(success);
+        Assert.Equal(BenchmarkCudaGraphMode.Auto, options.CudaGraphMode);
+    }
+
+    [Fact]
+    public void TryParse_ReferenceToolFlags()
+    {
+        var args = new[]
+        {
+            "--model", "model.onnx",
+            "--reference-tool", "tensorrt-rtx",
+            "--reference-tool-path", "C:\\tools\\tensorrt_rtx.exe",
+            "--reference-tool-required"
+        };
+
+        bool success = BenchmarkOptions.TryParse(args, TextWriter.Null, out BenchmarkOptions options);
+
+        Assert.True(success);
+        Assert.Equal(BenchmarkReferenceToolKind.TensorRtRtx, options.ReferenceTool);
+        Assert.Equal("C:\\tools\\tensorrt_rtx.exe", options.ReferenceToolPath);
+        Assert.True(options.ReferenceToolRequired);
+    }
+
+    [Fact]
+    public void TryParse_ReferenceToolRequiredWithoutTool_Fails()
+    {
+        var args = new[] { "--model", "model.onnx", "--reference-tool-required" };
+
+        bool success = BenchmarkOptions.TryParse(args, TextWriter.Null, out _);
+
+        Assert.False(success);
+    }
+
+    [Fact]
+    public void TryParse_InputShapeOverridesAndProfileMode()
+    {
+        var args = new[]
+        {
+            "--model", "model.onnx",
+            "--input-mode", "profile",
+            "--input-shape", "chunk=1,3040,128",
+            "--input-shape", "spkcache=1,188,512"
+        };
+
+        bool success = BenchmarkOptions.TryParse(args, TextWriter.Null, out BenchmarkOptions options);
+
+        Assert.True(success);
+        Assert.Equal(BenchmarkInputMode.Profile, options.Execution!.InputMode);
+        Assert.NotNull(options.Execution.InputShapeOverrides);
+        Assert.Equal([1, 3040, 128], options.Execution.InputShapeOverrides!["chunk"]);
+        Assert.Equal([1, 188, 512], options.Execution.InputShapeOverrides["spkcache"]);
+    }
+
+    [Theory]
+    [InlineData("--duration-ms", "-1")]
+    [InlineData("--warmup-runs", "0")]
+    [InlineData("--warmup-ms", "-5")]
+    [InlineData("--input-mode", "bogus")]
+    [InlineData("--input-shape", "chunk")]
+    [InlineData("--input-shape", "=1,2")]
+    [InlineData("--input-shape", "chunk=1,0,128")]
+    [InlineData("--io-mode", "bogus")]
+    [InlineData("--cuda-graphs", "bogus")]
+    [InlineData("--artifact", "bogus")]
+    [InlineData("--runtime-cache", "bogus")]
+    [InlineData("--reference-tool", "bogus")]
+    public void TryParse_InvalidNewFlagValues_Fail(string flag, string value)
+    {
+        var args = new[] { "--model", "model.onnx", flag, value };
+
+        bool success = BenchmarkOptions.TryParse(args, TextWriter.Null, out _);
+
+        Assert.False(success);
     }
 
     [Fact]

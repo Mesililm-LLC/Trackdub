@@ -1,9 +1,11 @@
 <Project>
   <!-- Strip Windows TFM on non-Windows to allow cross-platform solution builds.
-       Skip strip during restore (MSBuildRestoreSessionId set) so locked-mode
+       Locked-restore callers set TrackdubRestoreAllTargetFrameworks=true so
+       even the outer restore evaluation retains the full framework graph.
+       Also skip strip during restore (MSBuildRestoreSessionId set) so locked-mode
        matches committed multi-TFM packages.lock.json graphs. Build/test still strip.
        Trim(';') handles Avalonia-style "net10.0-windows...;net10.0" ordering. -->
-  <PropertyGroup Condition="!$([MSBuild]::IsOSPlatform('Windows')) AND '$(TargetFrameworks)' != '' AND '$(MSBuildRestoreSessionId)' == ''">
+  <PropertyGroup Condition="!$([MSBuild]::IsOSPlatform('Windows')) AND '$(TargetFrameworks)' != '' AND '$(MSBuildRestoreSessionId)' == '' AND '$(TrackdubRestoreAllTargetFrameworks)' != 'true'">
     <TargetFrameworks>$([System.Text.RegularExpressions.Regex]::Replace('$(TargetFrameworks)', ';?net10\.0-windows[^;]*', '').Trim(';'))</TargetFrameworks>
   </PropertyGroup>
   <!-- Keep duplicate CPU ONNX Runtime assets out of publish output when the

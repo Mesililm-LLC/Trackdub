@@ -82,7 +82,7 @@ Body must contain: what changed and by layer, the gate result with the commands 
 
 Read the **full diff against the base branch** (`gh pr diff <n>`), not just the latest commit, before writing the description.
 
-If the work belongs to a Linear issue, include `TS-xxx` or `Fixes TS-xxx` in the body.
+If the user linked the work to an issue, reference it in the body; do not use Linear.
 
 ## 7. CI
 
@@ -124,35 +124,13 @@ Prefer non-interactive `gh-stack` commands when running autonomously. If the ext
 
 ## 10. Merge
 
-Only when: gates green locally, CI green, review threads addressed, and any Linear issue status updated with proof. Merge is externally visible and hard to reverse — do it when asked.
+Only when: gates green locally, CI green, review threads addressed, and any user-provided issue reference noted with proof. Merge is externally visible and hard to reverse, so do it when asked.
 
-## 11. Linear (MANUAL — no integration)
+## 11. Issue tracking (none by default)
 
-Linear (workspace `trackdubllc`, team **TS**) is referenced by `AGENTS.md` as the tracker, but **there is no Linear integration in this system**. There is no MCP wiring, no CLI bridge, and nothing that posts to Linear. The human performs this step.
+Do not use Linear or require issue searches/status/TS IDs; track requested work locally in plans/Git unless the user explicitly asks for an external issue tracker. Do not search or update Linear and do not emit issue-tracker update text.
 
-The orchestrator's job is to emit ready-to-paste text and let the human apply it:
-
-```markdown
-**TS-xxx** — <title>
-Status: Done
-Repo: core
-Labels: repo:core, area:<pipeline|inference|ci|docs|...>, agent-owned
-
-What changed: <one paragraph>
-
-Evidence:
-- `dotnet build Trackdub.slnx --configuration Release --no-restore -m:1 -warnaserror` → exit 0
-- `dotnet test Trackdub.slnx --configuration Release --no-build -m:1` → N passed, 0 failed
-- <execution artifact path>
-
-NOT VERIFIED: <list, or "none">
-```
-
-Rules that apply when the human does apply it:
-
-- Never mark Done without proof attached.
-- Labels: `repo:core` for this repo. `area:*` for the surface. `needs-triage` when a product decision is required.
-- If Linear and the code disagree, the code wins — update Linear to match verified code state and note the reconciliation in a comment.
+Never claim Done without proof attached; the proof lives in the gate evidence, not in a tracker.
 
 ## Tooling inventory
 
@@ -164,7 +142,7 @@ Rules that apply when the human does apply it:
 | cubic MCP | repo wiki, review, codebase scan findings |
 | Context7 | third-party library docs outside the Trackdub corpus; verify against live code |
 | `trackdub-docs-rag` / `trackdub-gpu-docs` / `nvidia-cuda-docs` MCP | implementation facts, GPU/TRT-RTX docs, CUDA internals |
-| Linear | **manual only** — see above |
+| External issue tracker | **not used**, only on explicit user request |
 
 ## Report shape at handoff
 
@@ -172,8 +150,7 @@ Rules that apply when the human does apply it:
 2. Gate result with the exact commands and their verbatim outcome.
 3. Readiness ladder rung by rung, when models or providers were involved.
 4. PR description text.
-5. Ready-to-paste Linear text.
-6. NOT VERIFIED list, or `none`.
+5. NOT VERIFIED list, or `none`.
 
 ## Related
 

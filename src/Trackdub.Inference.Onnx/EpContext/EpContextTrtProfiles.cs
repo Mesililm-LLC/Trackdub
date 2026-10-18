@@ -1,4 +1,5 @@
 using Microsoft.ML.OnnxRuntime;
+using Trackdub.Inference.Onnx.Whisper;
 using Trackdub.Inference.Onnx.Madlad;
 using Trackdub.Inference.Onnx.NemotronAsr;
 using Trackdub.Inference.Onnx.SortFormer;
@@ -25,6 +26,13 @@ internal static class EpContextTrtProfiles
             // Metadata only: a CPU session never touches the TRT plugin.
             using InferenceSession session = new(sourceModelPath);
             inputNames = session.InputMetadata.Keys.ToArray();
+            // No-past whisper decoder: the hidden width comes from the declared dims, so the
+            // profile needs the opened session, not just names.
+            if (session.InputMetadata.ContainsKey("input_ids")
+                && session.InputMetadata.ContainsKey("encoder_hidden_states"))
+            {
+                return WhisperOnnxAudioTranscriptionEngine.BuildTrtDecoderOptions(sourceModelPath);
+            }
         }
         catch (OnnxRuntimeException)
         {
@@ -48,5 +56,41 @@ internal static class EpContextTrtProfiles
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Parses the registered opt profile ("name:1x2x3,...") into per-input shapes, so benchmark
+    /// input generation can match the engine's baked optimization point.
+    /// </summary>
+    internal static IReadOnlyDictionary<string, int[]>? ResolveOptShapes(string sourceModelPath)
+    {
+        if (Resolve(sourceModelPath) is not { } options
+            || !options.TryGetValue("trt_profile_opt_shapes", out string? spec))
+        {
+            return null;
+        }
+
+        var shapes = new Dictionary<string, int[]>(StringComparer.Ordinal);
+        foreach (string entry in spec.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var colon = entry.IndexOf(':');
+            if (colon <= 0)
+            {
+                continue;
+            }
+
+            var dims = entry[(colon + 1)..]
+                .Split('x', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(part => int.TryParse(part, out int value) ? value : -1)
+                .ToArray();
+            if (dims.Length == 0 || dims.Any(d => d < 0))
+            {
+                continue;
+            }
+
+            shapes[entry[..colon]] = dims;
+        }
+
+        return shapes.Count == 0 ? null : shapes;
     }
 }

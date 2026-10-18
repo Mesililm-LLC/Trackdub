@@ -1441,12 +1441,12 @@ internal static class OnnxExecutionSessionFactory
 
         BootstrapContext bootstrap = await BootstrapForProviderAsync(provider, cancellationToken)
             .ConfigureAwait(false);
-        // CUDA graph replay reads and writes the device addresses captured on the first run, so every
-        // binding must stay at a fixed address across runs. The encoder does not meet that yet:
-        // NemotronAsrGreedyDecoder rebinds fresh processed_signal / length / prompt OrtValues every
-        // chunk, and CachePingPongBuffer alternates the cache input/output buffers between two
-        // host allocations. Keep capture off for both sessions until the full binding set uses fixed
-        // device buffers and is validated across multiple chunks on TRT-RTX hardware.
+        // CUDA graph replay requires every binding to stay at a fixed address across runs.
+        // This flag must stay off here: the dual-session factory is shared with callers whose
+        // callsites rebind fresh OrtValues (ParakeetTdtGreedyDecoder, smoke probes), and Nemotron
+        // can fall back to managed feeds when shared device allocators are unavailable.
+        // Explicit per-caller graph options also flow into the pool-key fingerprint so capture
+        // modes cannot collide.
         const bool enableEncoderCudaGraph = false;
         DualOptionsSelections selections = CreateDualOptionsSelections(
             provider, bootstrap.Bootstrap, bootstrap.DevicePolicy,
@@ -2472,6 +2472,21 @@ internal static class OnnxExecutionSessionFactory
         {
             yield return path;
         }
+    }
+
+    /// <summary>
+    /// Composes enable_cuda_graph onto a caller-supplied TRT option set. Production callsites that
+    /// keep every bound OrtValue at a fixed address opt in here; profile dictionaries themselves
+    /// stay free of the flag so benchmark/AOT consumers keep explicit control of the session mode.
+    /// </summary>
+    internal static IReadOnlyDictionary<string, string> WithCudaGraphsEnabled(
+        IReadOnlyDictionary<string, string> options)
+    {
+        var merged = new Dictionary<string, string>(options, StringComparer.Ordinal)
+        {
+            ["enable_cuda_graph"] = "1",
+        };
+        return merged;
     }
 
     private static string ResolveTensorRtRtxRuntimeCachePath()

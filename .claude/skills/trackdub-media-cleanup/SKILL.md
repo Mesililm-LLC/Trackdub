@@ -122,4 +122,4 @@ ffmpeg -hide_banner -i "input.mp4" -vn -af ebur128=peak=true -f null -
 
 ## Verification when changing this skill or implementing missing support
 
-Validate frontmatter, relative links, attribution, and commands against the live CLI. For runtime changes follow `AGENTS.md`, preserve dependency direction, track work in Linear when available, and test success, disabled/skipped, missing-prerequisite, and failure paths with shared fakes. Use controlled-matrix evidence for end-to-end comparisons; do not put BenchmarkDotNet on PR CI. Documentation-only changes do not prove media cleanup or model readiness.
+Validate frontmatter, relative links, attribution, and commands against the live CLI. For runtime changes follow `AGENTS.md`, preserve dependency direction, track work in plans/Git, and test success, disabled/skipped, missing-prerequisite, and failure paths with shared fakes. Use controlled-matrix evidence for end-to-end comparisons; do not put BenchmarkDotNet on PR CI. Documentation-only changes do not prove media cleanup or model readiness.

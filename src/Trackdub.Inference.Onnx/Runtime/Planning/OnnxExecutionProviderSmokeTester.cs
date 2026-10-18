@@ -273,6 +273,12 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
         string modelRootPath = Path.GetDirectoryName(onnxDirectory ?? string.Empty)
             ?? throw new InvalidOperationException("Whisper smoke test could not resolve model root.");
         int melBins = WhisperOnnxAudioTranscriptionEngine.ReadMelBins(modelRootPath);
+        IReadOnlyDictionary<string, string>? encoderOptions = provider is ExecutionProviderKind.TensorRTRtx
+            ? WhisperOnnxAudioTranscriptionEngine.BuildTrtEncoderOptions(melBins)
+            : null;
+        IReadOnlyDictionary<string, string>? decoderOptions = provider is ExecutionProviderKind.TensorRTRtx
+            ? WhisperOnnxAudioTranscriptionEngine.BuildTrtDecoderOptions(decoderModelPath)
+            : null;
         // Pooled with the same family/TRT profiles WhisperOnnxAudioTranscriptionEngine uses.
         // Production planning excludes whisper-onnx from TensorRT families, while staged Olive
         // validation and explicit smoke probes remain evaluable with automatic downgrade and
@@ -286,7 +292,8 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
                     decoderModelPath,
                     provider,
                     cancellationToken,
-                    additionalTrtEncoderOptions: WhisperOnnxAudioTranscriptionEngine.BuildTrtEncoderOptions(melBins))
+                    additionalTrtEncoderOptions: encoderOptions,
+                    additionalTrtDecoderOptions: decoderOptions)
                 .ConfigureAwait(false);
             try
             {
@@ -608,6 +615,8 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
     {
         string encoderModelPath = request.EntryPath;
         string decoderJointPath = ResolveNemotronDecoderJointPath(encoderModelPath);
+        NemotronAsrEncoderTrtProfiles.SessionOptions sessionOptions =
+            NemotronAsrEncoderTrtProfiles.BuildRuntimeOptions(encoderModelPath);
         // modelId/variant must match NemotronAsrOnnxAudioTranscriptionEngine or the stage
         // misses this pooled session and pays cold load again.
         using OnnxExecutionSessionFactory.NemotronAsrSessionLease sessionLease = await OnnxExecutionSessionFactory
@@ -619,7 +628,8 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
                 cancellationToken,
                 modelId: request.ModelId,
                 variant: request.Variant,
-                additionalTrtEncoderOptions: NemotronAsrEncoderTrtProfiles.BuildOptions(encoderModelPath))
+                additionalTrtEncoderOptions: sessionOptions.Encoder,
+                additionalTrtDecoderOptions: sessionOptions.Decoder)
             .ConfigureAwait(false);
         EnsureSelectedProviderMatchesRequested(request.ExecutionProvider, sessionLease.SelectedProvider);
 

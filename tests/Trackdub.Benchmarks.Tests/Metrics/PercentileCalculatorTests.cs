@@ -5,6 +5,13 @@ namespace Trackdub.Benchmarks.Tests.Metrics;
 public sealed class PercentileCalculatorTests
 {
     [Fact]
+    public void Calculate_P95UsesSharedType7Definition()
+    {
+        LatencyStatistics result = PercentileCalculator.Calculate([10, 20, 30, 40]);
+        Assert.Equal(38.5, result.P95Milliseconds);
+    }
+
+    [Fact]
     public void Calculate_WhenSamplesNull_ThrowsArgumentNullException()
     {
         Assert.Throws<ArgumentNullException>(() => PercentileCalculator.Calculate(null!));

@@ -1,23 +1,8 @@
 ---
-description: Agents must reference and update Linear autonomously for Trackdub work
+description: Do not use Linear for Trackdub work; track requested work locally in plans/Git unless the user explicitly asks for an external issue tracker
 alwaysApply: true
 ---
 
-# Linear agent sync
+# No Linear
 
-Linear workspace `trackdubllc` (team **TS**) is the source of truth for trackable work.
-
-## Required
-
-- Before coding: search Linear for an existing `TS-*` / backlog id (`P0-4`) / matching title.
-- Prefer updating an existing issue over creating a duplicate.
-- Create issues for new bugs, follow-ups, and debt with `repo:*`, `area:*`, and `agent-owned` labels.
-- Set status In Progress while working; comment blockers and proof; Done only with evidence.
-- Mention `TS-xxx` / `Fixes TS-xxx` in PR bodies once GitHub integration is live.
-- Never fake readiness in Linear.
-
-## Docs
-
-- `docs/operations/linear-workflow.md`
-- Linear document: Agent Linear Workflow
-- Integrations connected: GitHub, Notion, Figma (mention `TS-xxx` on PRs)
+Do not use Linear or require issue searches/status/TS IDs; track requested work locally in plans/Git unless the user explicitly asks for an external issue tracker.

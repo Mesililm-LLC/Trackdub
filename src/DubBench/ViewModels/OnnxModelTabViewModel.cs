@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.Input;
 using DubBench.Services;
 using Trackdub.Contracts.ApplicationContracts;
 using Trackdub.Domain;
+using Trackdub.Domain.Benchmarking;
 
 namespace DubBench.ViewModels;
 
@@ -66,6 +67,12 @@ public sealed partial class OnnxModelTabViewModel : ObservableObject, ITabViewMo
     [ObservableProperty]
     private string _statusMessage = "Ready";
 
+    // Persisted ONNX benchmark history (most recent first)
+    public ObservableCollection<OnnxBenchmarkHistoryEntry> RecentRuns { get; } = new();
+
+    [ObservableProperty]
+    private bool _isHistoryLoading;
+
     public OnnxModelTabViewModel()
         : this(new BenchmarkRunnerService(), new OliveOptimizationService())
     {
@@ -81,6 +88,7 @@ public sealed partial class OnnxModelTabViewModel : ObservableObject, ITabViewMo
         }
 
         _ = ProbeOliveSafeAsync();
+        _ = RefreshHistoryAsync();
     }
 
     private static ObservableCollection<BenchmarkProviderPreference> CreateProvidersForCurrentPlatform()
@@ -226,6 +234,12 @@ public sealed partial class OnnxModelTabViewModel : ObservableObject, ITabViewMo
                 BenchmarkStatus.Failed => $"Failed: {LastResult.FailureReason ?? "Unknown error"}",
                 _ => "Unknown status"
             };
+            if (LastResult.HistoryPersistence?.Status is BenchmarkHistoryPersistenceStatus.Failed)
+            {
+                StatusMessage += $" (history save failed: {LastResult.HistoryPersistence.FailureReason})";
+            }
+
+            await RefreshHistoryAsync();
         }
         catch (Exception ex)
         {
@@ -236,4 +250,61 @@ public sealed partial class OnnxModelTabViewModel : ObservableObject, ITabViewMo
             IsRunning = false;
         }
     }
+
+    [RelayCommand]
+    private async Task RefreshHistoryAsync()
+    {
+        if (IsHistoryLoading)
+        {
+            return;
+        }
+
+        try
+        {
+            IsHistoryLoading = true;
+            IReadOnlyList<BenchmarkRunRecord> records = await _runner.ListOnnxBenchmarkHistoryAsync(50);
+            RecentRuns.Clear();
+            foreach (BenchmarkRunRecord record in records)
+            {
+                RecentRuns.Add(OnnxBenchmarkHistoryEntry.From(record));
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Could not load ONNX benchmark history: {ex.Message}";
+        }
+        finally
+        {
+            IsHistoryLoading = false;
+        }
+    }
+}
+
+public sealed record OnnxBenchmarkHistoryEntry(
+    Guid RunId,
+    string Model,
+    string Provider,
+    string Status,
+    string Average,
+    string P95,
+    string Samples,
+    string TimingMode,
+    DateTimeOffset GeneratedAtUtc)
+{
+    public static OnnxBenchmarkHistoryEntry From(BenchmarkRunRecord record) =>
+        new(
+            record.Id,
+            FormatModelId(record.ModelId),
+            record.SelectedProvider,
+            record.Status.ToString(),
+            record.WarmLatencyAverageMilliseconds is { } avg ? $"{avg:F1} ms" : "n/a",
+            record.WarmLatencyP95Milliseconds is { } p95 ? $"{p95:F1} ms" : "n/a",
+            record.SampleCount?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "n/a",
+            record.TimingMode?.ToString() ?? "n/a",
+            record.GeneratedAtUtc);
+
+    private static string FormatModelId(string modelId) =>
+        modelId.StartsWith("hardware-profiler:", StringComparison.Ordinal)
+            ? modelId.Split(':', 4) is { Length: >= 4 } parts ? $"profiler:{parts[3]}" : modelId
+            : modelId;
 }
