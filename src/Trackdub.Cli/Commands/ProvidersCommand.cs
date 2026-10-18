@@ -2,6 +2,7 @@ using System.CommandLine;
 using System.CommandLine.Parsing;
 
 using Trackdub.Cli.Handlers;
+using Trackdub.Domain;
 using Trackdub.Sdk;
 
 namespace Trackdub.Cli.Commands;
@@ -23,6 +24,8 @@ internal static class ProvidersCommand
               trackdub providers trt-rtx status
               trackdub providers trt-rtx install --accept-license
               trackdub providers trt-rtx smoke
+              trackdub providers cuda smoke
+              trackdub providers tensorrt smoke
               trackdub providers qnn status
               trackdub providers qnn install --accept-license
             """);
@@ -35,9 +38,72 @@ internal static class ProvidersCommand
         trtRtxCommand.Add(CreateSmokeCommand());
         trtRtxCommand.Add(CreateVerifyCommand());
         providersCommand.Add(trtRtxCommand);
+        providersCommand.Add(CreateProviderCommand(
+            "cuda",
+            "Native CUDA execution provider (NVIDIA GPU).",
+            ExecutionProviderKind.Cuda));
+        providersCommand.Add(CreateProviderCommand(
+            "tensorrt",
+            "Native TensorRT execution provider (NVIDIA GPU).",
+            ExecutionProviderKind.TensorRt));
         providersCommand.Add(CreateQnnCommand());
 
         return providersCommand;
+    }
+
+    private static Command CreateProviderCommand(
+        string name,
+        string description,
+        ExecutionProviderKind provider)
+    {
+        var providerCommand = new Command(name, description);
+        providerCommand.Add(CreateProviderSmokeCommand(name, provider));
+        return providerCommand;
+    }
+
+    private static Command CreateProviderSmokeCommand(string providerName, ExecutionProviderKind provider)
+    {
+        var command = new Command("smoke", $"""
+            Run planner-style ONNX smoke tests for bundled models on the {providerName} execution provider.
+            Skips models that are not cached locally.
+
+            Examples:
+              trackdub providers {providerName} smoke
+              trackdub providers {providerName} smoke --model nemotron
+            """);
+
+        var modelFilterOption = new Option<string[]>("--model")
+        {
+            Description = "Limit smoke targets to labels or model references containing this value (repeatable, case-insensitive).",
+            AllowMultipleArgumentsPerToken = true,
+        };
+        command.Options.Add(modelFilterOption);
+
+        command.SetAction(async (ParseResult parseResult, CancellationToken cancellationToken) =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            TrackdubSessionFactory? factory = CliParseHelpers.TryBuildFactory(parseResult, out int buildExitCode);
+            if (factory is null)
+            {
+                return buildExitCode;
+            }
+
+            using (factory)
+            {
+                return await ProviderSmokeHandler
+                    .SmokeAsync(
+                        factory,
+                        provider,
+                        parseResult.GetValue(modelFilterOption),
+                        Console.Out,
+                        Console.Error,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        });
+
+        return command;
     }
 
     private static Command CreateQnnCommand()
