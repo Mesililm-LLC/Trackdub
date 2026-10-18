@@ -222,6 +222,18 @@ public sealed class BenchmarkOptionsTests
             TrtRtxSmokeCatalog.RemainingOnnxGpu,
             target => target.ModelReference.Contains("Kokoro", StringComparison.OrdinalIgnoreCase));
 
+        Assert.Contains(
+            TrtRtxSmokeCatalog.RemainingOnnxGpu,
+            target => target.ModelReference.Equals("google/madlad400-3b-mt", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(target.Variant, "trt-fp16", StringComparison.OrdinalIgnoreCase));
+        // CosyVoice int8/int4 quantized graphs are CUDA-route only: the TRT-RTX
+        // Myelin builder rejects their int8 dtype (verified live 2026-10-17), so
+        // they must not be offered as TRT-RTX smoke targets.
+        Assert.DoesNotContain(
+            TrtRtxSmokeCatalog.RemainingOnnxGpu,
+            target => target.ModelReference.Equals("tonythethompson/CosyVoice-300M-ONNX", StringComparison.OrdinalIgnoreCase)
+                && target.Variant is not null);
+
         // GPU-only invariant: Phi-3.5 ships only a cpu-int4 bundle, so it must not appear here.
         Assert.DoesNotContain(
             TrtRtxSmokeCatalog.RemainingOnnxGpu,

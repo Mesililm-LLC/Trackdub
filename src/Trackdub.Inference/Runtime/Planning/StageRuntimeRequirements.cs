@@ -86,6 +86,7 @@ internal static class StageRuntimeRequirementsCatalog
                 RuntimeStage.Asr,
                 ModelTask.Asr,
                 [
+                    "parakeet-tdt-0.6b-v3",
                     "qwen3-asr-0.6b",
                     "qwen3-asr-balanced",
                     "qwen3-asr-1.7b",
@@ -98,17 +99,12 @@ internal static class StageRuntimeRequirementsCatalog
                 DefaultOnnxStageAllowedProviders,
                 ["default", "fp16"],
                 ["default", "int8", "quantized", "uint8", "q4"],
-                // Stock Olive whisper-onnx graphs omit trt-rtx in supported_providers and use
-                // fused contrib ops TensorRT RTX cannot import. The bundled qwen3-asr export also
-                // contains SkipLayerNormalization/BiasGelu, so its TRT RTX smoke falls back and the
-                // planner lands on DirectML (Windows build) or CPU.
-                // whisper-genai loads through ORT GenAI, whose NvTensorRtRtx device can
-                // terminate the process (native stack overflow) during model init/generation.
+                // Parakeet TDT 0.6B v3 is the default ASR POC model: the bundled ONNX encoder and
+                // decoder passed the live Linux TRT-RTX smoke and cache-warm tests on an RTX 5070.
+                // Qwen3 remains available but its bundled TRT graph falls back, so prefer DML (or
+                // CUDA where usable) ahead of TRT; Whisper's stock ONNX export is denied TRT below.
                 new Dictionary<string, IReadOnlyList<ExecutionProviderKind>>(StringComparer.OrdinalIgnoreCase)
                 {
-                    // Qwen's TensorRT RTX smoke compiled for minutes on the live Windows path
-                    // before ASR proceeded on DirectML. Try DirectML first, retaining
-                    // TensorRT RTX as a fallback or explicit provider choice.
                     ["qwen3-asr"] = PreferDirectMl(DefaultOnnxStageAllowedProviders),
                     ["whisper-onnx"] = WithoutTensorRtFamilies(DefaultOnnxStageAllowedProviders),
                     ["whisper-genai"] = GenAiProviders(DefaultOnnxStageAllowedProviders),
@@ -116,7 +112,7 @@ internal static class StageRuntimeRequirementsCatalog
                 // Nemotron ASR is not in the shipping auto-planning lane: quality-tier ranking
                 // previously selected it ahead of working ONNX models and produced empty
                 // transcripts. Explicit Nemotron override still resolves by alias if needed.
-                AllowedEngineFamilies: ["qwen3-asr", "whisper-onnx", "whisper-genai"]),
+                AllowedEngineFamilies: ["parakeet-tdt", "qwen3-asr", "whisper-onnx", "whisper-genai"]),
             [RuntimeStage.Translation] = new(
                 RuntimeStage.Translation,
                 ModelTask.Translation,

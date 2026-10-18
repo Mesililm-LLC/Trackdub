@@ -1095,21 +1095,23 @@ public sealed class RuntimePlannerTests
     }
 
     [Fact]
-    public async Task PlanAsync_CurrentBundledAsrCommercialSafeMode_ReturnsDownloadRequiredForOnnxAsr()
+    public async Task PlanAsync_CurrentBundledAsrCommercialSafeMode_ReturnsDownloadRequiredForParakeetTdt()
     {
-        // Auto ASR should choose the downloadable bundled Qwen3 ASR 0.6B ONNX bundle (language-tagged output).
+        // The cloud POC uses English source audio; Parakeet TDT is the bundled ASR model verified on TRT-RTX.
         BundledModelManifestRegistry registry = LoadBundledRegistry();
         RuntimePlanner planner = CreatePlanner(
             registry,
             [],
-            [new(ExecutionProviderKind.DirectMl, true)],
+            [new(ExecutionProviderKind.TensorRTRtx, true)],
             _ => new ExecutionProviderSmokeTestResult(true));
 
-        StageRuntimePlan plan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Asr));
+        StageRuntimePlan plan = await planner.PlanAsync(new StageRuntimePlanningRequest(
+            RuntimeStage.Asr,
+            SourceLanguage: "en"));
 
         Assert.Equal(StageRuntimePlanStatus.DownloadRequired, plan.Status);
-        Assert.Equal("tonythethompson/qwen3-asr-0.6b-onnx", plan.ModelId);
-        Assert.Equal("qwen3-asr-0.6b", plan.ModelAlias);
+        Assert.Equal("tonythethompson/parakeet-tdt-0.6b-v3-onnx", plan.ModelId);
+        Assert.Equal("parakeet-tdt-0.6b-v3", plan.ModelAlias);
         Assert.NotNull(plan.Fallback);
         Assert.Equal(RuntimePlanFallbackCode.ModelNotCached, plan.Fallback!.Code);
     }
