@@ -1,3 +1,5 @@
+using Trackdub.Domain;
+
 namespace Trackdub.Contracts;
 
 public sealed record EpContextWarmItem(
@@ -23,8 +25,14 @@ public sealed record EpContextWarmReport(
 /// </summary>
 public interface IEpContextWarmupService
 {
+    /// <param name="provider">
+    /// <see cref="ExecutionProviderKind.TensorRTRtx"/> (default) keeps the EP-context AOT +
+    /// runtime-cache warm behavior. <see cref="ExecutionProviderKind.TensorRt"/> warms the
+    /// classic TensorRT engine cache by creating real sessions on the original graphs.
+    /// </param>
     Task<EpContextWarmReport> WarmAsync(
         IReadOnlyList<string>? sourceModelPaths = null,
         IProgress<string>? progress = null,
+        ExecutionProviderKind provider = ExecutionProviderKind.TensorRTRtx,
         CancellationToken cancellationToken = default);
 }

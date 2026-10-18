@@ -716,6 +716,158 @@ public sealed class OnnxExecutionSessionFactoryTests
         }
     }
 
+    [Fact]
+    public void BuildTensorRtOptions_enables_engine_cache_under_classic_trt_fingerprint_directory()
+    {
+        string? previousEngineCacheRoot = Environment.GetEnvironmentVariable("TRACKDUB_ENGINE_CACHE_ROOT");
+        string? previousCacheRoot = Environment.GetEnvironmentVariable("TRACKDUB_CACHE_ROOT");
+        string engineCacheRoot = Path.Join(
+            Path.GetTempPath(), "Trackdub.Inference.Tests", Guid.NewGuid().ToString("N"), "engine");
+
+        try
+        {
+            Environment.SetEnvironmentVariable("TRACKDUB_ENGINE_CACHE_ROOT", engineCacheRoot);
+            Environment.SetEnvironmentVariable("TRACKDUB_CACHE_ROOT", null);
+
+            IReadOnlyDictionary<string, string> options = OnnxExecutionSessionFactory.BuildTensorRtOptions(
+                null, "Ampere|535.104.05|trt-10.13.3|ort-1.31.0");
+
+            Assert.Equal("1", options["trt_engine_cache_enable"]);
+            Assert.Equal(
+                Path.Join(Path.GetFullPath(engineCacheRoot), "classic-trt", "Ampere-535.104.05-trt-10.13.3-ort-1.31.0"),
+                options["trt_engine_cache_path"]);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("TRACKDUB_ENGINE_CACHE_ROOT", previousEngineCacheRoot);
+            Environment.SetEnvironmentVariable("TRACKDUB_CACHE_ROOT", previousCacheRoot);
+        }
+    }
+
+    [Fact]
+    public void BuildTensorRtOptions_uses_cache_root_fallback_when_engine_cache_root_is_unset()
+    {
+        string? previousEngineCacheRoot = Environment.GetEnvironmentVariable("TRACKDUB_ENGINE_CACHE_ROOT");
+        string? previousCacheRoot = Environment.GetEnvironmentVariable("TRACKDUB_CACHE_ROOT");
+        string cacheRoot = Path.Join(
+            Path.GetTempPath(), "Trackdub.Inference.Tests", Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            Environment.SetEnvironmentVariable("TRACKDUB_ENGINE_CACHE_ROOT", null);
+            Environment.SetEnvironmentVariable("TRACKDUB_CACHE_ROOT", cacheRoot);
+
+            IReadOnlyDictionary<string, string> options = OnnxExecutionSessionFactory.BuildTensorRtOptions(
+                null, "Ada|551.86|trt-10.13.3|ort-1.31.0");
+
+            Assert.Equal(
+                Path.Join(Path.GetFullPath(cacheRoot), "EngineCache", "classic-trt", "Ada-551.86-trt-10.13.3-ort-1.31.0"),
+                options["trt_engine_cache_path"]);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("TRACKDUB_ENGINE_CACHE_ROOT", previousEngineCacheRoot);
+            Environment.SetEnvironmentVariable("TRACKDUB_CACHE_ROOT", previousCacheRoot);
+        }
+    }
+
+    [Fact]
+    public void BuildTensorRtOptions_passes_through_caller_profile_options()
+    {
+        IReadOnlyDictionary<string, string> options = OnnxExecutionSessionFactory.BuildTensorRtOptions(
+            new Dictionary<string, string>
+            {
+                ["trt_profile_min_shapes"] = "waveform:1x16000",
+                ["trt_profile_max_shapes"] = "waveform:1x57600000",
+                ["trt_profile_opt_shapes"] = "waveform:1x160000",
+            },
+            "Ampere|535.104.05|trt-10.13.3|ort-1.31.0");
+
+        Assert.Equal("waveform:1x16000", options["trt_profile_min_shapes"]);
+        Assert.Equal("waveform:1x57600000", options["trt_profile_max_shapes"]);
+        Assert.Equal("waveform:1x160000", options["trt_profile_opt_shapes"]);
+    }
+
+    [Fact]
+    public void BuildTensorRtOptions_caller_cannot_override_cache_keys()
+    {
+        IReadOnlyDictionary<string, string> options = OnnxExecutionSessionFactory.BuildTensorRtOptions(
+            new Dictionary<string, string>
+            {
+                ["trt_engine_cache_enable"] = "0",
+                ["trt_engine_cache_path"] = @"D:\attacker-cache",
+            },
+            "Ampere|535.104.05|trt-10.13.3|ort-1.31.0");
+
+        Assert.Equal("1", options["trt_engine_cache_enable"]);
+        Assert.NotEqual(@"D:\attacker-cache", options["trt_engine_cache_path"]);
+        Assert.Contains("classic-trt", options["trt_engine_cache_path"]);
+    }
+
+    [Fact]
+    public void BuildTensorRtOptions_cache_path_changes_when_environment_fingerprint_changes()
+    {
+        IReadOnlyDictionary<string, string> first = OnnxExecutionSessionFactory.BuildTensorRtOptions(
+            null, "Ampere|535.104.05|trt-10.13.3|ort-1.31.0");
+        IReadOnlyDictionary<string, string> otherDriver = OnnxExecutionSessionFactory.BuildTensorRtOptions(
+            null, "Ampere|551.86|trt-10.13.3|ort-1.31.0");
+        IReadOnlyDictionary<string, string> otherArch = OnnxExecutionSessionFactory.BuildTensorRtOptions(
+            null, "Blackwell|551.86|trt-10.13.3|ort-1.31.0");
+        IReadOnlyDictionary<string, string> otherTrt = OnnxExecutionSessionFactory.BuildTensorRtOptions(
+            null, "Ampere|535.104.05|trt-10.9.0|ort-1.31.0");
+
+        Assert.NotEqual(first["trt_engine_cache_path"], otherDriver["trt_engine_cache_path"]);
+        Assert.NotEqual(first["trt_engine_cache_path"], otherArch["trt_engine_cache_path"]);
+        Assert.NotEqual(first["trt_engine_cache_path"], otherTrt["trt_engine_cache_path"]);
+    }
+
+    [Fact]
+    public void BuildSessionOptionsFingerprint_distinguishes_classic_tensorrt_option_overrides()
+    {
+        MethodInfo method = typeof(OnnxExecutionSessionFactory)
+            .GetMethod("BuildSessionOptionsFingerprint", BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("Could not locate session-options fingerprint helper.");
+
+        object? first = method.Invoke(
+            null,
+            [
+                ExecutionProviderKind.TensorRt,
+                WindowsMlExecutionDevicePolicy.Explicit,
+                new Dictionary<string, string> { ["trt_profile_min_shapes"] = "waveform:1x16000" },
+                false
+            ]);
+        object? second = method.Invoke(
+            null,
+            [
+                ExecutionProviderKind.TensorRt,
+                WindowsMlExecutionDevicePolicy.Explicit,
+                new Dictionary<string, string> { ["trt_profile_min_shapes"] = "waveform:1x32000" },
+                false
+            ]);
+        object? repeat = method.Invoke(
+            null,
+            [
+                ExecutionProviderKind.TensorRt,
+                WindowsMlExecutionDevicePolicy.Explicit,
+                new Dictionary<string, string> { ["trt_profile_min_shapes"] = "waveform:1x16000" },
+                false
+            ]);
+
+        Assert.NotEqual(Assert.IsType<string>(first), Assert.IsType<string>(second));
+        Assert.Equal(Assert.IsType<string>(first), Assert.IsType<string>(repeat));
+        Assert.NotEqual("default", Assert.IsType<string>(first));
+    }
+
+    [Theory]
+    [InlineData("libnvinfer.so.10", "10")]
+    [InlineData("libnvinfer.so.10.13.3", "10.13.3")]
+    [InlineData("libnvinfer.so", "unknown")]
+    [InlineData("nvinfer.dll", "unknown")]
+    public void ParseTensorRtVersionFromLibraryFileName_extracts_soname_version(string fileName, string expected)
+    {
+        Assert.Equal(expected, OnnxExecutionSessionFactory.ParseTensorRtVersionFromLibraryFileName(fileName));
+    }
+
     [Theory]
     [InlineData(WindowsMlExecutionDevicePolicy.Explicit, ExecutionProviderKind.DirectMl, false)]
     [InlineData(WindowsMlExecutionDevicePolicy.MaxPerformance, ExecutionProviderKind.DirectMl, false)]

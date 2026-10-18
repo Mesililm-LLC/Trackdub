@@ -94,6 +94,7 @@ ENV DOTNET_EnableDiagnostics=0 \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
     ONNX_PROVIDER=cuda \
+    TRACKDUB_ENGINE_CACHE_ROOT=/data/engine-cache \
     ESPEAK_DATA_PATH=/usr/lib/x86_64-linux-gnu \
     TMPDIR=/work/tmp
 

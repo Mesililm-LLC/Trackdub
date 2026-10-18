@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
@@ -6,6 +7,7 @@ using Trackdub.Contracts.ApplicationContracts;
 using Trackdub.Contracts.Benchmarking;
 using Trackdub.Domain;
 using Trackdub.Inference.Onnx.Dnnl;
+using Trackdub.Inference.Onnx.EpContext;
 using Trackdub.Inference.Onnx.ExecutionProviders;
 using Trackdub.Inference.Onnx.Pool;
 #if WINDOWS
@@ -38,6 +40,7 @@ internal static class OnnxExecutionSessionFactory
     private const string DnnlExecutionProviderName = DnnlOrtProbe.OrtExecutionProviderName;
     private const string DnnlUpperExecutionProviderName = DnnlOrtProbe.OrtExecutionProviderNameUpper;
     private const string DirectMlExecutionProviderName = "DmlExecutionProvider";
+    private const string ClassicTensorRtExecutionProviderName = "TensorrtExecutionProvider";
     private const string DirectMlLongExecutionProviderName = "DirectMLExecutionProvider";
     private const string CacheRootEnvironmentVariable = "TRACKDUB_CACHE_ROOT";
     private const string EngineCacheRootEnvironmentVariable = "TRACKDUB_ENGINE_CACHE_ROOT";
@@ -1649,7 +1652,7 @@ internal static class OnnxExecutionSessionFactory
             ExecutionProviderKind.Qnn => CreateQnnSelection(options),
             ExecutionProviderKind.VitisAi => CreateVitisAiSelection(options),
             ExecutionProviderKind.Cuda when !OperatingSystem.IsMacOS() => CreateCudaSelection(options),
-            ExecutionProviderKind.TensorRt when !OperatingSystem.IsMacOS() => CreateTensorRtSelection(options),
+            ExecutionProviderKind.TensorRt when !OperatingSystem.IsMacOS() => CreateTensorRtSelection(options, additionalTrtOptions),
 #if LINML
             ExecutionProviderKind.OpenVino when OperatingSystem.IsLinux() => CreateLinuxOpenVinoSelection(options),
 #endif
@@ -1724,10 +1727,21 @@ internal static class OnnxExecutionSessionFactory
         return new SessionOptionsSelection(options, ExecutionProviderKind.Cuda);
     }
 
-    private static SessionOptionsSelection CreateTensorRtSelection(SessionOptions options)
+    private static SessionOptionsSelection CreateTensorRtSelection(
+        SessionOptions options,
+        IReadOnlyDictionary<string, string>? additionalTrtOptions)
     {
-        options.AppendExecutionProvider_Tensorrt(deviceId: 0);
-        return new SessionOptionsSelection(options, ExecutionProviderKind.TensorRt);
+        ExecutionProviderKind selectedProvider = AppendTensorRtOrFallbackProvider(options, additionalTrtOptions);
+        if (selectedProvider is ExecutionProviderKind.TensorRt)
+        {
+            return new SessionOptionsSelection(options, selectedProvider);
+        }
+
+        string fallbackLabel = FormatProviderLabel(selectedProvider);
+        return new SessionOptionsSelection(
+            options,
+            selectedProvider,
+            $"Requested tensorrt but classic TensorRT EP device was unavailable; fell back to {fallbackLabel}.");
     }
 
 #if LINML
@@ -2089,6 +2103,56 @@ internal static class OnnxExecutionSessionFactory
             : ExecutionProviderKind.Cpu;
     }
 
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<SessionOptions, IReadOnlyDictionary<string, string>>
+        AppendedTensorRtOptions = new();
+
+    internal static IReadOnlyDictionary<string, string>? TryGetAppendedTensorRtOptions(SessionOptions options) =>
+        AppendedTensorRtOptions.TryGetValue(options, out IReadOnlyDictionary<string, string>? trtOptions) ? trtOptions : null;
+
+    internal static bool IsTensorRtDeviceCandidate(string epName, OrtHardwareDeviceType hardwareDeviceType) =>
+        hardwareDeviceType is OrtHardwareDeviceType.GPU &&
+        string.Equals(epName, ClassicTensorRtExecutionProviderName, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Appends the classic TensorRT EP with the persistent engine-cache options from
+    /// <see cref="BuildTensorRtOptions"/>. Prefers the generic EP-device append (the only
+    /// path that accepts provider options); when no classic TRT device is enumerated,
+    /// falls back to the legacy <c>AppendExecutionProvider_Tensorrt(deviceId: 0)</c>
+    /// append, which cannot carry the cache options. When neither works, falls back to
+    /// DirectML/CPU like the TensorRT-RTX path so callers can report the fallback.
+    /// </summary>
+    internal static ExecutionProviderKind AppendTensorRtOrFallbackProvider(
+        SessionOptions options,
+        IReadOnlyDictionary<string, string>? additionalTrtOptions = null)
+    {
+#if WINDOWS
+        WindowsMlOnnxRuntimeNativeResolver.EnsureInitialized();
+#endif
+        var devices = OrtEnv.Instance().GetEpDevices();
+        var trtDevice = devices.FirstOrDefault(d => IsTensorRtDeviceCandidate(d.EpName, d.HardwareDevice.Type));
+        if (trtDevice != null)
+        {
+            IReadOnlyDictionary<string, string> trtOptions = BuildTensorRtOptions(additionalTrtOptions);
+            options.AppendExecutionProvider(OrtEnv.Instance(), new[] { trtDevice }, trtOptions);
+            AppendedTensorRtOptions.AddOrUpdate(options, trtOptions);
+            return ExecutionProviderKind.TensorRt;
+        }
+
+        try
+        {
+            options.AppendExecutionProvider_Tensorrt(deviceId: 0);
+            return ExecutionProviderKind.TensorRt;
+        }
+        catch (Exception ex) when (ex is OnnxRuntimeException or InvalidOperationException or DllNotFoundException or EntryPointNotFoundException)
+        {
+            // Classic TensorRT EP is not usable; fall through to the DirectML/CPU fallback.
+        }
+
+        return TryAppendDirectMlProvider(options, out _)
+            ? ExecutionProviderKind.DirectMl
+            : ExecutionProviderKind.Cpu;
+    }
+
     internal static void AppendDirectMlProvider(SessionOptions options)
     {
 #if WINDOWS
@@ -2210,6 +2274,164 @@ internal static class OnnxExecutionSessionFactory
         return trtOptions;
     }
 
+    /// <summary>
+    /// Builds classic TensorRT EP provider options with the persistent engine cache enabled.
+    /// Caller options (e.g. <c>trt_profile_*</c>) pass through, but the cache keys are
+    /// authoritative: a caller must not be able to disable the cache or redirect it outside
+    /// the fingerprinted directory, so they are written after the caller options.
+    /// ORT option keys: <c>trt_engine_cache_enable</c> / <c>trt_engine_cache_path</c>
+    /// (ONNX Runtime TensorRT execution provider documentation).
+    /// </summary>
+    internal static IReadOnlyDictionary<string, string> BuildTensorRtOptions(
+        IReadOnlyDictionary<string, string>? additionalTrtOptions) =>
+        BuildTensorRtOptions(additionalTrtOptions, BuildClassicTensorRtEnvironmentFingerprint());
+
+    internal static IReadOnlyDictionary<string, string> BuildTensorRtOptions(
+        IReadOnlyDictionary<string, string>? additionalTrtOptions,
+        string environmentFingerprint)
+    {
+        var trtOptions = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (additionalTrtOptions is not null)
+        {
+            foreach ((string key, string value) in additionalTrtOptions)
+            {
+                trtOptions[key] = value;
+            }
+        }
+
+        trtOptions["trt_engine_cache_enable"] = "1";
+        trtOptions["trt_engine_cache_path"] = ResolveClassicTensorRtEngineCacheDirectory(environmentFingerprint);
+        return trtOptions;
+    }
+
+    internal static string ResolveClassicTensorRtEngineCacheDirectory() =>
+        ResolveClassicTensorRtEngineCacheDirectory(BuildClassicTensorRtEnvironmentFingerprint());
+
+    internal static string ResolveClassicTensorRtEngineCacheDirectory(string environmentFingerprint) =>
+        Path.Join(
+            ResolveTensorRtRtxRuntimeCachePath(),
+            "classic-trt",
+            SanitizeClassicTensorRtCacheKey(environmentFingerprint));
+
+    // Classic engine-cache key components: GPU architecture bucket (the hardware probe's
+    // NvidiaGpuArchitecture name) | GPU driver version | TensorRT version identity |
+    // ONNX Runtime version. The TensorRT-RTX EP version in EpContextLoadPathResolver's
+    // fingerprint is deliberately excluded — classic TRT engines do not depend on it.
+    // TensorRT identity is sourced from the native library the EP links: the libnvinfer
+    // soname version on Linux (e.g. libnvinfer.so.10.13.3), the nvinfer.dll file version
+    // on Windows, and "unknown" when no library is discoverable in-process.
+    internal static string BuildClassicTensorRtEnvironmentFingerprint()
+    {
+        (string gpuArchitecture, string? driverVersion) = EpContextLoadPathResolver.CurrentHardware;
+        string driver = string.IsNullOrWhiteSpace(driverVersion) ? "unknown" : driverVersion;
+        return $"{gpuArchitecture}|{driver}|trt-{ResolveTensorRtVersionIdentity()}|ort-{EpContextArtifact.HostOrtRuntimeVersion}";
+    }
+
+    private static string SanitizeClassicTensorRtCacheKey(string environmentFingerprint)
+    {
+        var builder = new System.Text.StringBuilder(environmentFingerprint.Length);
+        foreach (char c in environmentFingerprint)
+        {
+            builder.Append(char.IsLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '-');
+        }
+
+        string sanitized = builder.ToString().Trim('-');
+        return sanitized.Length == 0 ? "unknown" : sanitized;
+    }
+
+    internal static string ParseTensorRtVersionFromLibraryFileName(string fileName)
+    {
+        string name = Path.GetFileName(fileName);
+        const string sonamePrefix = "libnvinfer.so.";
+        if (name.StartsWith(sonamePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            string version = name[sonamePrefix.Length..].Trim();
+            return version.Length == 0 ? "unknown" : version;
+        }
+
+        return "unknown";
+    }
+
+    internal static string ResolveTensorRtVersionIdentity()
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                string? pathVariable = Environment.GetEnvironmentVariable("PATH");
+                if (!string.IsNullOrWhiteSpace(pathVariable))
+                {
+                    foreach (string directory in pathVariable.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        string candidate = Path.Join(directory.Trim(), "nvinfer.dll");
+                        if (!File.Exists(candidate))
+                        {
+                            continue;
+                        }
+
+                        FileVersionInfo info = FileVersionInfo.GetVersionInfo(candidate);
+                        string? version = !string.IsNullOrWhiteSpace(info.FileVersion) ? info.FileVersion : info.ProductVersion;
+                        if (!string.IsNullOrWhiteSpace(version))
+                        {
+                            return version.Trim();
+                        }
+                    }
+                }
+
+                return "unknown";
+            }
+
+            if (OperatingSystem.IsLinux())
+            {
+                string? best = null;
+                foreach (string directory in EnumerateTensorRtLibrarySearchDirectories())
+                {
+                    if (!Directory.Exists(directory))
+                    {
+                        continue;
+                    }
+
+                    foreach (string file in Directory.EnumerateFiles(directory, "libnvinfer.so*", SearchOption.TopDirectoryOnly))
+                    {
+                        string version = ParseTensorRtVersionFromLibraryFileName(file);
+                        if (version != "unknown" && (best is null || version.Length > best.Length))
+                        {
+                            best = version;
+                        }
+                    }
+                }
+
+                return best ?? "unknown";
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return "unknown";
+        }
+
+        return "unknown";
+    }
+
+    private static IEnumerable<string> EnumerateTensorRtLibrarySearchDirectories()
+    {
+        yield return "/usr/lib/x86_64-linux-gnu";
+        yield return "/usr/lib/aarch64-linux-gnu";
+        yield return "/usr/local/cuda/lib";
+        yield return "/usr/local/cuda/lib64";
+        yield return "/usr/lib";
+
+        string? ldLibraryPath = Environment.GetEnvironmentVariable("LD_LIBRARY_PATH");
+        if (string.IsNullOrWhiteSpace(ldLibraryPath))
+        {
+            yield break;
+        }
+
+        foreach (string path in ldLibraryPath.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            yield return path;
+        }
+    }
+
     private static string ResolveTensorRtRtxRuntimeCachePath()
     {
         string? engineCacheRoot = Environment.GetEnvironmentVariable(EngineCacheRootEnvironmentVariable);
@@ -2246,6 +2468,14 @@ internal static class OnnxExecutionSessionFactory
         {
             var combinedOptions = new Dictionary<string, string>(
                 BuildTensorRtRtxOptions(additionalTrtOptions, enableCudaGraph), StringComparer.Ordinal);
+
+            return SessionPoolKey.HashOptions(combinedOptions);
+        }
+
+        if (selectedProviderKind is ExecutionProviderKind.TensorRt)
+        {
+            var combinedOptions = new Dictionary<string, string>(
+                BuildTensorRtOptions(additionalTrtOptions), StringComparer.Ordinal);
 
             return SessionPoolKey.HashOptions(combinedOptions);
         }

@@ -43,6 +43,7 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
     public async Task<EpContextWarmReport> WarmAsync(
         IReadOnlyList<string>? sourceModelPaths = null,
         IProgress<string>? progress = null,
+        ExecutionProviderKind provider = ExecutionProviderKind.TensorRTRtx,
         CancellationToken cancellationToken = default)
     {
         HardwareProfile hardware = await _hardwareProfileProvider.GetCurrentAsync(cancellationToken).ConfigureAwait(false);
@@ -52,14 +53,25 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
             ? sourceModelPaths
             : DiscoverLocalOnnxModels(_storagePaths.ModelCacheDirectory);
 
+        bool classicTensorRt = provider is ExecutionProviderKind.TensorRt;
+        string engineCacheDirectory = classicTensorRt
+            ? OnnxExecutionSessionFactory.ResolveClassicTensorRtEngineCacheDirectory()
+            : _storagePaths.EngineCacheDirectory;
+        if (classicTensorRt)
+        {
+            Directory.CreateDirectory(engineCacheDirectory);
+        }
+
         var items = new List<EpContextWarmItem>(sources.Count);
         int compiled = 0, reused = 0, skipped = 0, failed = 0;
 
         foreach (string sourcePath in sources)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            (EpContextWarmItem item, bool didCompile, bool didReuse) = await WarmSourceAsync(
-                sourcePath, hardware, progress, cancellationToken).ConfigureAwait(false);
+            (EpContextWarmItem item, bool didCompile, bool didReuse) = classicTensorRt
+                ? WarmClassicTensorRtSource(sourcePath, engineCacheDirectory, progress, cancellationToken)
+                : await WarmSourceAsync(
+                    sourcePath, hardware, progress, cancellationToken).ConfigureAwait(false);
             items.Add(item);
             if (didCompile && item.Status != "failed") compiled++;
             if (didReuse && item.Status != "failed") reused++;
@@ -68,13 +80,101 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
         }
 
         return new EpContextWarmReport(
-            _storagePaths.EngineCacheDirectory,
+            engineCacheDirectory,
             fingerprint,
             compiled,
             reused,
             skipped,
             failed,
             items);
+    }
+
+    // Classic TensorRT has no EP-context AOT: warm by creating a real session on the
+    // original graph with the persistent engine cache enabled, then classify the cache
+    // directory growth as compiled vs reused.
+    private (EpContextWarmItem Item, bool Compiled, bool Reused) WarmClassicTensorRtSource(
+        string sourcePath,
+        string classicCacheDirectory,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (ShouldSkip(sourcePath))
+        {
+            return (new EpContextWarmItem(sourcePath, "skipped", null, 0, 0,
+                "Excluded family or already an EP-context artifact."), false, false);
+        }
+
+        if (MadladTrtProfiles.GetAotExclusionReason(sourcePath) is { } exclusionReason)
+        {
+            return (new EpContextWarmItem(sourcePath, "skipped", null, 0, 0, exclusionReason), false, false);
+        }
+
+        progress?.Report($"warm {Path.GetFileName(sourcePath)}");
+        EngineCacheProbe.Snapshot before = ClassicTensorRtCacheClassifier.CaptureSnapshot(classicCacheDirectory);
+        double warmMs = TryWarmLoadClassicTensorRt(
+            sourcePath,
+            EpContextTrtProfiles.Resolve(sourcePath),
+            cancellationToken,
+            out string? warmFailure);
+        EngineCacheProbe.Snapshot after = ClassicTensorRtCacheClassifier.CaptureSnapshot(classicCacheDirectory);
+
+        if (warmFailure is not null)
+        {
+            return (new EpContextWarmItem(sourcePath, "failed", null, 0, warmMs, warmFailure), false, false);
+        }
+
+        string outcome = ClassicTensorRtCacheClassifier.Classify(before, after);
+        return outcome switch
+        {
+            "compiled" => (new EpContextWarmItem(
+                sourcePath, "compiled", null, 0, warmMs,
+                $"Classic TensorRT engine cache grew ({before.FileCount} -> {after.FileCount} file(s), "
+                + $"{before.TotalBytes} -> {after.TotalBytes} byte(s)) in '{classicCacheDirectory}'."), true, false),
+            "reused" => (new EpContextWarmItem(
+                sourcePath, "reused", null, 0, warmMs,
+                $"Classic TensorRT engine cache in '{classicCacheDirectory}' was already populated and did not grow."), false, true),
+            _ => (new EpContextWarmItem(
+                sourcePath, "failed", null, 0, warmMs,
+                $"Session created but the classic TensorRT engine cache in '{classicCacheDirectory}' remained empty; no engine was cached."), false, false),
+        };
+    }
+
+    private static double TryWarmLoadClassicTensorRt(
+        string modelPath,
+        IReadOnlyDictionary<string, string>? modelTrtOptions,
+        CancellationToken cancellationToken,
+        out string? failureReason)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+#if WINDOWS
+            WindowsMlOnnxRuntimeNativeResolver.EnsureInitialized();
+#endif
+            using SessionOptions options = new();
+            ExecutionProviderKind selectedProvider =
+                OnnxExecutionSessionFactory.AppendTensorRtOrFallbackProvider(options, modelTrtOptions);
+            if (selectedProvider is not ExecutionProviderKind.TensorRt)
+            {
+                stopwatch.Stop();
+                failureReason =
+                    $"Requested tensorrt but classic TensorRT EP was unavailable; fell back to {selectedProvider}.";
+                return stopwatch.Elapsed.TotalMilliseconds;
+            }
+
+            options.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING;
+            using InferenceSession session = new(modelPath, options);
+            stopwatch.Stop();
+            failureReason = null;
+            return stopwatch.Elapsed.TotalMilliseconds;
+        }
+        catch (Exception ex) when (ex is OnnxRuntimeException or InvalidOperationException or DllNotFoundException or EntryPointNotFoundException)
+        {
+            stopwatch.Stop();
+            failureReason = ex.Message;
+            return stopwatch.Elapsed.TotalMilliseconds;
+        }
     }
 
     private async Task<(EpContextWarmItem Item, bool Compiled, bool Reused)> WarmSourceAsync(
