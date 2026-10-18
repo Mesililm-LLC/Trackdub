@@ -48,9 +48,13 @@ concurrency:
 
 jobs:
   image:
-    name: Build, verify, and publish Linux GPU image
+    name: Build, verify, and publish Linux GPU image (${{ matrix.profile }})
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [rtx, server]
     permissions:
       contents: read
       packages: write
@@ -76,6 +80,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
+          flavor: |
+            suffix=-${{ matrix.profile }},onlatest=true
           tags: |
             type=ref,event=branch
             type=ref,event=tag
@@ -89,23 +95,24 @@ jobs:
         with:
           context: .
           file: Dockerfile
+          target: ${{ matrix.profile }}
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           push: ${{ github.event_name != 'pull_request' }}
           load: ${{ github.event_name == 'pull_request' }}
-          cache-from: type=gha,scope=trackdub-linux-amd64
-          cache-to: type=gha,mode=max,scope=trackdub-linux-amd64
+          cache-from: type=gha,scope=trackdub-linux-amd64-${{ matrix.profile }}
+          cache-to: type=gha,mode=max,scope=trackdub-linux-amd64-${{ matrix.profile }}
           provenance: mode=max
           sbom: true
 
       - name: Pull the just-published commit image
         if: github.event_name != 'pull_request'
-        run: docker pull "$IMAGE_NAME:sha-${GITHUB_SHA}"
+        run: docker pull "$IMAGE_NAME:sha-${GITHUB_SHA}-${{ matrix.profile }}"
 
       - name: Verify image runtime and bundled tools
         env:
-          IMAGE_REF: ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+          IMAGE_REF: ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}-${{ matrix.profile }}
         shell: bash
         run: |
           set -euo pipefail
@@ -126,4 +133,4 @@ jobs:
 
       - name: Record published digest
         if: github.event_name != 'pull_request'
-        run: echo "Published $IMAGE_NAME:sha-${GITHUB_SHA} (${{ steps.build.outputs.digest }})" >> "$GITHUB_STEP_SUMMARY"
+        run: echo "Published $IMAGE_NAME:sha-${GITHUB_SHA}-${{ matrix.profile }} (${{ steps.build.outputs.digest }})" >> "$GITHUB_STEP_SUMMARY"

@@ -59,7 +59,7 @@ RUN GENAI_LIB="$HOME/.nuget/packages/microsoft.ml.onnxruntimegenai/0.17.1/runtim
 
 FROM nvidia/cuda:13.0.0-cudnn-runtime-ubuntu24.04 AS cuda-runtime
 
-FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
+FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime-base
 WORKDIR /app
 
 # TensorRT 10 runtime for the native TensorRT EP: ORT 1.31's
@@ -108,3 +108,12 @@ COPY --from=build --chown=trackdub:trackdub /src/src/Trackdub.Inference/Runtime/
 USER trackdub
 ENTRYPOINT ["dotnet", "Trackdub.Cli.dll", "--model-directory", "/data/models"]
 CMD ["doctor"]
+
+# Two published profiles share runtime-base; the only difference is the profile
+# marker consumed by provisioning (seed-and-warm-gpu-worker.sh). Neither bakes a
+# VRAM budget: the session pool auto-scales from detected GPU VRAM.
+FROM runtime-base AS rtx
+ENV TRACKDUB_GPU_PROFILE=rtx
+
+FROM runtime-base AS server
+ENV TRACKDUB_GPU_PROFILE=server

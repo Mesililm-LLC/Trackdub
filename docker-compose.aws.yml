@@ -7,6 +7,12 @@
 # budget with: trackdub doctor (row "accelerator-vram-budget").
 services:
   trackdub:
+    # EC2 workers use the strict classic TensorRT + CUDA server profile.
+    # Compose pulls the published server image; the build target stays so a
+    # worker can still build it locally if the pull is unavailable.
+    image: "${TRACKDUB_IMAGE:-ghcr.io/trackdubllc/trackdub:main-server}"
+    build:
+      target: server
     volumes:
       - type: bind
         source: /mnt/trackdub-data

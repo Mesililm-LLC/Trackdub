@@ -9,7 +9,17 @@ else
   DOCKER_REPO_ROOT="$REPO_ROOT"
 fi
 COMPOSE=(docker compose --project-directory "$DOCKER_REPO_ROOT" -f "$DOCKER_REPO_ROOT/docker-compose.yml")
-WARM_LIST="${TRACKDUB_WARM_MODEL_SET:-$REPO_ROOT/docker/poc-warm-models.txt}"
+GPU_PROFILE="${TRACKDUB_GPU_PROFILE:-rtx}"
+case "$GPU_PROFILE" in
+  rtx) DEFAULT_WARM_LIST="$REPO_ROOT/docker/poc-warm-models.txt" ;;
+  server) DEFAULT_WARM_LIST="$REPO_ROOT/docker/poc-warm-models.server.txt" ;;
+  *)
+    echo "TRACKDUB_GPU_PROFILE must be 'rtx' or 'server': $GPU_PROFILE" >&2
+    exit 2
+    ;;
+esac
+echo "GPU profile: $GPU_PROFILE"
+WARM_LIST="${TRACKDUB_WARM_MODEL_SET:-$DEFAULT_WARM_LIST}"
 if [[ -n "${TRACKDUB_COMPOSE_OVERRIDE:-}" ]]; then
   compose_override="$TRACKDUB_COMPOSE_OVERRIDE"
   if [[ "$compose_override" != /* && ! "$compose_override" =~ ^[A-Za-z]: ]]; then
@@ -21,13 +31,15 @@ if [[ -n "${TRACKDUB_COMPOSE_OVERRIDE:-}" ]]; then
   COMPOSE+=(-f "$compose_override")
 fi
 
-case "${TRACKDUB_ACCEPT_NVIDIA_TENSORRT_RTX_LICENSE:-}" in
-  1|true|TRUE|yes|YES) ;;
-  *)
-    echo "Set TRACKDUB_ACCEPT_NVIDIA_TENSORRT_RTX_LICENSE=1 only after reviewing the NVIDIA TensorRT-RTX and CUDA license terms." >&2
-    exit 2
-    ;;
-esac
+if [[ "$GPU_PROFILE" == "rtx" ]]; then
+  case "${TRACKDUB_ACCEPT_NVIDIA_TENSORRT_RTX_LICENSE:-}" in
+    1|true|TRUE|yes|YES) ;;
+    *)
+      echo "Set TRACKDUB_ACCEPT_NVIDIA_TENSORRT_RTX_LICENSE=1 only after reviewing the NVIDIA TensorRT-RTX and CUDA license terms." >&2
+      exit 2
+      ;;
+  esac
+fi
 
 if [[ ! -f "$WARM_LIST" ]]; then
   echo "Warm target list not found: $WARM_LIST" >&2
@@ -61,10 +73,16 @@ if [[ "${#warm_args[@]}" -eq 0 ]]; then
   exit 2
 fi
 
-# Install the plugin into its dedicated persistent linml volume, then precompile only the reviewed
-# TRT-compatible POC graphs on THIS GPU/driver.
-"${COMPOSE[@]}" run --rm trackdub providers trt-rtx install </dev/null
-"${COMPOSE[@]}" run --rm trackdub cache warm "${warm_args[@]}" </dev/null
+if [[ "$GPU_PROFILE" == "rtx" ]]; then
+  # Install the plugin into its dedicated persistent linml volume, then precompile only the reviewed
+  # TRT-RTX-compatible POC graphs on THIS GPU/driver.
+  "${COMPOSE[@]}" run --rm trackdub providers trt-rtx install </dev/null
+  "${COMPOSE[@]}" run --rm trackdub cache warm "${warm_args[@]}" </dev/null
+else
+  # Server profile is strict classic TensorRT + CUDA: no TRT-RTX license, no
+  # plugin install; warm classic-TRT engines for the server allowlist instead.
+  "${COMPOSE[@]}" run --rm trackdub cache warm --provider tensorrt "${warm_args[@]}" </dev/null
+fi
 
 # WarmAsync returns a failure exit code if any target graph failed; skipped/unsupported models are
 # reported explicitly. Reaching this line means pinned downloads and plugin registration succeeded,

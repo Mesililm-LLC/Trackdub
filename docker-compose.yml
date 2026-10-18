@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: "${TRACKDUB_GPU_TARGET:-rtx}"
     env_file:
       - path: .env
         required: false

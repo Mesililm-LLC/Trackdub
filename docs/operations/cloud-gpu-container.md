@@ -2,15 +2,26 @@
 
 Trackdub's Linux GPU worker is a one-shot CLI container. The image contains the application/runtime; model weights, the engine cache, and LinML provider downloads live in persistent Docker volumes. Do not copy TensorRT engine cache files between GPU families, GPU models, or driver versions.
 
-## Published image
+## Published images
 
-`.github/workflows/container-image.yml` builds `linux/amd64` on container-related pull requests, checks the runtime, and publishes on `main`, `container-v*` tags, or manual dispatch to:
+One `Dockerfile` publishes two GPU profiles from a shared `runtime-base` stage: `--target rtx` (`TRACKDUB_GPU_PROFILE=rtx`, the TensorRT-RTX route) and `--target server` (`TRACKDUB_GPU_PROFILE=server`, strict classic TensorRT + CUDA). Neither profile bakes a VRAM budget; the session pool auto-scales its admission budget from detected GPU VRAM.
+
+`.github/workflows/container-image.yml` builds `linux/amd64` for both profiles on container-related pull requests, checks the runtime, and publishes on `main`, `container-v*` tags, or manual dispatch. Every published tag carries the profile suffix:
 
 ```text
-ghcr.io/trackdubllc/trackdub:main
-ghcr.io/trackdubllc/trackdub:sha-<commit>
-ghcr.io/trackdubllc/trackdub:container-vX.Y.Z
+ghcr.io/trackdubllc/trackdub:main-rtx
+ghcr.io/trackdubllc/trackdub:main-server
+ghcr.io/trackdubllc/trackdub:sha-<commit>-rtx
+ghcr.io/trackdubllc/trackdub:sha-<commit>-server
+ghcr.io/trackdubllc/trackdub:container-vX.Y.Z-rtx
+ghcr.io/trackdubllc/trackdub:container-vX.Y.Z-server
+ghcr.io/trackdubllc/trackdub:pr-N-rtx
+ghcr.io/trackdubllc/trackdub:pr-N-server
+ghcr.io/trackdubllc/trackdub:latest-rtx
+ghcr.io/trackdubllc/trackdub:latest-server
 ```
+
+The earlier bare tags (`main`, `sha-<commit>`, `container-vX.Y.Z`, `latest`) are retired deliberately: with two profiles, an unsuffixed tag would not say which GPU route the image provisions for. Local Compose builds pick a target with `TRACKDUB_GPU_TARGET` (default `rtx`); `docker-compose.aws.yml` always selects the `server` target and defaults `TRACKDUB_IMAGE` to `ghcr.io/trackdubllc/trackdub:main-server` so AWS workers pull the published server image.
 
 The first GHCR package may default to private. After the first successful publish, set `ghcr.io/trackdubllc/trackdub` visibility to public in the package settings if AWS workers should pull it anonymously. ECR mirroring can be added later without changing the model-volume process.
 
@@ -86,7 +97,7 @@ Conclusions from this pass:
 - The tentpole routes are unchanged: Parakeet works on any GPU execution provider tested, MADLAD `trt-fp16` runs via TensorRT-RTX (preferred) and now classic TensorRT, Kokoro runs on CUDA, and CosyVoice `int8` runs on CUDA.
 - Native TensorRT in the image is a working fallback execution provider for Parakeet, SortFormer, and DeepFilterNet3. That duplicates the existing TensorRT-RTX coverage for those models, so there is no production need to re-rank provider preferences for them.
 - One planner and policy change did follow from this pass, after the isolated MADLAD retest: the planner now ranks classic TensorRT second for MADLAD (after TensorRT-RTX, before CPU), and the smoke guard treats TensorRT qualification as an export property instead of a model-family exclusion. The Spleeter outcome is a smoke harness limitation and the CUDA MADLAD outcome is VRAM admission on a 12 GiB card, not planner defects.
-- Native TensorRT engine caches are not persisted by Trackdub today: the native TensorRT provider selection configures no engine cache path, so engines rebuild per process until a cache directory is configured and warmed per worker.
+- Classic TensorRT engine caches are now persisted per worker: the TensorRT execution-provider selection enables the ONNX Runtime engine cache (`trt_engine_cache_enable` with `trt_engine_cache_path`) under the resolved engine-cache root (`TRACKDUB_ENGINE_CACHE_ROOT`, set to `/data/engine-cache` in the image), in a `classic-trt/<gpu-arch|driver|trt-version|ort-version>` subdirectory, so engines are reused across processes on the same GPU/driver/TensorRT/ORT combination. Never copy cache files between GPU models or driver versions. Engines still build on first use per worker; warm them at provisioning time with `cache warm --provider tensorrt` (see below).
 
 ## TensorRT qualification retests (2026-10-18)
 
@@ -106,7 +117,9 @@ One related question was evaluated and rejected: serving CosyVoice through Tenso
 
 ## Per-worker provider install and engine warm
 
-Install the NVIDIA driver and NVIDIA Container Toolkit on the EC2 host first. Review the NVIDIA TensorRT-RTX and CUDA license terms, then accept them explicitly for this worker:
+Provisioning branches on `TRACKDUB_GPU_PROFILE` (default `rtx`), which each published image carries as an environment variable; the same script provisions either profile, with the seed step shared.
+
+RTX profile (local / TensorRT-RTX): install the NVIDIA driver and NVIDIA Container Toolkit on the host first. Review the NVIDIA TensorRT-RTX and CUDA license terms, then accept them explicitly for this worker:
 
 ```bash
 export TRACKDUB_ACCEPT_NVIDIA_TENSORRT_RTX_LICENSE=1
@@ -115,17 +128,19 @@ export TRACKDUB_ACCEPT_NVIDIA_TENSORRT_RTX_LICENSE=1
 
 The script checks for a host-visible NVIDIA GPU, seeds the curated model volume, installs the LinML TensorRT-RTX plugin into the dedicated Compose volume, and runs `trackdub cache warm` against only `docker/poc-warm-models.txt`. This explicit list avoids recursively warming every `.onnx` in the volume: a full scan hit an OPUS-MT decoder that can terminate the host with a native stack overflow, and the Silero VAD graph fails TensorRT import on its `If`/`Squeeze` branches. A failed target stops provisioning; unsupported models are deliberately excluded and listed in comments. Parakeet TDT is in the TRT warm allowlist; the small Silero VAD model intentionally runs on CPU. The NVIDIA acceptance variable is deliberately not defaulted in scripts or CI.
 
+Server profile (AWS / strict classic TensorRT + CUDA): no TensorRT-RTX license acceptance and no plugin install. The server image and the AWS Compose override select this profile; the script seeds the same model volume, then warms classic TensorRT engines with `trackdub cache warm --provider tensorrt` against `docker/poc-warm-models.server.txt`. A warm-list override applies to either profile via `TRACKDUB_WARM_MODEL_SET`.
+
 For AWS, use a dedicated EBS volume mounted on the host at `/mnt/trackdub-data` so weights and GPU-specific engine artifacts survive container replacement. Format/attach/mount it through your normal EC2 provisioning, make the mount persistent, and grant the container's UID/GID 10001 write access:
 
 ```bash
 sudo mkdir -p /mnt/trackdub-data
 sudo chown 10001:10001 /mnt/trackdub-data
 export TRACKDUB_COMPOSE_OVERRIDE=docker-compose.aws.yml
-export TRACKDUB_ACCEPT_NVIDIA_TENSORRT_RTX_LICENSE=1 # only after reviewing the license terms
-./scripts/docker/seed-and-warm-gpu-worker.sh
+# Server profile: no TRACKDUB_ACCEPT_NVIDIA_TENSORRT_RTX_LICENSE is needed.
+TRACKDUB_GPU_PROFILE=server ./scripts/docker/seed-and-warm-gpu-worker.sh
 ```
 
-The AWS override binds that EBS mount to `/data`; the seed script detects the override and uses it for every CLI invocation. No VRAM budget is pinned anymore: the session pool auto-scales its admission budget from detected GPU VRAM (75% on cards up to 16 GiB, 85% above that, floor 4096 MB), detecting VRAM via /proc and sysfs with an NVML fallback for containers where /proc/driver/nvidia is hidden. Run `trackdub doctor` and check the `accelerator-vram-budget` row to see the detected VRAM, the resolved budget, and its source; it warns when detection failed and the floor fallback is in effect. Set `TRACKDUB_SESSION_VRAM_BUDGET_MB` only as an explicit operator override. MADLAD's TRT-RTX bundle is estimated at ~8069 MB for its encoder/decoder sessions. Treat the resulting engine cache as specific to that instance's GPU and driver.
+`docker-compose.aws.yml` defaults to the published `ghcr.io/trackdubllc/trackdub:main-server` image (override with `TRACKDUB_IMAGE`) and builds the `server` target when Compose must build instead of pull. The AWS override binds that EBS mount to `/data`; the seed script detects the override and uses it for every CLI invocation. No VRAM budget is pinned anymore: the session pool auto-scales its admission budget from detected GPU VRAM (75% on cards up to 16 GiB, 85% above that, floor 4096 MB), detecting VRAM via /proc and sysfs with an NVML fallback for containers where /proc/driver/nvidia is hidden. Run `trackdub doctor` and check the `accelerator-vram-budget` row to see the detected VRAM, the resolved budget, and its source; it warns when detection failed and the floor fallback is in effect. Set `TRACKDUB_SESSION_VRAM_BUDGET_MB` only as an explicit operator override. MADLAD's TRT-RTX bundle is estimated at ~8069 MB for its encoder/decoder sessions. Treat the resulting engine cache as specific to that instance's GPU and driver.
 
 Run the provisioning script once on each newly provisioned GPU/driver combination, and again after a driver or provider update. It writes the cache under `/data` (the persistent `trackdub-data` volume). The separate `trackdub-linml` volume persists plugin downloads. If changing the Compose project name, carry both volumes forward or the worker will appear unseeded.
 
