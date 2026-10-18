@@ -1,6 +1,8 @@
+using Trackdub.Contracts.ApplicationContracts;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Domain;
 using Trackdub.Inference.Onnx;
+using Trackdub.Inference.Onnx.TensorRtRtx;
 using Trackdub.Inference.Onnx.Whisper;
 using Trackdub.Inference.Runtime.Planning;
 using Trackdub.TestDoubles;
@@ -146,6 +148,84 @@ public sealed class WhisperOnnxTrtRtxValidationTests
                 File.Delete(wavePath);
         }
     }
+
+    /// <summary>
+    /// Real-speech parity check for the fixed-address bound path: the same pooled TRT-RTX
+    /// sessions transcribe the 6s fixture once through OrtIoBinding (padded decoder inputs) and
+    /// once through managed Run. Token-level equality proves the padded logits indexing and
+    /// buffer reuse do not perturb decoding.
+    /// </summary>
+    [RequiresTrtRtxStagingFact("tiny")]
+    [Trait("Category", "Integration")]
+    public async Task WhisperOnnxTrtRtx_TinyModel_BoundPathMatchesManagedOnRealSpeech()
+    {
+        await EnsureTrtRtxPluginRegisteredAsync();
+
+        string stagingDir = Path.Join(FindRepoRoot(), "build", "whisper-tiny-onnx-trtrtx-validated");
+        string wavePath = Path.GetFullPath(Path.Join(
+            FindRepoRoot(), "tests", "Trackdub.Inference.Tests", "fixtures", "whisper-real-speech-16k-mono.wav"));
+        Assert.True(File.Exists(wavePath), $"Speech fixture not found: {wavePath}");
+
+        var regions = new[] { new SpeechRegion(0, 0.0, 6.0) };
+
+        // Managed first: proves the graph-enabled session itself decodes correctly before the
+        // bound path is compared against it.
+        IReadOnlyList<RecognizedTranscriptSegment> managed;
+        WhisperOnnxAudioTranscriptionEngine.TrtRtxBoundRunDisabled = true;
+        try
+        {
+            var managedEngine = CreateEngine(stagingDir);
+            managed = await managedEngine.TranscribeAsync(wavePath, regions, CancellationToken.None);
+            Assert.False(
+                WhisperOnnxAudioTranscriptionEngine.LastBoundTrtRtxRunUsed,
+                "Test hook failed: managed run still reported bound-path usage.");
+        }
+        finally
+        {
+            WhisperOnnxAudioTranscriptionEngine.TrtRtxBoundRunDisabled = false;
+        }
+
+        string managedTranscript = string.Join(' ', managed.Select(static s => s.Text)).Trim();
+        Assert.True(
+            managedTranscript.Any(char.IsLetter),
+            $"Managed TRT-RTX run produced no speech transcript: '{managedTranscript}'");
+
+        var boundEngine = CreateEngine(stagingDir);
+        IReadOnlyList<RecognizedTranscriptSegment> bound = await boundEngine.TranscribeAsync(
+            wavePath, regions, CancellationToken.None);
+        Assert.True(
+            WhisperOnnxAudioTranscriptionEngine.LastBoundTrtRtxRunUsed,
+            "Expected the TRT-RTX bound path to handle this model pair; it silently fell back to managed Run.");
+
+        string boundTranscript = string.Join(' ', bound.Select(static s => s.Text)).Trim();
+        Assert.True(
+            boundTranscript.Any(char.IsLetter),
+            $"Expected speech transcript from real-speech fixture, got: '{boundTranscript}'");
+
+        Assert.Equal(
+            managed.Select(static s => s.Text).ToArray(),
+            bound.Select(static s => s.Text).ToArray());
+    }
+
+    private static async Task EnsureTrtRtxPluginRegisteredAsync()
+    {
+        TensorRtRtxBootstrapResult bootstrap = await TensorRtRtxPluginService.Shared
+            .EnsureRegisteredAsync(allowProviderDownloads: false, CancellationToken.None);
+        Assert.True(bootstrap.Succeeded, $"TRT-RTX plugin registration failed: {bootstrap.Detail}");
+    }
+
+    private static WhisperOnnxAudioTranscriptionEngine CreateEngine(string stagingDir) =>
+        new(
+            new StubRuntimePlanner(new StageRuntimePlan
+            {
+                Stage = RuntimeStage.Asr,
+                Status = StageRuntimePlanStatus.Ready,
+                ModelId = "onnx-community/whisper-tiny",
+                ModelAlias = stagingDir,
+                Variant = "default",
+                ExecutionProvider = ExecutionProviderKind.TensorRTRtx
+            }),
+            new BenchmarkModelPathResolver());
 
     internal static string FindRepoRoot()
     {

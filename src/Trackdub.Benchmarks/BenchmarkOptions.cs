@@ -1,6 +1,7 @@
 using Trackdub.Composition.StarterPacks;
 using Trackdub.Contracts.ApplicationContracts;
 using Trackdub.Domain;
+using Trackdub.Domain.Benchmarking;
 
 namespace Trackdub.Benchmarks;
 
@@ -18,233 +19,116 @@ public sealed record BenchmarkOptions(
     bool Mock = false,
     bool DryRun = false)
 {
+    /// <summary>Sampling/input/I-O policy for the measured run; CLI always supplies it.</summary>
+    public BenchmarkExecutionSettings? Execution { get; init; }
+
+    /// <summary>Opt-in persistence of this run into the user benchmark history store.</summary>
+    public bool HistoryRequested { get; init; }
+
+    /// <summary>CUDA-graph lane requested on the command line; Auto resolves from device-bound eligibility.</summary>
+    public BenchmarkCudaGraphMode CudaGraphMode { get; init; } = BenchmarkCudaGraphMode.Auto;
+
+    /// <summary>Optional NVIDIA reference-tool run attached to the primary benchmark.</summary>
+    public BenchmarkReferenceToolKind ReferenceTool { get; init; } = BenchmarkReferenceToolKind.None;
+
+    public string? ReferenceToolPath { get; init; }
+
+    /// <summary>When true an unsatisfied reference tool fails the command (exit code 2).</summary>
+    public bool ReferenceToolRequired { get; init; }
+
     public static bool TryParse(
         IReadOnlyList<string> args,
         TextWriter errorWriter,
-        out BenchmarkOptions options)
+        out BenchmarkOptions options) =>
+        BenchmarkOptionsParser.TryParse(args, errorWriter, out options);
+
+    /// <summary>
+    /// Maps the parsed flags onto <see cref="BenchmarkExecutionSettings"/>. Without an explicit
+    /// --runs the measurement floor defaults to 3 seconds on top of the 10-sample minimum;
+    /// --duration-ms without --runs keeps that sample minimum and applies the duration floor;
+    /// an explicit --runs without --duration-ms preserves exact-count runs.
+    /// </summary>
+    internal static BenchmarkExecutionSettings BuildExecutionSettings(
+        BenchmarkSamplingPolicy sampling,
+        int warmupRuns,
+        int warmupMilliseconds,
+        BenchmarkInputMode inputMode,
+        int inputSeed,
+        BenchmarkIoMode ioMode,
+        BenchmarkArtifactMode artifactMode,
+        BenchmarkRuntimeCacheMode runtimeCacheMode,
+        string? runtimeCacheDirectory,
+        BenchmarkCudaGraphMode cudaGraphMode,
+        IReadOnlyDictionary<string, int[]> inputShapeOverrides) =>
+        new(
+            MinimumWarmupRuns: warmupRuns,
+            MinimumWarmupMilliseconds: warmupMilliseconds,
+            MinimumMeasurementMilliseconds: sampling.MinimumMeasurementMilliseconds,
+            InputMode: inputMode,
+            InputSeed: inputSeed,
+            IoMode: ioMode,
+            TensorRtRtx: new BenchmarkTensorRtRtxSettings(
+                CudaGraphMode: cudaGraphMode,
+                ArtifactMode: artifactMode,
+                CacheMode: runtimeCacheMode,
+                RuntimeCacheDirectory: runtimeCacheDirectory),
+            InputShapeOverrides: inputShapeOverrides.Count == 0 ? null : inputShapeOverrides);
+
+    internal static bool TryParseInputShape(string value, out string name, out int[] dimensions)
     {
-        string? modelPath = null;
-        var outputPath = Path.Join(Environment.CurrentDirectory, "benchmark-report.json");
-        var providerPreference = BenchmarkProviderPreference.Cpu;
-        var runCount = 5;
-        string? variant = null;
-        var allVariants = false;
-        var reportFormat = ReportFormat.Both;
-        string? windowsMlDevicePolicyKey = null;
-        string? scope = null;
-        var showHelp = false;
-        var mock = false;
-        var dryRun = false;
-
-        for (var index = 0; index < args.Count; index++)
+        name = string.Empty;
+        dimensions = [];
+        var separatorIndex = value.IndexOf('=', StringComparison.Ordinal);
+        if (separatorIndex <= 0)
         {
-            string arg = args[index];
-
-            switch (arg)
-            {
-                case "--help":
-                case "-h":
-                case "/?":
-                    showHelp = true;
-                    break;
-
-                case "--mock":
-                case "--dry-run":
-                    errorWriter.WriteLine($"{arg} is only supported by the controlled, controlled-matrix, and matrix commands.");
-                    options = DefaultWithHelp();
-                    return false;
-
-                case "--model":
-                    if (!TryReadValue(args, ref index, arg, errorWriter, out modelPath))
-                    {
-                        options = DefaultWithHelp();
-                        return false;
-                    }
-
-                    break;
-
-                case "--scope":
-                    if (!TryReadValue(args, ref index, arg, errorWriter, out scope))
-                    {
-                        options = DefaultWithHelp();
-                        return false;
-                    }
-
-                    scope = scope.Trim();
-                    break;
-
-                case "--output":
-                    if (!TryReadValue(args, ref index, arg, errorWriter, out outputPath))
-                    {
-                        options = DefaultWithHelp();
-                        return false;
-                    }
-
-                    break;
-
-                case "--provider":
-                    if (!TryReadValue(args, ref index, arg, errorWriter, out string providerText))
-                    {
-                        options = DefaultWithHelp();
-                        return false;
-                    }
-
-                    if (!TryParseProviderPreference(providerText, out providerPreference))
-                    {
-                        errorWriter.WriteLine($"Unknown provider '{providerText}'. Expected auto, cpu, dml, cuda, tensorrt, migraphx, qnn, or trt-rtx.");
-                        options = DefaultWithHelp();
-                        return false;
-                    }
-
-                    break;
-
-                case "--runs":
-                    if (!TryReadValue(args, ref index, arg, errorWriter, out string runCountText))
-                    {
-                        options = DefaultWithHelp();
-                        return false;
-                    }
-
-                    if (!int.TryParse(runCountText, out runCount) || runCount <= 0)
-                    {
-                        errorWriter.WriteLine($"Invalid run count '{runCountText}'.");
-                        options = DefaultWithHelp();
-                        return false;
-                    }
-
-                    break;
-
-                case "--variant":
-                    if (!TryReadValue(args, ref index, arg, errorWriter, out variant))
-                    {
-                        options = DefaultWithHelp();
-                        return false;
-                    }
-
-                    variant = variant.Trim();
-                    break;
-
-                case "--all-variants":
-                    allVariants = true;
-                    break;
-
-                case "--windows-ml-device-policy":
-                    if (!TryReadValue(args, ref index, arg, errorWriter, out string policyText))
-                    {
-                        options = DefaultWithHelp();
-                        return false;
-                    }
-
-                    string normalizedPolicy = policyText.Trim();
-                    if (string.IsNullOrEmpty(normalizedPolicy))
-                    {
-                        errorWriter.WriteLine("--windows-ml-device-policy requires a non-empty value.");
-                        options = DefaultWithHelp();
-                        return false;
-                    }
-
-                    if (!WindowsMlExecutionDevicePolicySettings.TryParseKey(normalizedPolicy, out _))
-                    {
-                        errorWriter.WriteLine(
-                            $"Unknown Windows ML device policy '{normalizedPolicy}'. " +
-                            $"Expected one of: {WindowsMlExecutionDevicePolicySettings.ExplicitKey}, " +
-                            $"{WindowsMlExecutionDevicePolicySettings.MaxPerformanceKey}, " +
-                            $"{WindowsMlExecutionDevicePolicySettings.PreferNpuKey}, " +
-                            $"{WindowsMlExecutionDevicePolicySettings.MaxEfficiencyKey}, " +
-                            $"{WindowsMlExecutionDevicePolicySettings.MinOverallPowerKey}.");
-                        options = DefaultWithHelp();
-                        return false;
-                    }
-
-                    windowsMlDevicePolicyKey = normalizedPolicy;
-                    break;
-
-                case "--format":
-                    if (!TryReadValue(args, ref index, arg, errorWriter, out string formatText))
-                    {
-                        options = DefaultWithHelp();
-                        return false;
-                    }
-
-                    if (!Enum.TryParse(formatText, ignoreCase: true, out reportFormat))
-                    {
-                        errorWriter.WriteLine($"Unknown format '{formatText}'. Expected console, json, or both.");
-                        options = DefaultWithHelp();
-                        return false;
-                    }
-
-                    break;
-
-                default:
-                    errorWriter.WriteLine($"Unknown argument '{arg}'.");
-                    options = DefaultWithHelp();
-                    return false;
-            }
+            return false;
         }
 
-        if (showHelp)
+        name = value[..separatorIndex].Trim();
+        if (name.Length == 0)
         {
-            options = new BenchmarkOptions(
-                string.Empty,
-                outputPath,
-                providerPreference,
-                runCount,
-                variant,
-                allVariants,
-                reportFormat,
-                null,
-                scope,
-                ShowHelp: true);
+            return false;
+        }
+
+        var parts = value[(separatorIndex + 1)..].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0
+            || !parts.All(p => int.TryParse(p, out _)))
+        {
+            return false;
+        }
+
+        dimensions = parts.Select(int.Parse).ToArray();
+        return dimensions.All(d => d >= 1);
+    }
+
+    /// <summary>Parses kebab/underscore CLI values like "device-bound" onto enum members.</summary>
+    internal static bool TryParseFlagEnum<TEnum>(string value, out TEnum result)
+        where TEnum : struct, Enum =>
+        Enum.TryParse(value.Replace("-", string.Empty).Replace("_", string.Empty), ignoreCase: true, out result)
+            && Enum.IsDefined(result);
+
+    internal static bool TryParseReferenceTool(string value, out BenchmarkReferenceToolKind kind)
+    {
+        if (string.Equals(value, "tensorrt-rtx", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "tensorrt_rtx", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "trt-rtx", StringComparison.OrdinalIgnoreCase))
+        {
+            kind = BenchmarkReferenceToolKind.TensorRtRtx;
             return true;
         }
 
-        if (!string.IsNullOrWhiteSpace(scope) &&
-            !scope.Equals(TrtRtxSmokeCatalog.ScopeName, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(value, "ort-perf-test", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "onnxruntime_perf_test", StringComparison.OrdinalIgnoreCase))
         {
-            errorWriter.WriteLine($"Unknown scope '{scope}'. Expected {TrtRtxSmokeCatalog.ScopeName}.");
-            options = DefaultWithHelp();
-            return false;
+            kind = BenchmarkReferenceToolKind.OrtPerfTest;
+            return true;
         }
 
-        if (string.IsNullOrWhiteSpace(modelPath) && string.IsNullOrWhiteSpace(scope))
-        {
-            errorWriter.WriteLine("Missing required argument --model <path-or-scope> or --scope trt-rtx-smoke.");
-            options = DefaultWithHelp();
-            return false;
-        }
-
-        if (!string.IsNullOrWhiteSpace(modelPath) && !string.IsNullOrWhiteSpace(scope))
-        {
-            errorWriter.WriteLine("Cannot combine --model with --scope.");
-            options = DefaultWithHelp();
-            return false;
-        }
-
-        if (allVariants && !string.IsNullOrWhiteSpace(variant))
-        {
-            errorWriter.WriteLine("Cannot combine --variant with --all-variants.");
-            options = DefaultWithHelp();
-            return false;
-        }
-
-        options = new BenchmarkOptions(
-            string.IsNullOrWhiteSpace(modelPath) ? string.Empty : modelPath.Trim(),
-            Path.GetFullPath(outputPath),
-            providerPreference,
-            runCount,
-            string.IsNullOrWhiteSpace(variant) ? null : variant,
-            allVariants,
-            reportFormat,
-            windowsMlDevicePolicyKey,
-            string.IsNullOrWhiteSpace(scope) ? null : scope,
-            ShowHelp: false,
-            Mock: mock,
-            DryRun: dryRun);
-
-        return true;
+        kind = BenchmarkReferenceToolKind.None;
+        return false;
     }
 
-    private static BenchmarkOptions DefaultWithHelp() =>
+    internal static BenchmarkOptions DefaultWithHelp() =>
         new(
             string.Empty,
             Path.Join(Environment.CurrentDirectory, "benchmark-report.json"),
@@ -259,7 +143,7 @@ public sealed record BenchmarkOptions(
             Mock: false,
             DryRun: false);
 
-    private static bool TryParseProviderPreference(string value, out BenchmarkProviderPreference preference)
+    internal static bool TryParseProviderPreference(string value, out BenchmarkProviderPreference preference)
     {
         if (string.Equals(value, "trt-rtx", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(value, "tensorrt-rtx", StringComparison.OrdinalIgnoreCase))
@@ -271,7 +155,7 @@ public sealed record BenchmarkOptions(
         return Enum.TryParse(value, ignoreCase: true, out preference);
     }
 
-    private static bool TryReadValue(
+    internal static bool TryReadValue(
         IReadOnlyList<string> args,
         ref int index,
         string optionName,

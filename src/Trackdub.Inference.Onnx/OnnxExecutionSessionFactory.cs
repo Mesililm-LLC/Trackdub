@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
 using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
@@ -1164,7 +1165,7 @@ internal static class OnnxExecutionSessionFactory
 
         using SessionOptions encoderOptions = encoderOptionsSelection.Options;
         using SessionOptions decoderInitOptions = decoderOptionsSelection.Options;
-        using SessionOptions decoderStepOptions = decoderOptionsSelection.Options;
+        SessionOptions decoderStepOptions = decoderOptionsSelection.Options;
 
         ExecutionProviderKind encoderOptionsSelectedProvider = encoderOptionsSelection.SelectedProvider;
         ExecutionProviderKind decoderOptionsSelectedProvider = decoderOptionsSelection.SelectedProvider;
@@ -1441,12 +1442,12 @@ internal static class OnnxExecutionSessionFactory
 
         BootstrapContext bootstrap = await BootstrapForProviderAsync(provider, cancellationToken)
             .ConfigureAwait(false);
-        // CUDA graph replay reads and writes the device addresses captured on the first run, so every
-        // binding must stay at a fixed address across runs. The encoder does not meet that yet:
-        // NemotronAsrGreedyDecoder rebinds fresh processed_signal / length / prompt OrtValues every
-        // chunk, and CachePingPongBuffer alternates the cache input/output buffers between two
-        // host allocations. Keep capture off for both sessions until the full binding set uses fixed
-        // device buffers and is validated across multiple chunks on TRT-RTX hardware.
+        // CUDA graph replay requires every binding to stay at a fixed address across runs.
+        // This flag must stay off here: the dual-session factory is shared with callers whose
+        // callsites rebind fresh OrtValues (ParakeetTdtGreedyDecoder, smoke probes), and Nemotron
+        // can fall back to managed feeds when shared device allocators are unavailable.
+        // Explicit per-caller graph options also flow into the pool-key fingerprint so capture
+        // modes cannot collide.
         const bool enableEncoderCudaGraph = false;
         DualOptionsSelections selections = CreateDualOptionsSelections(
             provider, bootstrap.Bootstrap, bootstrap.DevicePolicy,
@@ -2120,11 +2121,10 @@ internal static class OnnxExecutionSessionFactory
     /// built-in provider-options append (<see cref="OrtTensorRTProviderOptions"/>), because
     /// the built-in EP is reported by <c>GetAvailableProviders()</c> but is NOT enumerated
     /// as an EP device (verified live on ORT 1.31 in the GPU container: only the CPU device
-    /// is enumerated), so the generic branch is normally unreachable for classic TRT. The
-    /// legacy <c>AppendExecutionProvider_Tensorrt(deviceId: 0)</c> append is kept only as a
-    /// last TensorRT attempt — it cannot carry the cache options. When no TensorRT append
-    /// works, falls back to DirectML/CPU like the TensorRT-RTX path so callers can report
-    /// the fallback.
+    /// is enumerated), so the generic branch is normally unreachable for classic TRT. There is
+    /// no TensorRT append without the cache options: when the provider-options append fails,
+    /// this falls back to DirectML/CPU so callers can report the fallback instead of claiming
+    /// a cached TensorRT session.
     /// </summary>
     internal static ExecutionProviderKind AppendTensorRtOrFallbackProvider(
         SessionOptions options,
@@ -2155,16 +2155,6 @@ internal static class OnnxExecutionSessionFactory
         catch (Exception ex) when (ex is OnnxRuntimeException or InvalidOperationException or DllNotFoundException or EntryPointNotFoundException)
         {
             // Built-in TensorRT EP provider-options append is not usable; try the legacy append.
-        }
-
-        try
-        {
-            options.AppendExecutionProvider_Tensorrt(deviceId: 0);
-            return ExecutionProviderKind.TensorRt;
-        }
-        catch (Exception ex) when (ex is OnnxRuntimeException or InvalidOperationException or DllNotFoundException or EntryPointNotFoundException)
-        {
-            // Classic TensorRT EP is not usable; fall through to the DirectML/CPU fallback.
         }
 
         return TryAppendDirectMlProvider(options, out _)
@@ -2337,7 +2327,16 @@ internal static class OnnxExecutionSessionFactory
         {
             foreach ((string key, string value) in additionalTrtOptions)
             {
-                trtOptions[key] = value;
+                // Caller options are shared with the TensorRT-RTX builder. The classic EP rejects
+                // unknown keys, which makes UpdateOptions throw and drops the session to no-cache.
+                if (string.Equals(key, "enable_cuda_graph", StringComparison.Ordinal))
+                {
+                    trtOptions["trt_cuda_graph_enable"] = value;
+                }
+                else if (!key.StartsWith("nv_", StringComparison.Ordinal))
+                {
+                    trtOptions[key] = value;
+                }
             }
         }
 
@@ -2356,17 +2355,20 @@ internal static class OnnxExecutionSessionFactory
             SanitizeClassicTensorRtCacheKey(environmentFingerprint));
 
     // Classic engine-cache key components: GPU architecture bucket (the hardware probe's
-    // NvidiaGpuArchitecture name) | GPU driver version | TensorRT version identity |
-    // ONNX Runtime version. The TensorRT-RTX EP version in EpContextLoadPathResolver's
-    // fingerprint is deliberately excluded — classic TRT engines do not depend on it.
-    // TensorRT identity is sourced from the native library the EP links: the libnvinfer
-    // soname version on Linux (e.g. libnvinfer.so.10.13.3), the nvinfer.dll file version
-    // on Windows, and "unknown" when no library is discoverable in-process.
+    // NvidiaGpuArchitecture name) | GPU model name | GPU driver version | TensorRT version
+    // identity | ONNX Runtime version. The model name keeps engines from being reused across two
+    // GPUs in the same architecture bucket (e.g. a moved /data volume); it is "unknown" where NVML
+    // is unavailable. The TensorRT-RTX EP version in EpContextLoadPathResolver's fingerprint is
+    // deliberately excluded — classic TRT engines do not depend on it. TensorRT identity is sourced
+    // from the native library the EP links: the libnvinfer soname version on Linux (e.g.
+    // libnvinfer.so.10.13.3), the nvinfer.dll file version on Windows, and "unknown" when no library
+    // is discoverable in-process.
     internal static string BuildClassicTensorRtEnvironmentFingerprint()
     {
         (string gpuArchitecture, string? driverVersion) = EpContextLoadPathResolver.CurrentHardware;
         string driver = string.IsNullOrWhiteSpace(driverVersion) ? "unknown" : driverVersion;
-        return $"{gpuArchitecture}|{driver}|trt-{ResolveTensorRtVersionIdentity()}|ort-{EpContextArtifact.HostOrtRuntimeVersion}";
+        string gpuModel = AcceleratorVramProbe.QueryNvmlGpuIdentity().DeviceName ?? "unknown";
+        return $"{gpuArchitecture}|{gpuModel}|{driver}|trt-{ResolveTensorRtVersionIdentity()}|ort-{EpContextArtifact.HostOrtRuntimeVersion}";
     }
 
     private static string SanitizeClassicTensorRtCacheKey(string environmentFingerprint)
@@ -2403,9 +2405,9 @@ internal static class OnnxExecutionSessionFactory
                 string? pathVariable = Environment.GetEnvironmentVariable("PATH");
                 if (!string.IsNullOrWhiteSpace(pathVariable))
                 {
-                    foreach (string directory in pathVariable.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+                    foreach (string directory in pathVariable.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries).Select(static d => d.Trim()))
                     {
-                        string candidate = Path.Join(directory.Trim(), "nvinfer.dll");
+                        string candidate = Path.Join(directory, "nvinfer.dll");
                         if (!File.Exists(candidate))
                         {
                             continue;
@@ -2433,10 +2435,10 @@ internal static class OnnxExecutionSessionFactory
                         continue;
                     }
 
-                    foreach (string file in Directory.EnumerateFiles(directory, "libnvinfer.so*", SearchOption.TopDirectoryOnly))
+                    foreach (string version in Directory.EnumerateFiles(directory, "libnvinfer.so*", SearchOption.TopDirectoryOnly)
+                        .Select(ParseTensorRtVersionFromLibraryFileName))
                     {
-                        string version = ParseTensorRtVersionFromLibraryFileName(file);
-                        if (version != "unknown" && (best is null || version.Length > best.Length))
+                        if (version != "unknown" && (best is null || IsNewerTensorRtVersion(version, best)))
                         {
                             best = version;
                         }
@@ -2453,6 +2455,31 @@ internal static class OnnxExecutionSessionFactory
 
         return "unknown";
     }
+
+    // Compares dotted numeric versions component-wise so "10.13.3" outranks "10" and
+    // "10.13.3.0.0" outranks "10.13.3" only by its numeric components, not by string length.
+    // Ordinal string order breaks ties so the selection does not depend on directory enumeration order.
+    private static bool IsNewerTensorRtVersion(string candidate, string current)
+    {
+        string[] candidateParts = candidate.Split('.');
+        string[] currentParts = current.Split('.');
+        for (int i = 0; i < Math.Max(candidateParts.Length, currentParts.Length); i++)
+        {
+            int candidateValue = ParseVersionComponent(candidateParts, i);
+            int currentValue = ParseVersionComponent(currentParts, i);
+            if (candidateValue != currentValue)
+            {
+                return candidateValue > currentValue;
+            }
+        }
+
+        return string.CompareOrdinal(candidate, current) > 0;
+    }
+
+    private static int ParseVersionComponent(string[] parts, int index) =>
+        index < parts.Length && int.TryParse(parts[index], NumberStyles.None, CultureInfo.InvariantCulture, out int value)
+            ? value
+            : 0;
 
     private static IEnumerable<string> EnumerateTensorRtLibrarySearchDirectories()
     {
@@ -2472,6 +2499,20 @@ internal static class OnnxExecutionSessionFactory
         {
             yield return path;
         }
+    }
+
+    /// Composes enable_cuda_graph onto a caller-supplied TRT option set. Production callsites that
+    /// keep every bound OrtValue at a fixed address opt in here; profile dictionaries themselves
+    /// stay free of the flag so benchmark/AOT consumers keep explicit control of the session mode.
+    /// </summary>
+    internal static IReadOnlyDictionary<string, string> WithCudaGraphsEnabled(
+        IReadOnlyDictionary<string, string> options)
+    {
+        var merged = new Dictionary<string, string>(options, StringComparer.Ordinal)
+        {
+            ["enable_cuda_graph"] = "1",
+        };
+        return merged;
     }
 
     private static string ResolveTensorRtRtxRuntimeCachePath()

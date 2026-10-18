@@ -200,19 +200,12 @@ cd ../Trackdub-gated && git submodule status
 <title: imperative — Add / Fix / Remove ...>
 
 <body: what changed, by layer; gate result with commands; model/readiness impact;
-explicit NOT VERIFIED list; TS-xxx reference>
+explicit NOT VERIFIED list; issue reference if the user provided one>
 ```
 
-## Linear update (MANUAL — human applies)
+## Issue tracking (none by default)
 
-```
-TS-xxx — <title>
-Status: <In Progress | Done>
-Repo: core
-Labels: repo:core, area:<...>, agent-owned
-Evidence: <commands + exit codes + artifact paths>
-NOT VERIFIED: <list, or none>
-```
+Do not use Linear or require issue searches/status/TS IDs; track requested work locally in plans/Git unless the user explicitly asks for an external issue tracker.
 
 ## NOT VERIFIED
 

@@ -48,7 +48,9 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
         CancellationToken cancellationToken = default)
     {
         HardwareProfile hardware = await _hardwareProfileProvider.GetCurrentAsync(cancellationToken).ConfigureAwait(false);
-        string fingerprint = EpContextLoadPathResolver.CurrentEnvironmentFingerprint;
+        string fingerprint = provider is ExecutionProviderKind.TensorRt
+            ? OnnxExecutionSessionFactory.BuildClassicTensorRtEnvironmentFingerprint()
+            : EpContextLoadPathResolver.CurrentEnvironmentFingerprint;
 
         IReadOnlyList<string> sources = sourceModelPaths is { Count: > 0 }
             ? sourceModelPaths
@@ -158,6 +160,7 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
             WindowsMlOnnxRuntimeNativeResolver.EnsureInitialized();
 #endif
             using SessionOptions options = new();
+            options.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING;
             ExecutionProviderKind selectedProvider =
                 OnnxExecutionSessionFactory.AppendTensorRtOrFallbackProvider(options, modelTrtOptions);
             if (selectedProvider is not ExecutionProviderKind.TensorRt)
@@ -168,7 +171,6 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
                 return stopwatch.Elapsed.TotalMilliseconds;
             }
 
-            options.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING;
             using InferenceSession session = new(modelPath, options);
             using var results = session.Run(BuildClassicTensorRtWarmInputs(session.InputMetadata));
             stopwatch.Stop();

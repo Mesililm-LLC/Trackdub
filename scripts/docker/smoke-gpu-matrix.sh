@@ -41,7 +41,8 @@ set -euo pipefail
 #   from the TensorRT run (planner policy excludes Kokoro from TensorRT)
 #   but is included in the CUDA run.
 
-IMAGE="${GPU_SMOKE_IMAGE:-container-pipeline-trackdub:latest}"
+PROJECT="${COMPOSE_PROJECT_NAME:-trackdub}"
+IMAGE="${GPU_SMOKE_IMAGE:-${PROJECT}-trackdub:latest}"
 VRAM_BUDGET_MB="${GPU_SMOKE_VRAM_BUDGET_MB:-}"
 # Only forward the budget when explicitly set; otherwise the container's
 # session pool auto-scales from detected VRAM.
@@ -53,7 +54,7 @@ OUTPUT_DIR="${GPU_SMOKE_OUTPUT_DIR:-$(pwd)/gpu-smoke-evidence}"
 if command -v cygpath >/dev/null 2>&1; then
   OUTPUT_DIR="$(cygpath -m "$OUTPUT_DIR")"
 fi
-VOLUME="trackdub_trackdub-data"
+VOLUME="${PROJECT}_trackdub-data"
 
 DRY_RUN=0
 if [[ "${1:-}" == "--dry-run" ]]; then

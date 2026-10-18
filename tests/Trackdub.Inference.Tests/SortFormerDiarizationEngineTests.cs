@@ -1,10 +1,12 @@
 using System.Buffers.Binary;
 using Trackdub.Composition.Runtime.Planning;
+using Trackdub.Contracts.ApplicationContracts;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Domain;
 using Trackdub.Inference.Onnx;
 using Trackdub.Inference.Onnx.Runtime.Planning;
 using Trackdub.Inference.Onnx.SortFormer;
+using Trackdub.Inference.Onnx.TensorRtRtx;
 using Trackdub.Inference.Runtime.ModelManifest;
 using Trackdub.Inference.Runtime.Planning;
 
@@ -316,6 +318,75 @@ public sealed class SortFormerDiarizationEngineTests
             Assert.False(
                 string.IsNullOrWhiteSpace(engine.LastExecutionSummary!.SelectedProvider),
                 "SelectedProvider must not be empty — session provider resolution failed.");
+        }
+        finally
+        {
+            if (Directory.Exists(tempDirectory))
+            {
+                Directory.Delete(tempDirectory, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Drives enough audio through the staged TRT-RTX streaming session to saturate the speaker
+    /// cache and FIFO, then asserts chunks were served by the fixed-address bound path
+    /// (LastBoundChunkCount). The bound feed is byte-identical to the managed feed at full
+    /// capacity, so this mainly proves the binding mechanics survive the state machine.
+    /// </summary>
+    [RequiresTrtRtxStagingFact("sortformer-4spk-onnx-trtrtx-validated-fp16",
+        "run tools/olive/Validate-SortFormerTrtRtx.ps1")]
+    public async Task DiarizeAsync_with_trtrtx_staged_model_uses_bound_path_after_cache_saturation()
+    {
+        TensorRtRtxBootstrapResult bootstrap = await TensorRtRtxPluginService.Shared
+            .EnsureRegisteredAsync(allowProviderDownloads: false, CancellationToken.None);
+        Assert.True(bootstrap.Succeeded, $"TRT-RTX plugin registration failed: {bootstrap.Detail}");
+
+        string stagingDir = Path.Join(FindRepoRoot(), "build", "sortformer-4spk-onnx-trtrtx-validated-fp16", "onnx");
+        string stagedModelPath = Path.Join(stagingDir, "model.onnx");
+        Assert.True(File.Exists(stagedModelPath), $"Staged model not found: {stagedModelPath}");
+
+        // 95s at 16kHz produces ~9500 feature frames = 4 streaming chunks; the speaker cache
+        // (188 frames) and FIFO (40 frames) saturate by the second chunk.
+        const double durationSeconds = 95.0;
+        string tempDirectory = Path.Join(Path.GetTempPath(), "Trackdub.Inference.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDirectory);
+        string wavePath = Path.Join(tempDirectory, "sortformer-trtrtx-saturating.wav");
+
+        try
+        {
+            await WriteTestWaveAsync(wavePath, durationSeconds, sampleRate: 16000, CancellationToken.None);
+
+            var engine = new SortFormerDiarizationEngine(
+                new StubRuntimePlanner(new StageRuntimePlan
+                {
+                    Stage = RuntimeStage.Diarization,
+                    Status = StageRuntimePlanStatus.Ready,
+                    ModelId = "cgus/diar_streaming_sortformer_4spk-v2.1-onnx",
+                    ModelAlias = "sortformer-diarizer-4spk-v2.1",
+                    Variant = "default",
+                    ExecutionProvider = ExecutionProviderKind.TensorRTRtx,
+                    ModelEntryPath = stagedModelPath
+                }),
+                new BenchmarkModelPathResolver());
+
+            IReadOnlyList<DiarizedSpeakerTurn> turns = await engine.DiarizeAsync(
+                wavePath,
+                durationSeconds,
+                [new SpeechRegion(0, 0.0, durationSeconds)],
+                CancellationToken.None);
+
+            Assert.NotNull(turns);
+            Assert.True(
+                engine.LastBoundChunkCount > 0,
+                "Expected saturated caches to route later chunks through the bound path; " +
+                $"LastBoundChunkCount={engine.LastBoundChunkCount}, provider={engine.LastExecutionSummary?.SelectedProvider}");
+
+            foreach (DiarizedSpeakerTurn turn in turns)
+            {
+                Assert.True(turn.EndSeconds > turn.StartSeconds);
+                Assert.True(turn.EndSeconds <= durationSeconds + 0.01);
+            }
         }
         finally
         {

@@ -1,0 +1,28 @@
+using Trackdub.Inference.Onnx.NemotronAsr;
+
+namespace Trackdub.Inference.Onnx.Tests;
+
+public sealed class NemotronAsrSessionOptionsTests
+{
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Shared_runtime_and_smoke_options_disable_capture_for_both_sessions(bool hasPromptInput)
+    {
+        NemotronAsrEncoderTrtProfiles.SessionOptions options =
+            NemotronAsrEncoderTrtProfiles.BuildRuntimeOptions(hasPromptInput);
+
+        Assert.Equal("0", OnnxExecutionSessionFactory.BuildTensorRtRtxOptions(options.Encoder)["enable_cuda_graph"]);
+        Assert.Equal("0", OnnxExecutionSessionFactory.BuildTensorRtRtxOptions(options.Decoder)["enable_cuda_graph"]);
+        foreach ((string name, string shape) in NemotronAsrEncoderTrtProfiles.BuildOptions(hasPromptInput))
+        {
+            Assert.Equal(shape, options.Encoder[name]);
+        }
+
+        Assert.Single(options.Decoder);
+    }
+
+    [Fact]
+    public void Benchmark_profiles_leave_capture_mode_under_caller_control() =>
+        Assert.DoesNotContain("enable_cuda_graph", NemotronAsrEncoderTrtProfiles.BuildOptions(hasPromptInput: true).Keys);
+}

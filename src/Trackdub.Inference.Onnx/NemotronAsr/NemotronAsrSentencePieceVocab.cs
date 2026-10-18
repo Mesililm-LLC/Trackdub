@@ -5,7 +5,7 @@ internal sealed class NemotronAsrSentencePieceVocab
     private readonly string[] pieces;
     private readonly HashSet<int> languageTagIds;
 
-    private NemotronAsrSentencePieceVocab(string[] pieces)
+    internal NemotronAsrSentencePieceVocab(string[] pieces)
     {
         this.pieces = pieces;
         languageTagIds = pieces

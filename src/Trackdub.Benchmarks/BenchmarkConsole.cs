@@ -23,7 +23,7 @@ public static class BenchmarkConsole
         writer.WriteLine($"  Trackdub.Benchmarks tts-bench --jobs <jobs.jsonl> --results <results.jsonl> [--model <alias>] [--provider {string.Join("|", ExecutionProviderTokens.CliTags)}] [--warmup-runs <n>] [--repeat-runs <n>]");
         writer.WriteLine("  Trackdub.Benchmarks tts-bench --help");
         writer.WriteLine("  Trackdub.Benchmarks --help");
-        writer.WriteLine($"  Trackdub.Benchmarks --model <path-or-scope> [--variant <name> | --all-variants] [--output <path>] [--provider cpu|auto|dml|migraphx|trt-rtx] [--windows-ml-device-policy {WindowsMlExecutionDevicePolicySettings.FormatSupportedKeys("|")}] [--runs <n>] [--format console|json|both]");
+        writer.WriteLine($"  Trackdub.Benchmarks --model <path-or-scope> [--variant <name> | --all-variants] [--output <path>] [--provider cpu|auto|dml|migraphx|trt-rtx] [--windows-ml-device-policy {WindowsMlExecutionDevicePolicySettings.FormatSupportedKeys("|")}] [--runs <n>] [--duration-ms <n>] [--warmup-runs <n>] [--warmup-ms <n>] [--input-mode synthetic|zeros|profile] [--input-seed <n>] [--input-shape <name>=<d1,d2,...>] [--io-mode managed|device-bound] [--cuda-graphs auto|off|on|compare] [--artifact auto|source|require] [--runtime-cache reuse|isolated] [--runtime-cache-dir <path>] [--reference-tool tensorrt-rtx|ort-perf-test] [--reference-tool-path <path>] [--reference-tool-required] [--history] [--format console|json|both]");
         writer.WriteLine($"  Trackdub.Benchmarks --scope {TrtRtxSmokeCatalog.ScopeName} [--output <path>] [--provider trt-rtx] [--runs <n>] [--format console|json|both]");
         writer.WriteLine();
         writer.WriteLine("Ingest command:");
@@ -40,7 +40,22 @@ public static class BenchmarkConsole
         writer.WriteLine("  --output <path>     Output report path. Defaults to benchmark-report.json in the current directory.");
         writer.WriteLine("  --provider <name>   Provider preference: cpu, auto, dml, migraphx, qnn, or trt-rtx. Defaults to cpu.");
         writer.WriteLine("  --windows-ml-device-policy <name>  Windows ML EP device policy for catalog GPU runs. Defaults to explicit when omitted.");
-        writer.WriteLine("  --runs <n>          Planned measured run count. Defaults to 5.");
+        writer.WriteLine("  --runs <n>          Minimum measured run count. Without it the standard policy is 10 samples plus 3 seconds; an explicit count preserves exact-count runs.");
+        writer.WriteLine("  --duration-ms <n>   Additional measurement duration floor in milliseconds (0 allowed).");
+        writer.WriteLine("  --warmup-runs <n>   Additional warmup passes after the first run. Defaults to 1.");
+        writer.WriteLine("  --warmup-ms <n>     Warmup duration floor in milliseconds. Defaults to 200.");
+        writer.WriteLine("  --input-mode <m>    Measured input recipe: synthetic (deterministic, seeded), zeros (legacy fills), or profile (registered trt-rtx opt shapes). Defaults to synthetic.");
+        writer.WriteLine("  --input-seed <n>    Deterministic synthetic input seed. Defaults to 42.");
+        writer.WriteLine("  --input-shape <s>   Repeatable per-input shape override, e.g. --input-shape chunk=1,3040,128. Pins dynamic dims to the shape an engine profile expects.");
+        writer.WriteLine("  --io-mode <m>       Timing I/O mode: managed (host tensors) or device-bound (reserved for the CUDA-graph lane).");
+        writer.WriteLine("  --cuda-graphs <m>   CUDA graph mode for trt-rtx: auto (default), off, on, or compare. on and compare require --io-mode device-bound.");
+        writer.WriteLine("  --artifact <m>      EP-context artifact policy for trt-rtx: auto, source, or require.");
+        writer.WriteLine("  --runtime-cache <m> Runtime cache mode for trt-rtx: reuse or isolated.");
+        writer.WriteLine("  --runtime-cache-dir <path>  Custom TensorRT-RTX runtime cache directory.");
+        writer.WriteLine("  --reference-tool <t>        Optional NVIDIA reference tool: tensorrt-rtx or ort-perf-test.");
+        writer.WriteLine("  --reference-tool-path <p>   Explicit path to the reference tool executable.");
+        writer.WriteLine("  --reference-tool-required   Fail the command (exit 2) when the reference tool cannot run.");
+        writer.WriteLine("  --history           Persist this run into the user benchmark history store (opt-in).");
         writer.WriteLine("  --variant <name>    Run a specific variant for the selected model reference.");
         writer.WriteLine("  --all-variants      Run every discovered benchmarkable variant and emit an aggregate report.");
         writer.WriteLine("  --format <name>     Output mode: console, json, or both. Defaults to both.");
@@ -77,6 +92,7 @@ public static class BenchmarkConsole
 
     public static void WriteSummary(BenchmarkReport report, TextWriter writer)
     {
+        var metadata = report.Metadata;
         writer.WriteLine($"Scenario: {report.Scenario}");
         writer.WriteLine($"Model: {report.ModelPath}");
         writer.WriteLine($"Status: {report.Status}");
@@ -86,7 +102,10 @@ public static class BenchmarkConsole
         writer.WriteLine($"Requested runs: {report.RunCount}");
         writer.WriteLine($"Model size: {report.ModelSizeBytes} bytes");
         writer.WriteLine($"Cold load: {FormatMilliseconds(report.Measurements.ColdLoadMilliseconds)}");
-        writer.WriteLine($"Warmup: {FormatMilliseconds(report.Measurements.WarmupMilliseconds)}");
+        writer.WriteLine($"First run: {FormatMilliseconds(report.Measurements.FirstRunMilliseconds)}");
+        writer.WriteLine(
+            $"Warmup: {FormatMilliseconds(report.Measurements.WarmupMilliseconds)} "
+            + $"({report.Measurements.WarmupRunCount?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "n/a"} run(s))");
         if (!string.IsNullOrWhiteSpace(report.Measurements.EngineCacheOutcome)
             || !string.IsNullOrWhiteSpace(report.Measurements.ColdLoadDominantPhase))
         {
@@ -96,8 +115,58 @@ public static class BenchmarkConsole
                 + $"dominant={report.Measurements.ColdLoadDominantPhase ?? "unknown"}");
         }
         writer.WriteLine($"Warm latency avg/min/max: {FormatMilliseconds(report.Measurements.WarmLatencyAverageMilliseconds)} / {FormatMilliseconds(report.Measurements.WarmLatencyMinimumMilliseconds)} / {FormatMilliseconds(report.Measurements.WarmLatencyMaximumMilliseconds)}");
+        writer.WriteLine(
+            $"Warm latency p50/p90/p95/p99: {FormatMilliseconds(report.Measurements.WarmLatencyP50Milliseconds)} / {FormatMilliseconds(report.Measurements.WarmLatencyP90Milliseconds)} / {FormatMilliseconds(report.Measurements.WarmLatencyP95Milliseconds)} / {FormatMilliseconds(report.Measurements.WarmLatencyP99Milliseconds)}");
+        writer.WriteLine(
+            $"Measured samples: {report.Measurements.SampleCount?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "n/a"} "
+            + $"over {FormatMilliseconds(report.Measurements.MeasuredWallTimeMilliseconds)}");
+        writer.WriteLine(
+            $"Throughput: {FormatRate(report.Measurements.PassesPerSecond, "passes/s")}"
+            + (report.Measurements.ThroughputUnitsPerSecond is not null
+                ? $"; {FormatRate(report.Measurements.ThroughputUnitsPerSecond, report.Measurements.ThroughputUnit?.ToString() ?? "units/s")}"
+                : string.Empty));
         writer.WriteLine($"Audio duration: {FormatSeconds(report.Measurements.AudioDurationSeconds)}");
         writer.WriteLine($"Real-time factor: {FormatFactor(report.Measurements.RealTimeFactorAverage)}");
+        if (metadata?.Environment is { } environment)
+        {
+            writer.WriteLine(
+                $"Environment: {environment.MachineGpuName ?? "gpu n/a"}"
+                + $" | driver {environment.DriverVersion ?? "n/a"}"
+                + $" | {environment.OsDescription ?? "os n/a"}"
+                + $" | {environment.DotnetVersion ?? "dotnet n/a"}"
+                + $" | host ort {environment.HostOrtRuntimeVersion ?? "n/a"}");
+            if (metadata.ComparisonKey is not null)
+            {
+                writer.WriteLine($"Comparison key: {metadata.ComparisonKey}");
+            }
+        }
+        if (metadata is { CudaGraphLanes.Count: > 1 })
+        {
+            writer.WriteLine("CUDA graph comparison:");
+            foreach (var lane in metadata.CudaGraphLanes)
+            {
+                writer.WriteLine(
+                    $"  {lane.Lane}: avg={FormatMilliseconds(lane.Statistics?.MeanMilliseconds)} "
+                    + $"p95={FormatMilliseconds(lane.Statistics?.P95Milliseconds)} "
+                    + $"samples={lane.Sampling?.SampleCount.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "n/a"}"
+                    + (lane.UnavailableReason is null ? string.Empty : $" ({lane.UnavailableReason})"));
+            }
+        }
+        if (metadata is { ReferenceToolResults.Count: > 0 })
+        {
+            foreach (var referenceResult in metadata.ReferenceToolResults)
+            {
+                writer.WriteLine(
+                    $"Reference tool {referenceResult.Tool} [{referenceResult.GraphRole}]: {referenceResult.Status}"
+                    + (referenceResult.FailureReason is null ? string.Empty : $" ({referenceResult.FailureReason})")
+                    + (referenceResult.ExecutablePath is null ? string.Empty : $" at {referenceResult.ExecutablePath}"));
+                foreach (var metric in referenceResult.Metrics)
+                {
+                    writer.WriteLine(
+                        $"  {metric.Name}: {metric.Value.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)} {metric.Unit} ({metric.TimingDomain})");
+                }
+            }
+        }
         writer.WriteLine($"Report path: {report.ReportPath}");
 
         if (!string.IsNullOrWhiteSpace(report.FailureReason))
@@ -136,6 +205,9 @@ public static class BenchmarkConsole
 
     private static string FormatFactor(double? value) =>
         value is null ? "n/a" : $"{value.Value:F3}x";
+
+    private static string FormatRate(double? value, string unit) =>
+        value is null ? "n/a" : $"{value.Value:F2} {unit}";
 
     private static string FormatRateDelta(double? value) =>
         value is null ? "n/a" : $"{value.Value:+0.000;-0.000;0.000}";

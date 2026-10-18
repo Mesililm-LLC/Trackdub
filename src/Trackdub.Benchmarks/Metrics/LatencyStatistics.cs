@@ -11,6 +11,7 @@ namespace Trackdub.Benchmarks.Metrics;
 /// <param name="P99Milliseconds">99th percentile latency in milliseconds.</param>
 /// <param name="ThroughputUnitsPerSecond">Throughput in units per second (e.g. audio seconds/second or items/second).</param>
 /// <param name="SampleCount">Total number of samples measured.</param>
+/// <param name="P95Milliseconds">95th percentile, or null when unavailable in legacy statistics.</param>
 public sealed record LatencyStatistics(
     double MinMilliseconds,
     double MaxMilliseconds,
@@ -19,7 +20,8 @@ public sealed record LatencyStatistics(
     double P90Milliseconds,
     double P99Milliseconds,
     double ThroughputUnitsPerSecond,
-    int SampleCount)
+    int SampleCount,
+    double? P95Milliseconds = null)
 {
     /// <summary>
     /// Represents an empty statistics instance with all metrics set to 0.

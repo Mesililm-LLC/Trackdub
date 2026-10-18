@@ -197,9 +197,17 @@ internal static class AcceleratorVramProbe
         return decoded.Length == 0 ? null : decoded;
     }
 
-    private static bool TryLoadNvmlLibrary(out nint library) =>
-        NativeLibrary.TryLoad("libnvidia-ml.so.1", out library) ||
-        NativeLibrary.TryLoad("libnvidia-ml.so", out library);
+    private static bool TryLoadNvmlLibrary(out nint library)
+    {
+        if (NativeLibrary.TryLoad("libnvidia-ml.so.1", out library))
+            return true;
+
+        library = nint.Zero;
+        return NativeLibrary.TryLoad("libnvidia-ml.so", out library);
+    }
+
+    private static readonly Lazy<(string? DeviceName, string? DriverVersion)> CachedNvmlGpuIdentity =
+        new(ProbeNvmlGpuIdentity);
 
     /// <summary>
     /// Device name and driver version of the first NVIDIA device via NVML
@@ -208,9 +216,14 @@ internal static class AcceleratorVramProbe
     /// (null, null) on any failure (library absent, NVML error, empty
     /// strings) so callers treat identity as unknown. Sysfs/proc do not
     /// expose a usable GPU name or driver version inside containers, which
-    /// left the hardware fingerprint at Unknown/unknown there.
+    /// left the hardware fingerprint at Unknown/unknown there. The result is
+    /// computed once per process: NVML init/shutdown blocks on driver device
+    /// initialization without persistence mode, and identity does not change.
     /// </summary>
-    internal static (string? DeviceName, string? DriverVersion) QueryNvmlGpuIdentity()
+    internal static (string? DeviceName, string? DriverVersion) QueryNvmlGpuIdentity() =>
+        CachedNvmlGpuIdentity.Value;
+
+    private static (string? DeviceName, string? DriverVersion) ProbeNvmlGpuIdentity()
     {
         if (!OperatingSystem.IsLinux())
             return (null, null);

@@ -14,9 +14,10 @@ internal static class Program
 
     public static AppBuilder BuildAvaloniaApp()
     {
-        var history = new BenchmarkEvidenceRepository(
-            new SqliteUserBenchmarkDatabase(new TrackdubStoragePaths().UserDataRoot));
-        var runner = new BenchmarkRunnerService(history);
+        var database = new SqliteUserBenchmarkDatabase(new TrackdubStoragePaths().UserDataRoot);
+        var history = new BenchmarkEvidenceRepository(database);
+        var onnxHistory = new UserBenchmarkRepository(database);
+        var runner = new BenchmarkRunnerService(history, onnxHistory: onnxHistory);
         var builder = AppBuilder.Configure(() => new App(runner, history))
             .UsePlatformDetect()
             .LogToTrace();

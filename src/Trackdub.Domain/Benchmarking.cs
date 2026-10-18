@@ -1,3 +1,5 @@
+using Trackdub.Domain.Benchmarking;
+
 namespace Trackdub.Domain;
 
 public sealed record BenchmarkRequest(
@@ -5,7 +7,8 @@ public sealed record BenchmarkRequest(
     string ReportPath,
     BenchmarkProviderPreference ProviderPreference,
     int RunCount,
-    string? WindowsMlDevicePolicyKey = null);
+    string? WindowsMlDevicePolicyKey = null,
+    BenchmarkExecutionSettings? Execution = null);
 
 public sealed record BenchmarkMeasurements(
     double? ColdLoadMilliseconds,
@@ -19,7 +22,21 @@ public sealed record BenchmarkMeasurements(
     string? EngineCacheOutcome = null,
     long? EngineCacheBytesAdded = null,
     int? EngineCacheFilesAdded = null,
-    string? ColdLoadDominantPhase = null);
+    string? ColdLoadDominantPhase = null)
+{
+    public double? FirstRunMilliseconds { get; init; }
+    public int? WarmupRunCount { get; init; }
+    public double? WarmLatencyP50Milliseconds { get; init; }
+    public double? WarmLatencyP90Milliseconds { get; init; }
+    public double? WarmLatencyP95Milliseconds { get; init; }
+    public double? WarmLatencyP99Milliseconds { get; init; }
+    public int? SampleCount { get; init; }
+    public double? MeasuredWallTimeMilliseconds { get; init; }
+    public double? PassesPerSecond { get; init; }
+    public double? ThroughputUnitsPerSecond { get; init; }
+    public BenchmarkThroughputUnit? ThroughputUnit { get; init; }
+    public IReadOnlyList<double>? LatencySamplesMilliseconds { get; init; }
+}
 
 public sealed record BenchmarkReport(
     string Scenario,
@@ -34,7 +51,11 @@ public sealed record BenchmarkReport(
     BenchmarkMeasurements Measurements,
     string? FailureReason,
     IReadOnlyList<string> Notes,
-    DateTimeOffset GeneratedAtUtc);
+    DateTimeOffset GeneratedAtUtc,
+    int SchemaVersion = 1,
+    Guid? RunId = null,
+    BenchmarkRunMetadata? Metadata = null,
+    BenchmarkHistoryPersistenceResult? HistoryPersistence = null);
 
 public enum BenchmarkProviderPreference
 {
@@ -129,6 +150,58 @@ public sealed record BenchmarkRunRecord
     public string? FailureReason { get; init; }
 
     public DateTimeOffset GeneratedAtUtc { get; init; }
+
+    public double? FirstRunMilliseconds { get; init; }
+    public double? WarmupMilliseconds { get; init; }
+    public int? WarmupRunCount { get; init; }
+    public double? WarmLatencyP50Milliseconds { get; init; }
+    public double? WarmLatencyP90Milliseconds { get; init; }
+    public double? WarmLatencyP95Milliseconds { get; init; }
+    public double? WarmLatencyP99Milliseconds { get; init; }
+    public int? SampleCount { get; init; }
+    public double? MeasuredWallTimeMilliseconds { get; init; }
+    public double? PassesPerSecond { get; init; }
+    public double? ThroughputUnitsPerSecond { get; init; }
+    public BenchmarkThroughputUnit? ThroughputUnit { get; init; }
+    public double? AudioDurationSeconds { get; init; }
+    public double? RealTimeFactorAverage { get; init; }
+    public BenchmarkTimingMode? TimingMode { get; init; }
+    public string? InputProfileId { get; init; }
+    public string? ComparisonKey { get; init; }
+    public BenchmarkRunMetadata? Metadata { get; init; }
+
+    public static BenchmarkRunRecord FromReport(Guid id, string modelId, BenchmarkReport report)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+        BenchmarkMeasurements measurements = report.Measurements;
+        return new BenchmarkRunRecord(
+            id, modelId, report.ModelPath, report.ReportPath, report.Status,
+            report.RequestedProvider, report.SelectedProvider, report.RunCount,
+            report.SupportsExecution, report.ModelSizeBytes,
+            measurements.ColdLoadMilliseconds, measurements.WarmLatencyAverageMilliseconds,
+            measurements.WarmLatencyMinimumMilliseconds, measurements.WarmLatencyMaximumMilliseconds,
+            report.FailureReason, report.GeneratedAtUtc)
+        {
+            FirstRunMilliseconds = measurements.FirstRunMilliseconds,
+            WarmupMilliseconds = measurements.WarmupMilliseconds,
+            WarmupRunCount = measurements.WarmupRunCount,
+            WarmLatencyP50Milliseconds = measurements.WarmLatencyP50Milliseconds,
+            WarmLatencyP90Milliseconds = measurements.WarmLatencyP90Milliseconds,
+            WarmLatencyP95Milliseconds = measurements.WarmLatencyP95Milliseconds,
+            WarmLatencyP99Milliseconds = measurements.WarmLatencyP99Milliseconds,
+            SampleCount = measurements.SampleCount,
+            MeasuredWallTimeMilliseconds = measurements.MeasuredWallTimeMilliseconds,
+            PassesPerSecond = measurements.PassesPerSecond,
+            ThroughputUnitsPerSecond = measurements.ThroughputUnitsPerSecond,
+            ThroughputUnit = measurements.ThroughputUnit,
+            AudioDurationSeconds = measurements.AudioDurationSeconds,
+            RealTimeFactorAverage = measurements.RealTimeFactorAverage,
+            TimingMode = report.Metadata?.Configuration?.TimingMode,
+            InputProfileId = report.Metadata?.Configuration?.InputProfileId,
+            ComparisonKey = report.Metadata?.ComparisonKey,
+            Metadata = report.Metadata
+        };
+    }
 
     public static BenchmarkRunRecord Create(
         string modelId,

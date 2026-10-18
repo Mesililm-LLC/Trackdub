@@ -103,8 +103,8 @@ jobs:
           load: ${{ github.event_name == 'pull_request' }}
           cache-from: type=gha,scope=trackdub-linux-amd64-${{ matrix.profile }}
           cache-to: type=gha,mode=max,scope=trackdub-linux-amd64-${{ matrix.profile }}
-          provenance: mode=max
-          sbom: true
+          provenance: ${{ github.event_name != 'pull_request' && 'mode=max' || 'false' }}
+          sbom: ${{ github.event_name != 'pull_request' }}
 
       - name: Pull the just-published commit image
         if: github.event_name != 'pull_request'

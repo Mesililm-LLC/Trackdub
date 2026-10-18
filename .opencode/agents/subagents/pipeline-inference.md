@@ -82,7 +82,7 @@ permission:
   </task_scope>
   <integration>
     Invoked by @trackdub-orchestrator. Must hand off to @validation-gate as its last step, and to
-    @core-diagnostics immediately on any execution failure. Must not update Linear.
+    @core-diagnostics immediately on any execution failure. Must not update any external issue tracker.
   </integration>
 </context>
 

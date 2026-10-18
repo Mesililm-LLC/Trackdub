@@ -104,8 +104,54 @@
           <TextBlock Text="{Binding LastResult.Status, StringFormat='Status: {0}'}" />
           <TextBlock Text="{Binding LastResult.SelectedProvider, StringFormat='Provider: {0}'}" />
           <TextBlock Text="{Binding LastResult.RequestedProvider, StringFormat='Requested: {0}'}" />
+          <TextBlock Text="{Binding LastResult.Measurements.WarmLatencyAverageMilliseconds, StringFormat='Avg latency: {0:F1} ms'}" />
+          <TextBlock Text="{Binding LastResult.Measurements.WarmLatencyP95Milliseconds, StringFormat='P95 latency: {0:F1} ms'}" />
+          <TextBlock Text="{Binding LastResult.Measurements.SampleCount, StringFormat='Samples: {0}'}" />
+          <TextBlock Text="{Binding LastResult.Metadata.Configuration.TimingMode, StringFormat='Timing mode: {0}'}" />
         </StackPanel>
       </Border>
+
+      <!-- History -->
+      <Separator Background="{DynamicResource BorderBrush}" Margin="0,4" />
+      <StackPanel Spacing="4">
+        <Grid ColumnDefinitions="*,Auto">
+          <TextBlock Text="ONNX Benchmark History"
+                     FontSize="14" FontWeight="SemiBold"
+                     VerticalAlignment="Center" />
+          <Button Grid.Column="1"
+                  Command="{Binding RefreshHistoryCommand}"
+                  IsEnabled="{Binding IsHistoryLoading, Converter={x:Static c:BoolConverters.Not}}"
+                  Content="Refresh" Width="90" />
+        </Grid>
+        <ItemsControl ItemsSource="{Binding RecentRuns}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="vm:OnnxBenchmarkHistoryEntry">
+              <Border BorderBrush="{DynamicResource BorderBrush}"
+                      BorderThickness="1" CornerRadius="4"
+                      Padding="8" Margin="0,2">
+                <Grid ColumnDefinitions="160,*,Auto" ColumnSpacing="8">
+                  <StackPanel>
+                    <TextBlock Text="{Binding Model}"
+                               FontWeight="SemiBold"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock Text="{Binding GeneratedAtUtc, StringFormat='{}{0:yyyy-MM-dd HH:mm} UTC'}"
+                               FontSize="11" Opacity="0.6" />
+                  </StackPanel>
+                  <StackPanel Grid.Column="1">
+                    <TextBlock Text="{Binding Provider, StringFormat='Provider: {0}'}" FontSize="12" />
+                    <TextBlock Text="{Binding Status, StringFormat='Status: {0}'}" FontSize="11" Opacity="0.7" />
+                  </StackPanel>
+                  <StackPanel Grid.Column="2" HorizontalAlignment="Right">
+                    <TextBlock Text="{Binding Average, StringFormat='avg {0}'}" FontSize="12" />
+                    <TextBlock Text="{Binding P95, StringFormat='p95 {0}'}" FontSize="11" Opacity="0.7"
+                               HorizontalAlignment="Right" />
+                  </StackPanel>
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
     </StackPanel>
   </ScrollViewer>
 </UserControl>

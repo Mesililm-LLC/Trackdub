@@ -9,7 +9,20 @@ else
   DOCKER_REPO_ROOT="$REPO_ROOT"
 fi
 COMPOSE=(docker compose --project-directory "$DOCKER_REPO_ROOT" -f "$DOCKER_REPO_ROOT/docker-compose.yml")
-GPU_PROFILE="${TRACKDUB_GPU_PROFILE:-rtx}"
+# The image's ENV TRACKDUB_GPU_PROFILE marker is not visible from the host, so the profile
+# follows the compose target. A compose override can select either image, so require it explicitly.
+if [[ -n "${TRACKDUB_GPU_PROFILE:-}" ]]; then
+  GPU_PROFILE="$TRACKDUB_GPU_PROFILE"
+  if [[ -n "${TRACKDUB_GPU_TARGET:-}" && "$TRACKDUB_GPU_TARGET" != "$GPU_PROFILE" ]]; then
+    echo "TRACKDUB_GPU_PROFILE=$GPU_PROFILE does not match TRACKDUB_GPU_TARGET=$TRACKDUB_GPU_TARGET." >&2
+    exit 2
+  fi
+elif [[ -n "${TRACKDUB_COMPOSE_OVERRIDE:-}" ]]; then
+  echo "Set TRACKDUB_GPU_PROFILE=rtx or server when TRACKDUB_COMPOSE_OVERRIDE is set." >&2
+  exit 2
+else
+  GPU_PROFILE="${TRACKDUB_GPU_TARGET:-rtx}"
+fi
 case "$GPU_PROFILE" in
   rtx) DEFAULT_WARM_LIST="$REPO_ROOT/docker/poc-warm-models.txt" ;;
   server) DEFAULT_WARM_LIST="$REPO_ROOT/docker/poc-warm-models.server.txt" ;;
