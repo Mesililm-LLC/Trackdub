@@ -157,6 +157,8 @@ internal static class BenchmarkMetadataBuilder
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
             {
+                Trace.TraceWarning(
+                    $"Could not inspect TensorRT-RTX plugin identity in '{directory}': {ex.GetType().Name}: {ex.Message}");
             }
         }
 

@@ -310,6 +310,8 @@ internal static class BenchmarkReferenceToolRunner
                 }
                 catch (Exception ex) when (ex is ArgumentException or NotSupportedException)
                 {
+                    Trace.TraceWarning(
+                        $"Skipping invalid PATH entry '{pathEntry}' while looking for '{fileName}': {ex.GetType().Name}: {ex.Message}");
                 }
             }
         }
@@ -408,6 +410,7 @@ internal static class BenchmarkReferenceToolRunner
         }
         catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
+            Trace.TraceWarning($"Could not stop benchmark reference process: {ex.GetType().Name}: {ex.Message}");
         }
     }
 

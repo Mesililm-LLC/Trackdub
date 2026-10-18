@@ -47,11 +47,11 @@ jobs:
 
       - name: Restore Dependencies (Debug, locked mode)
         shell: bash
-        run: dotnet restore Trackdub.slnx --locked-mode -p:Configuration=Debug -m:1
+        run: dotnet restore Trackdub.slnx --locked-mode -p:Configuration=Debug -p:TrackdubRestoreAllTargetFrameworks=true -m:1
 
       - name: Restore Dependencies (Release, locked mode)
         shell: bash
-        run: dotnet restore Trackdub.slnx --locked-mode -p:Configuration=Release -m:1
+        run: dotnet restore Trackdub.slnx --locked-mode -p:Configuration=Release -p:TrackdubRestoreAllTargetFrameworks=true -m:1
 
       - name: Build DevHost (Release)
         shell: bash
