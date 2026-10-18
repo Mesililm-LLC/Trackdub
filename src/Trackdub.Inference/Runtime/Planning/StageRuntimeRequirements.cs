@@ -126,13 +126,19 @@ internal static class StageRuntimeRequirementsCatalog
                 new Dictionary<string, IReadOnlyList<ExecutionProviderKind>>(StringComparer.OrdinalIgnoreCase)
                 {
                     ["opus-mt"] = WithoutTensorRtFamilies(DefaultOnnxStageAllowedProviders),
-                    // MADLAD-400 3B: TensorRT RTX runs the trt-fp16 variant (the only one listing trt-rtx)
-                    // with bucketed static shapes, ~19x faster than the int4 KV-cache decoder on CPU at fp16
-                    // quality. Otherwise CPU-first: the int4 decoder translates a warm clip in ~8 s on CPU,
-                    // while DirectML pages on a 12 GB card (int4 81-89 s, fp16 160+ s) because the model and
-                    // DirectML's working set do not fit beside the desktop. DirectML stays reachable through
-                    // an explicit provider pin.
-                    ["madlad"] = [ExecutionProviderKind.TensorRTRtx, .. CpuFirst(WithoutTensorRtFamilies(DefaultOnnxStageAllowedProviders))],
+                    // MADLAD-400 3B: TensorRT support is an export property, and trt-fp16 is
+                    // currently the only TensorRT-qualified MADLAD export; it runs on
+                    // both TensorRT providers with bucketed static shapes, ~19x faster than the
+                    // int4 KV-cache decoder on CPU at fp16 quality. TensorRT RTX stays first
+                    // (per-worker EP-context warm, ~8 GB admission estimate vs ~12.7 GB for
+                    // classic TensorRT); classic TensorRT follows as a GPU fallback after the
+                    // 2026-10-18 isolated-process retest passed it. The smoke guard still
+                    // refuses every non-trt-fp16 MADLAD pairing on either TensorRT provider.
+                    // Otherwise CPU-first: the int4 decoder translates a warm clip in ~8 s on
+                    // CPU, while DirectML pages on a 12 GB card (int4 81-89 s, fp16 160+ s)
+                    // because the model and DirectML's working set do not fit beside the
+                    // desktop. DirectML stays reachable through an explicit provider pin.
+                    ["madlad"] = [ExecutionProviderKind.TensorRTRtx, ExecutionProviderKind.TensorRt, .. CpuFirst(WithoutTensorRtFamilies(DefaultOnnxStageAllowedProviders))],
                     ["phi-genai"] = GenAiProviders(DefaultOnnxStageAllowedProviders),
                 }),
             [RuntimeStage.Diarization] = new(

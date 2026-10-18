@@ -112,26 +112,31 @@ public sealed class GenAiTensorRtExclusionTests
     }
 
     [Fact]
-    public void MadladStageOverride_TriesTensorRtRtxThenCpu_AndExcludesClassicTensorRt()
+    public void MadladStageOverride_TriesTensorRtRtxThenClassicTensorRtThenCpu()
     {
-        // MADLAD's trt-fp16 export runs under the TensorRT RTX EP ABI plugin; the classic TensorRT
-        // EP is still unproven for it. Without TensorRT RTX, CPU (int4 KV-cache) beats DirectML,
-        // which pages on a 12 GB card.
+        // MADLAD's trt-fp16 export runs under both TensorRT EPs: TRT-RTX first (EP-context
+        // warm path, lower VRAM admission estimate), then classic TensorRT (isolated-process
+        // retest passed 2026-10-18, ORT 1.31 + TensorRT 10.13). Without a TensorRT provider,
+        // CPU (int4 KV-cache) beats DirectML, which pages on a 12 GB card. The smoke guard
+        // still refuses non-trt-fp16 MADLAD pairings on either TensorRT provider.
         Assert.True(
             StageRuntimeRequirementsCatalog.All[RuntimeStage.Translation].AllowedProvidersByEngineFamily!
                 .TryGetValue("madlad", out IReadOnlyList<ExecutionProviderKind>? allowed));
-        Assert.Equal([ExecutionProviderKind.TensorRTRtx, ExecutionProviderKind.Cpu], allowed!.Take(2));
-        Assert.DoesNotContain(ExecutionProviderKind.TensorRt, allowed);
+        Assert.Equal(
+            [ExecutionProviderKind.TensorRTRtx, ExecutionProviderKind.TensorRt, ExecutionProviderKind.Cpu],
+            allowed!.Take(3));
     }
 
     [Theory]
-    [InlineData(ExecutionProviderKind.TensorRt, "trt-fp16", "trt_rtx_mixed_fp16_fp32/encoder_model.onnx", true)]
+    [InlineData(ExecutionProviderKind.TensorRt, "trt-fp16", "trt_rtx_mixed_fp16_fp32/encoder_model.onnx", false)]
+    [InlineData(ExecutionProviderKind.TensorRt, "quantized", "encoder_model_quantized.onnx", true)]
+    [InlineData(ExecutionProviderKind.TensorRt, "trt-fp16", "encoder_model_quantized.onnx", true)]
     [InlineData(ExecutionProviderKind.TensorRTRtx, "quantized", "encoder_model_quantized.onnx", true)]
     [InlineData(ExecutionProviderKind.TensorRTRtx, "trt-fp16", "encoder_model_quantized.onnx", true)]
     [InlineData(ExecutionProviderKind.TensorRTRtx, "int4-kv", "mixed_fp16_int4/encoder_model.onnx", true)]
     [InlineData(ExecutionProviderKind.TensorRTRtx, "trt-fp16", "trt_rtx_mixed_fp16_fp32/encoder_model.onnx", false)]
     [InlineData(ExecutionProviderKind.Cpu, "quantized", "encoder_model_quantized.onnx", false)]
-    public void Madlad_smoke_guard_only_permits_validated_export_on_rtx(
+    public void Madlad_smoke_guard_only_permits_validated_export_on_tensorrt_providers(
         ExecutionProviderKind provider, string variant, string entryPath, bool rejected)
     {
         if (rejected)

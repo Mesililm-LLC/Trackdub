@@ -453,27 +453,38 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
         }
     }
 
-    // Encoder-decoder InferenceSession construction for OPUS-MT terminates the host process
-    // (stack overflow) under TensorRT providers; the reason its stage allow-list override exists.
-    // The smoke sweep bypasses stage allow-lists, so refuse the attempt before session creation;
-    // a fatal crash cannot be caught and reported. MADLAD's trt-fp16 export constructs and runs
-    // under the TensorRT RTX EP ABI plugin, so it is smoke-tested like any other pair.
+    // TensorRT support is a property of the export, not the model family: an export qualifies
+    // when it was built for TensorRT (plain graphs, bucketed static shapes) and has passed an
+    // isolated-process smoke on the provider. Session construction for an unqualified
+    // encoder-decoder export can terminate the host process (native stack overflow), and a
+    // fatal crash cannot be caught and reported, so qualification is checked before session
+    // creation; the smoke sweep needs this guard because it bypasses stage allow-lists.
+    // Extending support means producing a TensorRT-built export of another variant and
+    // qualifying it here after an isolated retest, not lifting the guard wholesale.
+    // OPUS-MT has no qualified TensorRT export yet, so it stays refused on both providers.
     internal static void ThrowIfFatalTensorRtFamily(
         string? engineFamily, ExecutionProviderKind provider, string variant, string entryPath)
     {
+        // The only currently qualified MADLAD export: the pinned trt-fp16 build (plain
+        // encoder/decoder under trt_rtx_mixed_fp16_fp32/). It passed under TensorRT RTX and,
+        // in an isolated-process retest on 2026-10-18 (ORT 1.31, TensorRT 10.13, RTX 5070),
+        // under classic TensorRT. The quantized, merged-decoder, and int4-kv exports were
+        // never built for TensorRT and remain unqualified on both providers.
+        bool isTensorRtQualifiedMadladExport =
+            string.Equals(engineFamily, "madlad", StringComparison.OrdinalIgnoreCase) &&
+            variant.Equals("trt-fp16", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(Path.GetFileName(Path.GetDirectoryName(entryPath)),
+                "trt_rtx_mixed_fp16_fp32", StringComparison.OrdinalIgnoreCase);
         bool unsafeMadlad = string.Equals(engineFamily, "madlad", StringComparison.OrdinalIgnoreCase) &&
-            (provider == ExecutionProviderKind.TensorRt ||
-             (provider == ExecutionProviderKind.TensorRTRtx &&
-                (!variant.Equals("trt-fp16", StringComparison.OrdinalIgnoreCase) ||
-                 !string.Equals(Path.GetFileName(Path.GetDirectoryName(entryPath)),
-                     "trt_rtx_mixed_fp16_fp32", StringComparison.OrdinalIgnoreCase))));
+            !isTensorRtQualifiedMadladExport;
         if (provider is ExecutionProviderKind.TensorRTRtx or ExecutionProviderKind.TensorRt
             && (unsafeMadlad || string.Equals(engineFamily, "opus-mt", StringComparison.OrdinalIgnoreCase)))
         {
             throw new NotSupportedException(
-                $"Engine family '{engineFamily}' is excluded from TensorRT providers: "
-                + "encoder-decoder InferenceSession construction terminates the host process "
-                + "(native stack overflow). Use dml or cpu.");
+                $"Export for engine family '{engineFamily}' is not TensorRT-qualified: "
+                + "InferenceSession construction for an unqualified encoder-decoder export "
+                + "terminates the host process (native stack overflow). Qualify a "
+                + "TensorRT-built export via an isolated-process retest, or use dml or cpu.");
         }
     }
 
