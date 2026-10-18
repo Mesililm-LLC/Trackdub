@@ -23,7 +23,9 @@ set -euo pipefail
 #   GPU_SMOKE_OUTPUT_DIR       Evidence directory
 #                              (default: $(pwd)/gpu-smoke-evidence).
 #   GPU_SMOKE_VRAM_BUDGET_MB   Value passed as TRACKDUB_SESSION_VRAM_BUDGET_MB
-#                              to each smoke run (default: 9000).
+#                              to each smoke run. Unset by default: the pool
+#                              auto-scales from detected VRAM. Set it only to
+#                              reproduce a specific admission budget.
 #   GPU_SMOKE_IMAGE            Container image to run
 #                              (default: container-pipeline-trackdub:latest).
 #
@@ -40,7 +42,13 @@ set -euo pipefail
 #   but is included in the CUDA run.
 
 IMAGE="${GPU_SMOKE_IMAGE:-container-pipeline-trackdub:latest}"
-VRAM_BUDGET_MB="${GPU_SMOKE_VRAM_BUDGET_MB:-9000}"
+VRAM_BUDGET_MB="${GPU_SMOKE_VRAM_BUDGET_MB:-}"
+# Only forward the budget when explicitly set; otherwise the container's
+# session pool auto-scales from detected VRAM.
+VRAM_ENV_ARGS=()
+if [[ -n "$VRAM_BUDGET_MB" ]]; then
+  VRAM_ENV_ARGS=(-e "TRACKDUB_SESSION_VRAM_BUDGET_MB=$VRAM_BUDGET_MB")
+fi
 OUTPUT_DIR="${GPU_SMOKE_OUTPUT_DIR:-$(pwd)/gpu-smoke-evidence}"
 if command -v cygpath >/dev/null 2>&1; then
   OUTPUT_DIR="$(cygpath -m "$OUTPUT_DIR")"
@@ -65,19 +73,20 @@ CUDA_LABELS=(
   tts-cosyvoice-int8
 )
 
-# Same as CUDA minus tts-kokoro (planner policy excludes Kokoro from TensorRT).
+# Same as CUDA minus tts-kokoro (planner policy excludes Kokoro from
+# TensorRT) and minus tts-cosyvoice-int8 (int8 graphs are not
+# TensorRT-compilable; CosyVoice int8 runs on the CUDA route).
 TENSORRT_LABELS=(
   diarization
   enhancement-deepfilternet3
   asr-parakeet-tdt-0.6b-v3
   translation-madlad-trt-fp16
   separation-spleeter
-  tts-cosyvoice-int8
 )
 
 echo "GPU smoke matrix output directory: $OUTPUT_DIR"
 echo "Image: $IMAGE"
-echo "VRAM budget (TRACKDUB_SESSION_VRAM_BUDGET_MB): $VRAM_BUDGET_MB"
+echo "VRAM budget (TRACKDUB_SESSION_VRAM_BUDGET_MB): ${VRAM_BUDGET_MB:-auto (detected VRAM)}"
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
   for provider in cuda tensorrt; do
@@ -87,7 +96,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
       labels=("${TENSORRT_LABELS[@]}")
     fi
     for label in "${labels[@]}"; do
-      echo "[dry-run] docker run --rm --gpus all -v $VOLUME:/data -e TRACKDUB_SESSION_VRAM_BUDGET_MB=$VRAM_BUDGET_MB $IMAGE providers $provider smoke --model $label"
+      echo "[dry-run] docker run --rm --gpus all -v $VOLUME:/data ${VRAM_ENV_ARGS[*]} $IMAGE providers $provider smoke --model $label"
     done
   done
   echo "Dry run complete. No containers were run. Output directory: $OUTPUT_DIR"
@@ -107,7 +116,7 @@ run_smoke() {
   set +e
   docker run --rm --gpus all \
     -v "$VOLUME:/data" \
-    -e "TRACKDUB_SESSION_VRAM_BUDGET_MB=$VRAM_BUDGET_MB" \
+    "${VRAM_ENV_ARGS[@]}" \
     "$IMAGE" \
     providers "$provider" smoke --model "$label" \
     >"$stdout_file" 2>"$stderr_file"
