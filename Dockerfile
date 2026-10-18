@@ -37,10 +37,34 @@ RUN dotnet publish src/Trackdub.Cli/Trackdub.Cli.csproj \
     /p:DebugType=None \
     /p:DebugSymbols=false
 
+# NuGet publish asset selection puts the CPU Microsoft.ML.OnnxRuntime core at
+# /app/publish/libonnxruntime.so even though the GPU provider library is present.
+# That CPU core cannot register CUDAExecutionProvider. Overwrite it, in the Linux
+# container publish only, with the CUDA-enabled core from the transitive
+# Microsoft.ML.OnnxRuntime.Gpu.Linux package (version = OnnxRuntimeVersion in
+# Directory.Packages.props). Desktop/Windows publishes are unaffected.
+RUN GPU_CORE="$HOME/.nuget/packages/microsoft.ml.onnxruntime.gpu.linux/1.31.0/runtimes/linux-x64/native/libonnxruntime.so" \
+    && test -f "$GPU_CORE" \
+    && cp "$GPU_CORE" /app/publish/libonnxruntime.so
+
 FROM nvidia/cuda:13.0.0-cudnn-runtime-ubuntu24.04 AS cuda-runtime
 
 FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
 WORKDIR /app
+
+# TensorRT 10 runtime for the native TensorRT EP: ORT 1.31's
+# libonnxruntime_providers_tensorrt.so links libnvinfer.so.10, libcudnn.so.9 and
+# libcudart.so.13. TensorRT 10.13 is the first 10.x line with CUDA 13.0 support
+# (NVIDIA TensorRT 10.13.2 release notes). Network-repo install is NVIDIA's
+# documented method for containers. Do not install TensorRT 11: wrong soname.
+RUN apt-get update \
+    && apt-get install --no-install-recommends --yes ca-certificates wget \
+    && wget --quiet https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb \
+    && dpkg --install cuda-keyring_1.1-1_all.deb \
+    && rm cuda-keyring_1.1-1_all.deb \
+    && apt-get update \
+    && apt-get install --no-install-recommends --yes libnvinfer10=10.13.3.9-1+cuda13.0 libnvinfer-plugin10=10.13.3.9-1+cuda13.0 libnvonnxparsers10=10.13.3.9-1+cuda13.0 \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN apt-get update \
     && apt-get install --no-install-recommends --yes ca-certificates espeak-ng ffmpeg libgomp1 libstdc++6 \
