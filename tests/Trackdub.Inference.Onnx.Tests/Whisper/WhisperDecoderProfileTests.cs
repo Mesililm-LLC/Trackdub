@@ -1,4 +1,5 @@
 using Trackdub.Domain;
+using Trackdub.Inference.Onnx.EpContext;
 using Trackdub.Inference.Onnx.Whisper;
 
 namespace Trackdub.Inference.Onnx.Tests.Whisper;
@@ -25,6 +26,14 @@ public sealed class WhisperDecoderProfileTests
             Assert.Equal("input_ids:1x1,encoder_hidden_states:1x1x4", options["trt_profile_min_shapes"]);
             Assert.Equal("input_ids:1x448,encoder_hidden_states:1x1500x4", options["trt_profile_opt_shapes"]);
             Assert.Equal(options["trt_profile_opt_shapes"], options["trt_profile_max_shapes"]);
+            IReadOnlyDictionary<string, string>? aotOptions = EpContextTrtProfiles.Resolve(modelPath);
+            Assert.NotNull(aotOptions);
+            Assert.Equal(options.Count, aotOptions.Count);
+            foreach ((string name, string value) in options)
+            {
+                Assert.Equal(value, aotOptions[name]);
+            }
+
             Assert.False(WhisperOnnxAudioTranscriptionEngine.ShouldEnableTrtRtxCudaGraphs(
                 ExecutionProviderKind.TensorRTRtx,
                 ["input_ids", "encoder_hidden_states", "attention_mask"]));
