@@ -2157,15 +2157,19 @@ internal static class OnnxExecutionSessionFactory
 
         try
         {
+            // Constructing provider options loads the built-in provider's native dependencies
+            // before choosing a cache namespace from the mapped TensorRT core binary.
+            using OrtTensorRTProviderOptions providerOptions = new();
             IReadOnlyDictionary<string, string> trtOptions = BuildTensorRtOptionsForModel(additionalTrtOptions, trtModelPath);
-            using OrtTensorRTProviderOptions providerOptions = BuildTensorRtProviderOptions(trtOptions);
+            EnsureClassicTensorRtCacheDirectory(trtOptions);
+            providerOptions.UpdateOptions(new Dictionary<string, string>(trtOptions, StringComparer.Ordinal));
             options.AppendExecutionProvider_Tensorrt(providerOptions);
             AppendedTensorRtOptions.AddOrUpdate(options, trtOptions);
             return ExecutionProviderKind.TensorRt;
         }
         catch (Exception ex) when (ex is OnnxRuntimeException or InvalidOperationException or DllNotFoundException or EntryPointNotFoundException)
         {
-            // Built-in TensorRT EP provider-options append is not usable; try the legacy append.
+            // Built-in TensorRT EP provider-options append is not usable; report a fallback.
         }
 
         return TryAppendDirectMlProvider(options, out _)
@@ -2394,9 +2398,8 @@ internal static class OnnxExecutionSessionFactory
     // GPUs in the same architecture bucket (e.g. a moved /data volume); it is "unknown" where NVML
     // is unavailable. The TensorRT-RTX EP version in EpContextLoadPathResolver's fingerprint is
     // deliberately excluded — classic TRT engines do not depend on it. TensorRT identity is sourced
-    // from the native library the EP links: the libnvinfer soname version on Linux (e.g.
-    // libnvinfer.so.10.13.3), the nvinfer.dll file version on Windows, and "unknown" when no library
-    // is discoverable in-process.
+    // from the mapped TensorRT core binary; an unresolved identity uses a process-specific
+    // namespace so an unverified runtime never reuses engines from another process.
     internal static string BuildClassicTensorRtEnvironmentFingerprint()
     {
         (string gpuArchitecture, string? driverVersion) = EpContextLoadPathResolver.CurrentHardware;
@@ -2417,124 +2420,51 @@ internal static class OnnxExecutionSessionFactory
         return sanitized.Length == 0 ? "unknown" : sanitized;
     }
 
-    internal static string ParseTensorRtVersionFromLibraryFileName(string fileName)
-    {
-        string name = Path.GetFileName(fileName);
-        const string sonamePrefix = "libnvinfer.so.";
-        if (name.StartsWith(sonamePrefix, StringComparison.OrdinalIgnoreCase))
-        {
-            string version = name[sonamePrefix.Length..].Trim();
-            return version.Length == 0 ? "unknown" : version;
-        }
-
-        return "unknown";
-    }
+    private static readonly string UnresolvedTensorRtIdentity = $"unknown-process-{Guid.NewGuid():N}";
+    private static readonly ConcurrentDictionary<string, string> LoadedTensorRtBinaryIdentities = new(StringComparer.Ordinal);
 
     internal static string ResolveTensorRtVersionIdentity()
     {
         try
         {
-            if (OperatingSystem.IsWindows())
-            {
-                string? pathVariable = Environment.GetEnvironmentVariable("PATH");
-                if (!string.IsNullOrWhiteSpace(pathVariable))
+            using Process process = Process.GetCurrentProcess();
+            return ResolveTensorRtVersionIdentity(
+                process.Modules.Cast<ProcessModule>().Select(static module => module.FileName),
+                static path => LoadedTensorRtBinaryIdentities.GetOrAdd(path, static loadedPath =>
                 {
-                    foreach (string directory in pathVariable.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries).Select(static d => d.Trim()))
-                    {
-                        string candidate = Path.Join(directory, "nvinfer.dll");
-                        if (!File.Exists(candidate))
-                        {
-                            continue;
-                        }
-
-                        FileVersionInfo info = FileVersionInfo.GetVersionInfo(candidate);
-                        string? version = !string.IsNullOrWhiteSpace(info.FileVersion) ? info.FileVersion : info.ProductVersion;
-                        if (!string.IsNullOrWhiteSpace(version))
-                        {
-                            return version.Trim();
-                        }
-                    }
-                }
-
-                return "unknown";
-            }
-
-            if (OperatingSystem.IsLinux())
-            {
-                string? best = null;
-                foreach (string directory in EnumerateTensorRtLibrarySearchDirectories())
-                {
-                    if (!Directory.Exists(directory))
-                    {
-                        continue;
-                    }
-
-                    foreach (string version in Directory.EnumerateFiles(directory, "libnvinfer.so*", SearchOption.TopDirectoryOnly)
-                        .Select(ParseTensorRtVersionFromLibraryFileName)
-                        .Where(static version => version != "unknown"))
-                    {
-                        if (best is null || IsNewerTensorRtVersion(version, best))
-                        {
-                            best = version;
-                        }
-                    }
-                }
-
-                return best ?? "unknown";
-            }
+                    using FileStream stream = File.OpenRead(loadedPath);
+                    return $"sha256-{Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream))}";
+                }));
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException
+            or NotSupportedException or System.ComponentModel.Win32Exception)
         {
-            return "unknown";
+            return UnresolvedTensorRtIdentity;
         }
-
-        return "unknown";
     }
 
-    // Compares dotted numeric versions component-wise so "10.13.3" outranks "10" and
-    // "10.13.3.0.0" outranks "10.13.3" only by its numeric components, not by string length.
-    // Ordinal string order breaks ties so the selection does not depend on directory enumeration order.
-    internal static bool IsNewerTensorRtVersion(string candidate, string current)
+    // Only mapped TensorRT core binaries count. Do not inspect PATH, LD_LIBRARY_PATH or
+    // installed filenames: those can describe a different runtime from the one ORT loaded.
+    // Hashing the actual binary also distinguishes builds with identical sonames. Missing or
+    // ambiguous identities get a process-specific namespace, preventing cross-process reuse.
+    internal static string ResolveTensorRtVersionIdentity(
+        IEnumerable<string> loadedModulePaths,
+        Func<string, string> readBinaryIdentity)
     {
-        string[] candidateParts = candidate.Split('.');
-        string[] currentParts = current.Split('.');
-        for (int i = 0; i < Math.Max(candidateParts.Length, currentParts.Length); i++)
-        {
-            int candidateValue = ParseVersionComponent(candidateParts, i);
-            int currentValue = ParseVersionComponent(currentParts, i);
-            if (candidateValue != currentValue)
-            {
-                return candidateValue > currentValue;
-            }
-        }
-
-        return string.CompareOrdinal(candidate, current) > 0;
+        string[] candidates = loadedModulePaths
+            .Where(static path => IsTensorRtCoreLibrary(Path.GetFileName(path)))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        return candidates.Length == 1 ? readBinaryIdentity(candidates[0]) : UnresolvedTensorRtIdentity;
     }
 
-    private static int ParseVersionComponent(string[] parts, int index) =>
-        index < parts.Length && int.TryParse(parts[index], NumberStyles.None, CultureInfo.InvariantCulture, out int value)
-            ? value
-            : 0;
-
-    private static IEnumerable<string> EnumerateTensorRtLibrarySearchDirectories()
-    {
-        yield return "/usr/lib/x86_64-linux-gnu";
-        yield return "/usr/lib/aarch64-linux-gnu";
-        yield return "/usr/local/cuda/lib";
-        yield return "/usr/local/cuda/lib64";
-        yield return "/usr/lib";
-
-        string? ldLibraryPath = Environment.GetEnvironmentVariable("LD_LIBRARY_PATH");
-        if (string.IsNullOrWhiteSpace(ldLibraryPath))
-        {
-            yield break;
-        }
-
-        foreach (string path in ldLibraryPath.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-        {
-            yield return path;
-        }
-    }
+    private static bool IsTensorRtCoreLibrary(string name) =>
+        name.Equals("libnvinfer.so", StringComparison.Ordinal)
+        || name.StartsWith("libnvinfer.so.", StringComparison.Ordinal)
+        || name.Equals("nvinfer.dll", StringComparison.OrdinalIgnoreCase)
+        || (name.StartsWith("nvinfer_", StringComparison.OrdinalIgnoreCase)
+            && name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+            && name.Length > 12 && name[8..^4].All(char.IsDigit));
 
     /// <summary>
     /// Composes enable_cuda_graph onto a caller-supplied TRT option set. Production callsites that

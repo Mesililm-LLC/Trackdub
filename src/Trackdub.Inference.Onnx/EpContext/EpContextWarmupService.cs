@@ -82,6 +82,13 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
             if (item.Status == "failed") failed++;
         }
 
+        if (classicTensorRt)
+        {
+            // Provider initialization may have made the loaded TensorRT identity available.
+            fingerprint = OnnxExecutionSessionFactory.BuildClassicTensorRtEnvironmentFingerprint();
+            engineCacheDirectory = OnnxExecutionSessionFactory.ResolveClassicTensorRtEngineCacheDirectory(fingerprint);
+        }
+
         return new EpContextWarmReport(
             engineCacheDirectory,
             fingerprint,
@@ -118,13 +125,14 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
 
         progress?.Report($"warm {Path.GetFileName(sourcePath)}");
         string cachePrefix = OnnxExecutionSessionFactory.BuildClassicTensorRtModelCachePrefix(sourcePath);
-        EngineCacheProbe.Snapshot before = ClassicTensorRtCacheClassifier.CaptureSnapshot(classicCacheDirectory, cachePrefix);
         double warmMs = TryWarmLoadClassicTensorRt(
             sourcePath,
             EpContextTrtProfiles.Resolve(sourcePath),
             cancellationToken,
+            ref classicCacheDirectory,
+            out EngineCacheProbe.Snapshot before,
+            out EngineCacheProbe.Snapshot after,
             out string? warmFailure);
-        EngineCacheProbe.Snapshot after = ClassicTensorRtCacheClassifier.CaptureSnapshot(classicCacheDirectory, cachePrefix);
 
         if (warmFailure is not null)
         {
@@ -151,8 +159,13 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
         string modelPath,
         IReadOnlyDictionary<string, string>? modelTrtOptions,
         CancellationToken cancellationToken,
+        ref string cacheDirectory,
+        out EngineCacheProbe.Snapshot before,
+        out EngineCacheProbe.Snapshot after,
         out string? failureReason)
     {
+        before = new EngineCacheProbe.Snapshot(cacheDirectory, DirectoryExists: false, FileCount: 0, TotalBytes: 0);
+        after = before;
         var stopwatch = Stopwatch.StartNew();
         try
         {
@@ -172,8 +185,14 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
                 return stopwatch.Elapsed.TotalMilliseconds;
             }
 
+            // Snapshot the exact path passed to this provider, after native initialization.
+            // The pre-initialization fingerprint may have had an unresolved TensorRT identity.
+            cacheDirectory = OnnxExecutionSessionFactory.TryGetAppendedTensorRtOptions(options)!["trt_engine_cache_path"];
+            string cachePrefix = OnnxExecutionSessionFactory.BuildClassicTensorRtModelCachePrefix(modelPath);
+            before = ClassicTensorRtCacheClassifier.CaptureSnapshot(cacheDirectory, cachePrefix);
             using InferenceSession session = new(modelPath, options);
             using var results = session.Run(BuildClassicTensorRtWarmInputs(session.InputMetadata));
+            after = ClassicTensorRtCacheClassifier.CaptureSnapshot(cacheDirectory, cachePrefix);
             stopwatch.Stop();
             failureReason = null;
             return stopwatch.Elapsed.TotalMilliseconds;

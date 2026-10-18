@@ -26,7 +26,8 @@ public sealed class RequiresClassicTensorRtFactAttribute : FactAttribute
                 ? null
                 : "Classic TensorRT execution provider is not enabled in this ONNX Runtime build.";
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is OnnxRuntimeException or TypeInitializationException
+            or DllNotFoundException or EntryPointNotFoundException or BadImageFormatException)
         {
             return $"Classic TensorRT execution provider could not be probed: {ex.Message}";
         }

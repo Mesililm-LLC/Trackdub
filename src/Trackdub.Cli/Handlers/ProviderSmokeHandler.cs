@@ -97,7 +97,8 @@ internal static class ProviderSmokeHandler
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException
+            or InvalidOperationException or NotSupportedException)
         {
             var failed = new ProviderSmokeOutput
             {

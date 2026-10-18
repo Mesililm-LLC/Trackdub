@@ -910,25 +910,39 @@ public sealed class OnnxExecutionSessionFactoryTests
     }
 
     [Theory]
-    [InlineData("libnvinfer.so.10", "10")]
-    [InlineData("libnvinfer.so.10.13.3", "10.13.3")]
-    [InlineData("libnvinfer.so", "unknown")]
-    [InlineData("nvinfer.dll", "unknown")]
-    public void ParseTensorRtVersionFromLibraryFileName_extracts_soname_version(string fileName, string expected)
+    [InlineData("/usr/lib/libnvinfer.so.10.13.3")]
+    [InlineData("nvinfer.dll")]
+    [InlineData("nvinfer_10.dll")]
+    public void ResolveTensorRtVersionIdentity_uses_only_the_mapped_core_binary(string loadedPath)
     {
-        Assert.Equal(expected, OnnxExecutionSessionFactory.ParseTensorRtVersionFromLibraryFileName(fileName));
+        string identity = OnnxExecutionSessionFactory.ResolveTensorRtVersionIdentity(
+            [loadedPath, loadedPath, "libnvinfer_plugin.so.10", "nvinfer_plugin_10.dll"],
+            path => path == loadedPath ? "loaded-binary-identity" : throw new InvalidOperationException());
+
+        Assert.Equal("loaded-binary-identity", identity);
     }
 
-    [Theory]
-    [InlineData("10.13.3", "10", true)]
-    [InlineData("10", "10.13.3", false)]
-    [InlineData("10.13.3", "10.9.9", true)]
-    [InlineData("10.13.3.0.0", "10.13.3", true)]
-    [InlineData("10.13.3", "10.13.3.0.0", false)]
-    [InlineData("10.13.3", "10.13.3", false)]
-    public void IsNewerTensorRtVersion_compares_dotted_versions_component_wise(string candidate, string current, bool expected)
+    [Fact]
+    public void ResolveTensorRtVersionIdentity_isolates_missing_or_ambiguous_runtimes()
     {
-        Assert.Equal(expected, OnnxExecutionSessionFactory.IsNewerTensorRtVersion(candidate, current));
+        string missing = OnnxExecutionSessionFactory.ResolveTensorRtVersionIdentity(
+            [], _ => throw new InvalidOperationException("Must not probe an installed library."));
+        string ambiguous = OnnxExecutionSessionFactory.ResolveTensorRtVersionIdentity(
+            ["/a/libnvinfer.so.10", "/b/libnvinfer.so.10"],
+            _ => throw new InvalidOperationException("Must not guess which runtime ORT uses."));
+
+        Assert.StartsWith("unknown-process-", missing, StringComparison.Ordinal);
+        Assert.Equal(missing, ambiguous);
+    }
+
+    [Fact]
+    public void ResolveTensorRtVersionIdentity_changes_when_the_loaded_binary_changes()
+    {
+        string first = OnnxExecutionSessionFactory.ResolveTensorRtVersionIdentity(
+            ["/a/libnvinfer.so.10"], _ => "binary-10.9.0");
+        string second = OnnxExecutionSessionFactory.ResolveTensorRtVersionIdentity(
+            ["/a/libnvinfer.so.10"], _ => "binary-10.13.3");
+        Assert.NotEqual(first, second);
     }
 
     [Fact]

@@ -458,7 +458,7 @@
           "Microsoft.ML.OnnxRuntime": "[1.31.0, )",
           "Microsoft.ML.OnnxRuntime.Gpu": "[1.31.0, )",
           "Microsoft.ML.OnnxRuntimeGenAI": "[0.18.0, )",
-          "Microsoft.ML.OnnxRuntimeGenAI.Cuda": "[0.17.1, )",
+          "Microsoft.ML.OnnxRuntimeGenAI.Cuda": "[0.18.0, )",
           "Microsoft.ML.Tokenizers": "[3.0.0-preview.26502.1, )",
           "System.Numerics.Tensors": "[9.0.0, )",
           "Trackdub.Contracts": "[1.0.0, )",
@@ -718,17 +718,17 @@
       },
       "Microsoft.ML.OnnxRuntimeGenAI.Cuda": {
         "type": "CentralTransitive",
-        "requested": "[0.17.1, )",
-        "resolved": "0.17.1",
-        "contentHash": "cycqHKeuZ2TvWk6n3vPp74zlyBJOltHusM8RRBygTh/UbYpJDJd/zhVdw70qsbsVynjBqRs7HXKpqwiMAwVNOQ==",
+        "requested": "[0.18.0, )",
+        "resolved": "0.18.0",
+        "contentHash": "oUe7UAJPywvfrLxYFaLRTsx2VufSI1LLRuEnpIvIHPNXAUu/zM4FiXZ8bWcG/8AuNjim634Lx1lePnpqNZO4DQ==",
         "dependencies": {
-          "Microsoft.ML.OnnxRuntime.Gpu": "1.30.0",
-          "Microsoft.ML.OnnxRuntimeGenAI.Managed": "0.17.1"
+          "Microsoft.ML.OnnxRuntime.Gpu": "1.31.0",
+          "Microsoft.ML.OnnxRuntimeGenAI.Managed": "0.18.0"
         }
       },
       "Microsoft.ML.OnnxRuntimeGenAI.Managed": {
         "type": "CentralTransitive",
-        "requested": "[0.17.1, )",
+        "requested": "[0.18.0, )",
         "resolved": "0.18.0",
         "contentHash": "EaJ3xnWwhcV35BK8tETmOXtOPbc0nIaEIkHFjh+U8N7+CIlGiVRZ4bzjkPlE0KL2ETV3XARHBEl5sr8YOXIJvg==",
         "dependencies": {
@@ -1159,7 +1159,7 @@
         "dependencies": {
           "Microsoft.Extensions.DependencyInjection": "[10.0.13, )",
           "Microsoft.Extensions.Http": "[10.0.11, )",
-          "Microsoft.ML.OnnxRuntimeGenAI.WinML": "[0.17.1, )",
+          "Microsoft.ML.OnnxRuntimeGenAI.WinML": "[0.18.0, )",
           "Trackdub.Application": "[1.0.0, )",
           "Trackdub.Inference": "[1.0.0, )",
           "Trackdub.Inference.Onnx": "[1.0.0, )",
@@ -1190,7 +1190,7 @@
         "type": "Project",
         "dependencies": {
           "MathNet.Numerics": "[5.0.0, )",
-          "Microsoft.ML.OnnxRuntimeGenAI.WinML": "[0.17.1, )",
+          "Microsoft.ML.OnnxRuntimeGenAI.WinML": "[0.18.0, )",
           "Microsoft.ML.Tokenizers": "[3.0.0-preview.26502.1, )",
           "Microsoft.Windows.AI.MachineLearning": "[2.4.89, )",
           "System.Numerics.Tensors": "[9.0.0, )",
@@ -1393,20 +1393,20 @@
       },
       "Microsoft.ML.OnnxRuntimeGenAI.Managed": {
         "type": "CentralTransitive",
-        "requested": "[0.17.1, )",
-        "resolved": "0.17.1",
-        "contentHash": "MIAOSt1TY4K96nGPZ1QLhEEH0XW7XmDTEwjDpxhaz+ruSnlkekaDsHmfvjXkcojQa6kgTA/SkNHkA7R849pERw==",
+        "requested": "[0.18.0, )",
+        "resolved": "0.18.0",
+        "contentHash": "EaJ3xnWwhcV35BK8tETmOXtOPbc0nIaEIkHFjh+U8N7+CIlGiVRZ4bzjkPlE0KL2ETV3XARHBEl5sr8YOXIJvg==",
         "dependencies": {
           "Microsoft.Extensions.AI.Abstractions": "9.8.0"
         }
       },
       "Microsoft.ML.OnnxRuntimeGenAI.WinML": {
         "type": "CentralTransitive",
-        "requested": "[0.17.1, )",
-        "resolved": "0.17.1",
-        "contentHash": "ZSZiTD75YU7vaXEcPp480IZPrLcvEJEvPMPYtvcy78NXti6ILKQoUaqzBrnqVW20EYF/TrxwOI+/GcnGqLCO3A==",
+        "requested": "[0.18.0, )",
+        "resolved": "0.18.0",
+        "contentHash": "bucpxSGzJeLDjt9OHW0IaBKo/JjxAskNVoPjxFfVmuIjjHDs5TpobVPyXOtuTc2K8mZsBDqUJZ8fdTiuL4r9MQ==",
         "dependencies": {
-          "Microsoft.ML.OnnxRuntimeGenAI.Managed": "0.17.1",
+          "Microsoft.ML.OnnxRuntimeGenAI.Managed": "0.18.0",
           "Microsoft.Windows.AI.MachineLearning": "2.1.1"
         }
       },

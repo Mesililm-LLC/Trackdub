@@ -268,7 +268,9 @@ internal static class AcceleratorVramProbe
                     _ = shutdown();
             }
         }
-        catch
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException
+            or BadImageFormatException or InvalidOperationException or ArgumentException
+            or NotSupportedException or MarshalDirectiveException or SEHException)
         {
             return (null, null);
         }
@@ -336,7 +338,9 @@ internal static class AcceleratorVramProbe
                     _ = shutdown();
             }
         }
-        catch
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException
+            or BadImageFormatException or InvalidOperationException or ArgumentException
+            or NotSupportedException or MarshalDirectiveException or SEHException)
         {
             return 0;
         }

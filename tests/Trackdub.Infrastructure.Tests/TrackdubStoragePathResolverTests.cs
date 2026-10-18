@@ -136,6 +136,30 @@ public sealed class TrackdubStoragePathResolverTests
         Assert.Equal(Path.GetFullPath(cacheRoot), options.UserCacheRoot);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Resolve_preserves_normalized_engine_cache_override(bool portable)
+    {
+        string testRoot = CreateTestRoot();
+        string engineRoot = Path.Join(testRoot, "cache", "..", "mounted-engines");
+        var environment = new Dictionary<string, string?>
+        {
+            [TrackdubStoragePathResolver.EngineCacheRootEnvironmentVariable] = engineRoot,
+            [TrackdubStoragePathResolver.PortableEnvironmentVariable] = portable ? "1" : null,
+        };
+        var context = new TrackdubStoragePathResolutionContext(
+            Path.Join(testRoot, "app"), Path.Join(testRoot, "local"), Path.Join(testRoot, "shared"), environment);
+
+        TrackdubStorageOptions options = TrackdubStoragePathResolver.Resolve(context);
+        var storagePaths = new TrackdubStoragePaths(options);
+
+        Assert.Equal(portable, options.IsPortable);
+        Assert.Equal(Path.GetFullPath(engineRoot), options.ExplicitEngineCacheDirectory);
+        Assert.Equal(Path.GetFullPath(engineRoot), storagePaths.EngineCacheDirectory);
+        Assert.NotEqual(Path.Join(storagePaths.UserCacheRoot, "EngineCache"), storagePaths.EngineCacheDirectory);
+    }
+
     private static string CreateTestRoot()
     {
         string root = Path.Join(

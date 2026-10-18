@@ -31,6 +31,7 @@ case "$GPU_PROFILE" in
     exit 2
     ;;
 esac
+export TRACKDUB_GPU_TARGET="$GPU_PROFILE"
 echo "GPU profile: $GPU_PROFILE"
 WARM_LIST="${TRACKDUB_WARM_MODEL_SET:-$DEFAULT_WARM_LIST}"
 if [[ -n "${TRACKDUB_COMPOSE_OVERRIDE:-}" ]]; then
