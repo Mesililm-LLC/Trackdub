@@ -9,7 +9,8 @@ public sealed record TrackdubStorageOptions(
     string UserCacheRoot,
     string? SharedAssetRoot,
     bool IsPortable,
-    string? ExplicitModelCacheDirectory = null);
+    string? ExplicitModelCacheDirectory = null,
+    string? ExplicitEngineCacheDirectory = null);
 
 public sealed record TrackdubStoragePathResolutionContext(
     string AppBaseDirectory,
@@ -61,6 +62,17 @@ public static class TrackdubStoragePathResolver
     }
 
     public static TrackdubStorageOptions Resolve(TrackdubStoragePathResolutionContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        // TRACKDUB_ENGINE_CACHE_ROOT is an explicit override: honoring it here keeps the engine
+        // cache directory that ApplyToCurrentProcess writes back equal to the operator's value.
+        TrackdubStorageOptions roots = ResolveRoots(context);
+        string? engineCacheOverride = NormalizeOptionalPath(GetValue(context.EnvironmentVariables, EngineCacheRootEnvironmentVariable));
+        return engineCacheOverride is null ? roots : roots with { ExplicitEngineCacheDirectory = engineCacheOverride };
+    }
+
+    private static TrackdubStorageOptions ResolveRoots(TrackdubStoragePathResolutionContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 

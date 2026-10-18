@@ -51,9 +51,12 @@ RUN GPU_CORE="$HOME/.nuget/packages/microsoft.ml.onnxruntime.gpu.linux/1.31.0/ru
 # CUDA flavor (libonnxruntime-genai-cuda.so, a provider helper with a different
 # ABI) lands in /app/publish, so the GenAI loader cannot find
 # libonnxruntime-genai.so and every GenAI model fails to load in the container.
-# Copy the base library from the Microsoft.ML.OnnxRuntimeGenAI package (version
-# in Directory.Packages.props), same pattern as the GPU core overwrite above.
-RUN GENAI_LIB="$HOME/.nuget/packages/microsoft.ml.onnxruntimegenai/0.18.0/runtimes/linux-x64/native/libonnxruntime-genai.so" \
+# Copy the base library from the Microsoft.ML.OnnxRuntimeGenAI package, same pattern as the
+# GPU core overwrite above. The build fails if this pin drifts from the CUDA GenAI provider
+# pinned in Directory.Packages.props, so the base library and provider helper stay one version.
+ARG GENAI_VERSION=0.18.0
+RUN grep -q "Microsoft.ML.OnnxRuntimeGenAI.Cuda\" Version=\"${GENAI_VERSION}\"" Directory.Packages.props \
+    && GENAI_LIB="$HOME/.nuget/packages/microsoft.ml.onnxruntimegenai/${GENAI_VERSION}/runtimes/linux-x64/native/libonnxruntime-genai.so" \
     && test -f "$GENAI_LIB" \
     && cp "$GENAI_LIB" /app/publish/libonnxruntime-genai.so
 

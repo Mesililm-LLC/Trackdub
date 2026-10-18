@@ -33,7 +33,9 @@ public sealed class TrackdubStoragePaths : IAppStoragePaths
         LayoutPath = Path.Join(UserDataRoot, "avalonia-layout.json");
         ToolCacheDirectory = Path.Join(UserCacheRoot, "tools");
         FfmpegToolCacheDirectory = Path.Join(ToolCacheDirectory, "ffmpeg");
-        EngineCacheDirectory = Path.Join(UserCacheRoot, "EngineCache");
+        EngineCacheDirectory = !string.IsNullOrWhiteSpace(options.ExplicitEngineCacheDirectory)
+            ? NormalizeRequiredPath(options.ExplicitEngineCacheDirectory, nameof(options.ExplicitEngineCacheDirectory))
+            : Path.Join(UserCacheRoot, "EngineCache");
         ComponentCacheDirectory = Path.Join(UserCacheRoot, "components");
     }
 
