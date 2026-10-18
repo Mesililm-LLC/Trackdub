@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://github.com/Trackdubllc/Trackdub/actions">CI</a>
   &middot; <a href="docs/index.md">Docs</a>
-  &middot; <a href="investor-deck-brief.md">Investor Brief</a>
+  &middot; <a href="docs/strategy/investor-deck-brief.md">Investor Brief</a>
   &middot; <a href="LICENSE">Apache-2.0 License</a>
 </p>
 
@@ -228,7 +228,7 @@ is the single source of truth for model inventory.
 See [docs/index.md](docs/index.md) for the categorized documentation index (ADRs,
 architecture, specs, audits, operations, and more). Governance and contribution
 guidelines are in [docs/repository-policy.md](docs/repository-policy.md). For the
-investor-facing narrative, see [investor-deck-brief.md](investor-deck-brief.md).
+investor-facing narrative, see [docs/strategy/investor-deck-brief.md](docs/strategy/investor-deck-brief.md).
 
 ## License
 
