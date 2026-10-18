@@ -125,6 +125,10 @@ First-append cache identity probe (2026-10-18): two disposable `trackdub-gpu:ser
 
 Fix-verification evidence (diagnosis probe, RED/GREEN test logs, full-suite logs, warm/MADLAD JSON, wall clocks, and file listings) is kept in a local directory (not committed).
 
+## First-session TensorRT cache identity verification (review follow-up)
+
+The cache fingerprint is now resolved before provider append by preloading the TensorRT core library; if any hardware, driver, TensorRT binary, or ORT identity is unavailable, cache reuse is explicitly disabled. A clean `server` image built from the reviewed worktree (RTX 5070, driver 617.42, TensorRT 10.13.3, ORT 1.31.0) reported `Blackwell|NVIDIA GeForce RTX 5070|617.42|trt-sha256-1692EAC238E7B0627B1D3B8A80214AEFCBFBA50B700FE76CCBDD3906C3B956FA|ort-1.31.0` on the first classic-TRT warm. With an explicit `TRACKDUB_ENGINE_CACHE_ROOT=/cache` mounted as a fresh isolated volume, the first container compiled one DeepFilterNet3 encoder engine in 42.5 s; a second container using the same volume reported `compiled=0, reused=1` in 6.1 s. Both used `/cache/classic-trt/Blackwell-NVIDIA-GeForce-RTX-5070-617.42-trt-sha256-1692EAC238E7B0627B1D3B8A80214AEFCBFBA50B700FE76CCBDD3906C3B956FA-ort-1.31.0`. This revalidates the first-session load sequence and confirms an explicit cache root survives headless CLI model-directory configuration; the earlier version-named cache measurements above are historical evidence from before this identity scheme.
+
 ## TensorRT qualification retests (2026-10-18)
 
 Several provider exclusions in the planner and the smoke guard dated from an ORT 1.24.5 / Windows-era run and had never been retested on the current stack. On 2026-10-18 each unproven exclusion was retested in an isolated process (one container per model and provider, so a host-killing failure could not hide as a catchable error) on ORT 1.31, TensorRT 10.13, RTX 5070. Policy now follows the evidence: TensorRT support is a property of a specific export, qualified when a TensorRT-built export passes this isolated smoke.

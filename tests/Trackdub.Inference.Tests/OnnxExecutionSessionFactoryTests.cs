@@ -13,6 +13,13 @@ namespace Trackdub.Inference.Tests;
 [Collection(nameof(OnnxExecutionSessionFactoryStateCollection))]
 public sealed class OnnxExecutionSessionFactoryTests
 {
+    private static string CompleteTensorRtFingerprint(
+        string architecture = "Ampere",
+        string model = "RTX-4090",
+        string driver = "535.104.05",
+        char tensorRtHashCharacter = 'A') =>
+        $"{architecture}|{model}|{driver}|trt-sha256-{new string(tensorRtHashCharacter, 64)}|ort-1.31.0";
+
     [Fact]
     public async Task CreatePooledSingleAsync_reuses_pool_hit_without_invoking_session_factory_again()
     {
@@ -730,11 +737,11 @@ public sealed class OnnxExecutionSessionFactoryTests
             Environment.SetEnvironmentVariable("TRACKDUB_CACHE_ROOT", null);
 
             IReadOnlyDictionary<string, string> options = OnnxExecutionSessionFactory.BuildTensorRtOptions(
-                null, "Ampere|535.104.05|trt-10.13.3|ort-1.31.0");
+                null, CompleteTensorRtFingerprint());
 
             Assert.Equal("1", options["trt_engine_cache_enable"]);
             Assert.Equal(
-                Path.Join(Path.GetFullPath(engineCacheRoot), "classic-trt", "Ampere-535.104.05-trt-10.13.3-ort-1.31.0"),
+                Path.Join(Path.GetFullPath(engineCacheRoot), "classic-trt", CompleteTensorRtFingerprint().Replace('|', '-')),
                 options["trt_engine_cache_path"]);
         }
         finally
@@ -758,10 +765,11 @@ public sealed class OnnxExecutionSessionFactoryTests
             Environment.SetEnvironmentVariable("TRACKDUB_CACHE_ROOT", cacheRoot);
 
             IReadOnlyDictionary<string, string> options = OnnxExecutionSessionFactory.BuildTensorRtOptions(
-                null, "Ada|551.86|trt-10.13.3|ort-1.31.0");
+                null, CompleteTensorRtFingerprint(architecture: "Ada", driver: "551.86"));
 
             Assert.Equal(
-                Path.Join(Path.GetFullPath(cacheRoot), "EngineCache", "classic-trt", "Ada-551.86-trt-10.13.3-ort-1.31.0"),
+                Path.Join(Path.GetFullPath(cacheRoot), "EngineCache", "classic-trt",
+                    CompleteTensorRtFingerprint(architecture: "Ada", driver: "551.86").Replace('|', '-')),
                 options["trt_engine_cache_path"]);
         }
         finally
@@ -781,7 +789,7 @@ public sealed class OnnxExecutionSessionFactoryTests
                 ["trt_profile_max_shapes"] = "waveform:1x57600000",
                 ["trt_profile_opt_shapes"] = "waveform:1x160000",
             },
-            "Ampere|535.104.05|trt-10.13.3|ort-1.31.0");
+            CompleteTensorRtFingerprint());
 
         Assert.Equal("waveform:1x16000", options["trt_profile_min_shapes"]);
         Assert.Equal("waveform:1x57600000", options["trt_profile_max_shapes"]);
@@ -797,7 +805,7 @@ public sealed class OnnxExecutionSessionFactoryTests
                 ["trt_engine_cache_enable"] = "0",
                 ["trt_engine_cache_path"] = @"D:\attacker-cache",
             },
-            "Ampere|535.104.05|trt-10.13.3|ort-1.31.0");
+            CompleteTensorRtFingerprint());
 
         Assert.Equal("1", options["trt_engine_cache_enable"]);
         Assert.NotEqual(@"D:\attacker-cache", options["trt_engine_cache_path"]);
@@ -816,7 +824,8 @@ public sealed class OnnxExecutionSessionFactoryTests
         };
 
         IReadOnlyDictionary<string, string> options =
-            OnnxExecutionSessionFactory.BuildTensorRtOptionsForModel(callerOptions, modelPath);
+            OnnxExecutionSessionFactory.BuildTensorRtOptionsAfterProviderLoad(
+                callerOptions, modelPath, static () => { }, () => CompleteTensorRtFingerprint());
         string prefix = options["trt_engine_cache_prefix"];
         Assert.Equal(OnnxExecutionSessionFactory.BuildClassicTensorRtModelCachePrefix(modelPath), prefix);
         Assert.Equal(prefix, OnnxExecutionSessionFactory.BuildClassicTensorRtModelCachePrefix(
@@ -828,7 +837,7 @@ public sealed class OnnxExecutionSessionFactoryTests
     [Fact]
     public void BuildTensorRtOptionsAfterProviderLoad_first_model_uses_the_same_cache_across_cold_processes()
     {
-        const string loadedFingerprint = "Ampere|gpu|driver|trt-sha256-loaded-binary|ort-1.31.0";
+        string loadedFingerprint = CompleteTensorRtFingerprint();
         string modelPath = Path.Join(Path.GetTempPath(), "trackdub-load-sequence-test", "encoder.onnx");
         var callerOptions = new Dictionary<string, string> { ["trt_profile_min_shapes"] = "audio:1x80x1" };
 
@@ -870,17 +879,48 @@ public sealed class OnnxExecutionSessionFactoryTests
     public void BuildTensorRtOptions_cache_path_changes_when_environment_fingerprint_changes()
     {
         IReadOnlyDictionary<string, string> first = OnnxExecutionSessionFactory.BuildTensorRtOptions(
-            null, "Ampere|535.104.05|trt-10.13.3|ort-1.31.0");
+            null, CompleteTensorRtFingerprint());
         IReadOnlyDictionary<string, string> otherDriver = OnnxExecutionSessionFactory.BuildTensorRtOptions(
-            null, "Ampere|551.86|trt-10.13.3|ort-1.31.0");
+            null, CompleteTensorRtFingerprint(driver: "551.86"));
         IReadOnlyDictionary<string, string> otherArch = OnnxExecutionSessionFactory.BuildTensorRtOptions(
-            null, "Blackwell|551.86|trt-10.13.3|ort-1.31.0");
+            null, CompleteTensorRtFingerprint(architecture: "Blackwell", driver: "551.86"));
         IReadOnlyDictionary<string, string> otherTrt = OnnxExecutionSessionFactory.BuildTensorRtOptions(
-            null, "Ampere|535.104.05|trt-10.9.0|ort-1.31.0");
+            null, CompleteTensorRtFingerprint(tensorRtHashCharacter: 'B'));
 
         Assert.NotEqual(first["trt_engine_cache_path"], otherDriver["trt_engine_cache_path"]);
         Assert.NotEqual(first["trt_engine_cache_path"], otherArch["trt_engine_cache_path"]);
         Assert.NotEqual(first["trt_engine_cache_path"], otherTrt["trt_engine_cache_path"]);
+    }
+
+    [Fact]
+    public void BuildTensorRtOptions_disables_cache_when_any_environment_identity_is_uncertain()
+    {
+        string complete = CompleteTensorRtFingerprint();
+        string[] incompleteFingerprints =
+        [
+            CompleteTensorRtFingerprint(architecture: "unknown"),
+            CompleteTensorRtFingerprint(model: "unknown"),
+            CompleteTensorRtFingerprint(driver: "unknown"),
+            complete.Replace("trt-sha256-" + new string('A', 64), "trt-unknown", StringComparison.Ordinal),
+            complete.Replace("ort-1.31.0", "ort-unknown", StringComparison.Ordinal),
+        ];
+
+        foreach (string fingerprint in incompleteFingerprints)
+        {
+            Assert.False(OnnxExecutionSessionFactory.HasCompleteClassicTensorRtCacheIdentity(fingerprint));
+            IReadOnlyDictionary<string, string> options = OnnxExecutionSessionFactory.BuildTensorRtOptions(
+                new Dictionary<string, string>
+                {
+                    ["trt_engine_cache_enable"] = "1",
+                    ["trt_engine_cache_path"] = "caller-cache",
+                    ["trt_engine_cache_prefix"] = "caller-prefix",
+                },
+                fingerprint);
+
+            Assert.Equal("0", options["trt_engine_cache_enable"]);
+            Assert.False(options.ContainsKey("trt_engine_cache_path"));
+            Assert.False(options.ContainsKey("trt_engine_cache_prefix"));
+        }
     }
 
     [RequiresClassicTensorRtFact]
@@ -897,11 +937,11 @@ public sealed class OnnxExecutionSessionFactoryTests
             Environment.SetEnvironmentVariable("TRACKDUB_CACHE_ROOT", null);
 
             using OrtTensorRTProviderOptions providerOptions = OnnxExecutionSessionFactory.BuildTensorRtProviderOptions(
-                null, "Ampere|535.104.05|trt-10.13.3|ort-1.31.0");
+                null, CompleteTensorRtFingerprint());
 
             string ortOptions = providerOptions.GetOptions();
             string expectedCachePath = Path.Join(
-                Path.GetFullPath(engineCacheRoot), "classic-trt", "Ampere-535.104.05-trt-10.13.3-ort-1.31.0");
+                Path.GetFullPath(engineCacheRoot), "classic-trt", CompleteTensorRtFingerprint().Replace('|', '-'));
             Assert.Contains("trt_engine_cache_enable=1", ortOptions);
             Assert.Contains($"trt_engine_cache_path={expectedCachePath}", ortOptions);
             Assert.True(Directory.Exists(expectedCachePath));
@@ -997,7 +1037,7 @@ public sealed class OnnxExecutionSessionFactoryTests
                 ["nv_runtime_cache_path"] = @"C:\rtx-cache",
                 ["trt_profile_max_shapes"] = "input_ids:1x512",
             },
-            "Ampere|535.104.05|trt-10.13.3|ort-1.31.0");
+            CompleteTensorRtFingerprint());
 
         Assert.Equal("1", options["trt_cuda_graph_enable"]);
         Assert.Equal("input_ids:1x512", options["trt_profile_max_shapes"]);

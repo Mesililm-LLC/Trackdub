@@ -34,7 +34,9 @@ public static class HeadlessPersistedEpLicenses
                 UserCacheRoot: userCacheRoot,
                 SharedAssetRoot: null,
                 IsPortable: false,
-                ExplicitModelCacheDirectory: options.ModelCacheDirectory ?? options.ModelDirectory));
+                ExplicitModelCacheDirectory: options.ModelCacheDirectory ?? options.ModelDirectory,
+                ExplicitEngineCacheDirectory: Environment.GetEnvironmentVariable(
+                    TrackdubStoragePathResolver.EngineCacheRootEnvironmentVariable)));
     }
 
     public static StudioSettings Load(HeadlessTrackdubOptions options) =>

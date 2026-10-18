@@ -53,6 +53,8 @@ internal static class OnnxExecutionSessionFactory
     private static IOpenVinoAvailabilityProvider _openVinoAvailability = NullOpenVinoAvailabilityProvider.Instance;
     private static IWindowsMlEpDevicePolicyProvider _devicePolicyProvider = NullWindowsMlEpDevicePolicyProvider.Instance;
     private static ILogger? _logger;
+    private static readonly object TensorRtIdentityLibraryLoadLock = new();
+    private static IntPtr _tensorRtIdentityLibraryHandle;
     private static readonly ConcurrentDictionary<string, byte> WarnedUnmappedCatalogEpNames =
         new(StringComparer.OrdinalIgnoreCase);
 
@@ -2331,12 +2333,9 @@ internal static class OnnxExecutionSessionFactory
     }
 
     /// <summary>
-    /// Builds classic TensorRT EP provider options with the persistent engine cache enabled.
-    /// Caller options (e.g. <c>trt_profile_*</c>) pass through, but the cache keys are
-    /// authoritative: a caller must not be able to disable the cache or redirect it outside
-    /// the fingerprinted directory, so they are written after the caller options.
-    /// ORT option keys: <c>trt_engine_cache_enable</c> / <c>trt_engine_cache_path</c>
-    /// (ONNX Runtime TensorRT execution provider documentation).
+    /// Builds classic TensorRT EP provider options. Caller profile options pass through, but cache
+    /// controls remain authoritative: the persistent cache is enabled only when the full hardware,
+    /// driver, TensorRT binary, and ORT identity is known; otherwise caching is explicitly disabled.
     /// </summary>
     internal static IReadOnlyDictionary<string, string> BuildTensorRtOptions(
         IReadOnlyDictionary<string, string>? additionalTrtOptions) =>
@@ -2385,6 +2384,17 @@ internal static class OnnxExecutionSessionFactory
             }
         }
 
+        if (!HasCompleteClassicTensorRtCacheIdentity(environmentFingerprint))
+        {
+            // A process-specific TRT identity prevents cross-process reuse only when TRT itself
+            // is unknown. Unknown GPU/driver/ORT identity is equally unsafe, so disable the cache
+            // outright instead of creating a misleading persistent directory.
+            trtOptions["trt_engine_cache_enable"] = "0";
+            trtOptions.Remove("trt_engine_cache_path");
+            trtOptions.Remove("trt_engine_cache_prefix");
+            return trtOptions;
+        }
+
         trtOptions["trt_engine_cache_enable"] = "1";
         trtOptions["trt_engine_cache_path"] = ResolveClassicTensorRtEngineCacheDirectory(environmentFingerprint);
         if (!string.IsNullOrWhiteSpace(trtModelPath))
@@ -2410,20 +2420,46 @@ internal static class OnnxExecutionSessionFactory
             "classic-trt",
             SanitizeClassicTensorRtCacheKey(environmentFingerprint));
 
-    // Classic engine-cache key components: GPU architecture bucket (the hardware probe's
-    // NvidiaGpuArchitecture name) | GPU model name | GPU driver version | TensorRT version
-    // identity | ONNX Runtime version. The model name keeps engines from being reused across two
-    // GPUs in the same architecture bucket (e.g. a moved /data volume); it is "unknown" where NVML
-    // is unavailable. The TensorRT-RTX EP version in EpContextLoadPathResolver's fingerprint is
-    // deliberately excluded — classic TRT engines do not depend on it. TensorRT identity is sourced
-    // from the mapped TensorRT core binary; an unresolved identity uses a process-specific
-    // namespace so an unverified runtime never reuses engines from another process.
+    // Classic engine-cache key components: GPU architecture bucket | exact GPU model name |
+    // GPU driver version | TensorRT binary identity | ONNX Runtime version. This prevents engines
+    // from being reused across two GPUs in the same architecture bucket (e.g. a moved /data volume).
+    // The cache is disabled if any component is unavailable. The TensorRT-RTX EP version in
+    // EpContextLoadPathResolver's fingerprint is deliberately excluded — classic TRT engines do
+    // not depend on it. TensorRT identity is sourced from the mapped TensorRT core binary; an
+    // unresolved identity uses a process-specific namespace so an unverified runtime never reuses
+    // engines from another process.
     internal static string BuildClassicTensorRtEnvironmentFingerprint()
     {
+        // The built-in classic TRT provider is not loaded until AppendExecutionProvider_Tensorrt,
+        // but its cache directory must be selected before that call. Preload the ABI library so
+        // the first session and every later process can identify the same native binary.
+        TryLoadTensorRtIdentityLibrary();
         (string gpuArchitecture, string? driverVersion) = EpContextLoadPathResolver.CurrentHardware;
         string driver = string.IsNullOrWhiteSpace(driverVersion) ? "unknown" : driverVersion;
         string gpuModel = AcceleratorVramProbe.QueryNvmlGpuIdentity().DeviceName ?? "unknown";
         return $"{gpuArchitecture}|{gpuModel}|{driver}|trt-{ResolveTensorRtVersionIdentity()}|ort-{EpContextArtifact.HostOrtRuntimeVersion}";
+    }
+
+    internal static bool HasCompleteClassicTensorRtCacheIdentity(string environmentFingerprint)
+    {
+        string[] parts = environmentFingerprint.Split('|');
+        if (parts.Length != 5 || parts.Any(static part => string.IsNullOrWhiteSpace(part)
+            || string.Equals(part, "unknown", StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        const string tensorRtHashPrefix = "trt-sha256-";
+        if (!parts[3].StartsWith(tensorRtHashPrefix, StringComparison.Ordinal)
+            || parts[3].Length != tensorRtHashPrefix.Length + 64
+            || !parts[3].AsSpan(tensorRtHashPrefix.Length).ToArray().All(Uri.IsHexDigit))
+        {
+            return false;
+        }
+
+        return parts[4].StartsWith("ort-", StringComparison.Ordinal)
+            && parts[4].Length > "ort-".Length
+            && !string.Equals(parts[4], "ort-unknown", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string SanitizeClassicTensorRtCacheKey(string environmentFingerprint)
@@ -2440,6 +2476,45 @@ internal static class OnnxExecutionSessionFactory
 
     private static readonly string UnresolvedTensorRtIdentity = $"unknown-process-{Guid.NewGuid():N}";
     private static readonly ConcurrentDictionary<string, string> LoadedTensorRtBinaryIdentities = new(StringComparer.Ordinal);
+
+    private static bool TryLoadTensorRtIdentityLibrary()
+    {
+        // The current server image ships TensorRT 10. On an unsupported major version, keep the
+        // identity unresolved and let the EP append path proceed without cross-process cache reuse.
+        string libraryName = OperatingSystem.IsLinux()
+            ? "libnvinfer.so.10"
+            : OperatingSystem.IsWindows() ? "nvinfer.dll" : string.Empty;
+        if (libraryName.Length == 0)
+        {
+            return false;
+        }
+
+        lock (TensorRtIdentityLibraryLoadLock)
+        {
+            if (_tensorRtIdentityLibraryHandle != IntPtr.Zero)
+            {
+                return true;
+            }
+
+            try
+            {
+                if (!NativeLibrary.TryLoad(libraryName, out IntPtr handle))
+                {
+                    return false;
+                }
+
+                // Keep a reference for process lifetime so ORT's provider append sees the same
+                // module and the resolved identity cannot become stale before session creation.
+                _tensorRtIdentityLibraryHandle = handle;
+                return true;
+            }
+            catch (Exception ex) when (ex is DllNotFoundException or BadImageFormatException
+                or FileLoadException or EntryPointNotFoundException)
+            {
+                return false;
+            }
+        }
+    }
 
     internal static string ResolveTensorRtVersionIdentity()
     {

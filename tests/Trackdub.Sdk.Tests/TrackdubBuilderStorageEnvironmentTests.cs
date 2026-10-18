@@ -74,6 +74,34 @@ public sealed class TrackdubBuilderStorageEnvironmentTests : IDisposable
     }
 
     [Fact]
+    public void Build_WithModelDirectory_PreservesExplicitEngineCacheRoot()
+    {
+        string? previousEngineCacheRoot = Environment.GetEnvironmentVariable(
+            TrackdubStoragePathResolver.EngineCacheRootEnvironmentVariable);
+        string explicitEngineCacheRoot = Path.Join(_modelDirectory, "shared-engine-cache");
+        Environment.SetEnvironmentVariable(
+            TrackdubStoragePathResolver.EngineCacheRootEnvironmentVariable,
+            explicitEngineCacheRoot);
+
+        try
+        {
+            using TrackdubSessionFactory factory = new TrackdubBuilder()
+                .WithModelDirectory(_modelDirectory)
+                .Build();
+
+            Assert.Equal(
+                explicitEngineCacheRoot,
+                Environment.GetEnvironmentVariable(TrackdubStoragePathResolver.EngineCacheRootEnvironmentVariable));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                TrackdubStoragePathResolver.EngineCacheRootEnvironmentVariable,
+                previousEngineCacheRoot);
+        }
+    }
+
+    [Fact]
     public void DirectCompositionFactory_AppliesOverrideBeforeSessionWork()
     {
         var services = new ServiceCollection();
