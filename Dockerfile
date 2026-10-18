@@ -47,6 +47,16 @@ RUN GPU_CORE="$HOME/.nuget/packages/microsoft.ml.onnxruntime.gpu.linux/1.31.0/ru
     && test -f "$GPU_CORE" \
     && cp "$GPU_CORE" /app/publish/libonnxruntime.so
 
+# Publish also drops the base ORT GenAI native library for linux-x64: only the
+# CUDA flavor (libonnxruntime-genai-cuda.so, a provider helper with a different
+# ABI) lands in /app/publish, so the GenAI loader cannot find
+# libonnxruntime-genai.so and every GenAI model fails to load in the container.
+# Copy the base library from the Microsoft.ML.OnnxRuntimeGenAI package (version
+# in Directory.Packages.props), same pattern as the GPU core overwrite above.
+RUN GENAI_LIB="$HOME/.nuget/packages/microsoft.ml.onnxruntimegenai/0.17.1/runtimes/linux-x64/native/libonnxruntime-genai.so" \
+    && test -f "$GENAI_LIB" \
+    && cp "$GENAI_LIB" /app/publish/libonnxruntime-genai.so
+
 FROM nvidia/cuda:13.0.0-cudnn-runtime-ubuntu24.04 AS cuda-runtime
 
 FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
