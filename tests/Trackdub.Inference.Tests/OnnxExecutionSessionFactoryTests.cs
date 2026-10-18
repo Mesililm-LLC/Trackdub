@@ -826,6 +826,47 @@ public sealed class OnnxExecutionSessionFactoryTests
     }
 
     [Fact]
+    public void BuildTensorRtOptionsAfterProviderLoad_first_model_uses_the_same_cache_across_cold_processes()
+    {
+        const string loadedFingerprint = "Ampere|gpu|driver|trt-sha256-loaded-binary|ort-1.31.0";
+        string modelPath = Path.Join(Path.GetTempPath(), "trackdub-load-sequence-test", "encoder.onnx");
+        var callerOptions = new Dictionary<string, string> { ["trt_profile_min_shapes"] = "audio:1x80x1" };
+
+        IReadOnlyDictionary<string, string> BuildForColdProcess()
+        {
+            bool providerLoaded = false;
+            string unresolvedFingerprint = $"unknown-process-{Guid.NewGuid():N}";
+            return OnnxExecutionSessionFactory.BuildTensorRtOptionsAfterProviderLoad(
+                callerOptions, modelPath,
+                () => providerLoaded = true,
+                () => providerLoaded ? loadedFingerprint : unresolvedFingerprint);
+        }
+
+        IReadOnlyDictionary<string, string> firstProcess = BuildForColdProcess();
+        IReadOnlyDictionary<string, string> secondProcess = BuildForColdProcess();
+        string expectedDirectory = OnnxExecutionSessionFactory.ResolveClassicTensorRtEngineCacheDirectory(loadedFingerprint);
+        Assert.Equal(expectedDirectory, firstProcess["trt_engine_cache_path"]);
+        Assert.Equal(expectedDirectory, secondProcess["trt_engine_cache_path"]);
+        Assert.Equal("1", firstProcess["trt_engine_cache_enable"]);
+        Assert.Equal("audio:1x80x1", firstProcess["trt_profile_min_shapes"]);
+        Assert.Equal(OnnxExecutionSessionFactory.BuildClassicTensorRtModelCachePrefix(modelPath),
+            firstProcess["trt_engine_cache_prefix"]);
+    }
+
+    [Fact]
+    public void BuildTensorRtOptionsAfterProviderLoad_does_not_resolve_cache_identity_when_loading_fails()
+    {
+        var failure = new InvalidOperationException("TensorRT provider could not be loaded.");
+        bool fingerprintResolved = false;
+        Assert.Same(failure, Assert.Throws<InvalidOperationException>(() =>
+            OnnxExecutionSessionFactory.BuildTensorRtOptionsAfterProviderLoad(
+                null, null,
+                () => throw failure,
+                () => { fingerprintResolved = true; return "unverified"; })));
+        Assert.False(fingerprintResolved);
+    }
+
+    [Fact]
     public void BuildTensorRtOptions_cache_path_changes_when_environment_fingerprint_changes()
     {
         IReadOnlyDictionary<string, string> first = OnnxExecutionSessionFactory.BuildTensorRtOptions(

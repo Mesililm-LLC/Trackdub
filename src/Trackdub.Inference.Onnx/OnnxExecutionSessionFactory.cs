@@ -2157,10 +2157,18 @@ internal static class OnnxExecutionSessionFactory
 
         try
         {
-            // Constructing provider options loads the built-in provider's native dependencies
-            // before choosing a cache namespace from the mapped TensorRT core binary.
             using OrtTensorRTProviderOptions providerOptions = new();
-            IReadOnlyDictionary<string, string> trtOptions = BuildTensorRtOptionsForModel(additionalTrtOptions, trtModelPath);
+            IReadOnlyDictionary<string, string> trtOptions = BuildTensorRtOptionsAfterProviderLoad(
+                additionalTrtOptions, trtModelPath,
+                () =>
+                {
+                    // Creating provider options only allocates an options struct. Append to
+                    // disposable options to load ORT's actual TensorRT dependency before hashing
+                    // it. No inference session is created and no model engines are compiled here.
+                    using SessionOptions preloadOptions = new();
+                    preloadOptions.AppendExecutionProvider_Tensorrt(providerOptions);
+                },
+                BuildClassicTensorRtEnvironmentFingerprint);
             EnsureClassicTensorRtCacheDirectory(trtOptions);
             providerOptions.UpdateOptions(new Dictionary<string, string>(trtOptions, StringComparer.Ordinal));
             options.AppendExecutionProvider_Tensorrt(providerOptions);
@@ -2338,6 +2346,16 @@ internal static class OnnxExecutionSessionFactory
         IReadOnlyDictionary<string, string>? additionalTrtOptions,
         string? trtModelPath) =>
         BuildTensorRtOptions(additionalTrtOptions, BuildClassicTensorRtEnvironmentFingerprint(), trtModelPath);
+
+    internal static IReadOnlyDictionary<string, string> BuildTensorRtOptionsAfterProviderLoad(
+        IReadOnlyDictionary<string, string>? additionalTrtOptions,
+        string? trtModelPath,
+        Action loadProvider,
+        Func<string> resolveEnvironmentFingerprint)
+    {
+        loadProvider();
+        return BuildTensorRtOptions(additionalTrtOptions, resolveEnvironmentFingerprint(), trtModelPath);
+    }
 
     internal static IReadOnlyDictionary<string, string> BuildTensorRtOptions(
         IReadOnlyDictionary<string, string>? additionalTrtOptions,
