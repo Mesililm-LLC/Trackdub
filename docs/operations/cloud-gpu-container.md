@@ -88,6 +88,22 @@ Conclusions from this pass:
 - One planner and policy change did follow from this pass, after the isolated MADLAD retest: the planner now ranks classic TensorRT second for MADLAD (after TensorRT-RTX, before CPU), and the smoke guard treats TensorRT qualification as an export property instead of a model-family exclusion. The Spleeter outcome is a smoke harness limitation and the CUDA MADLAD outcome is VRAM admission on a 12 GiB card, not planner defects.
 - Native TensorRT engine caches are not persisted by Trackdub today: the native TensorRT provider selection configures no engine cache path, so engines rebuild per process until a cache directory is configured and warmed per worker.
 
+## TensorRT qualification retests (2026-10-18)
+
+Several provider exclusions in the planner and the smoke guard dated from an ORT 1.24.5 / Windows-era run and had never been retested on the current stack. On 2026-10-18 each unproven exclusion was retested in an isolated process (one container per model and provider, so a host-killing failure could not hide as a catchable error) on ORT 1.31, TensorRT 10.13, RTX 5070. Policy now follows the evidence: TensorRT support is a property of a specific export, qualified when a TensorRT-built export passes this isolated smoke.
+
+| Export | Classic TensorRT | TensorRT-RTX | Policy now |
+|---|---|---|---|
+| OPUS-MT (merged-decoder) | Passed | Session construction aborted the host process (exit 134) | TensorRT-RTX excluded only; classic TensorRT allowed |
+| Silero VAD | Failed catchably: shape inference rejected the `If` subgraph ("TensorRT input ... has no shape specified") | Importer rejects the `If`/`Squeeze` graph (issue #329) | Both TensorRT providers excluded until a shape-inferred export ships; the model is tiny, so CPU/DirectML costs nothing |
+| Whisper medium (`Xenova/whisper-medium`, whisper-onnx) | Passed | Passed | TensorRT denial removed; whisper-onnx uses the default provider list and variants are smoke-gated individually |
+| Qwen3-ASR (`tonythethompson/qwen3-asr-0.6b-onnx`) | Isolated process terminated during import (plugin ops the importer cannot resolve) | Historically fell back catchably after a long compile | Classic TensorRT excluded (the planner smokes in-process and must never attempt a host-killing provider); TensorRT-RTX stays reachable behind DirectML/CUDA |
+| GenAI text refinement (`tonythethompson/Qwen2.5-1.5B-Instruct`) | ORT GenAI has no classic TensorRT device ("NvTensorRtRtx execution provider is not supported in this build") | NvTensorRtRtx device aborted the host process (exit 134) | Both TensorRT kinds refused for bundled GenAI exports; CPU/CUDA remain the GenAI routes |
+
+The GenAI retest also exposed a container packaging defect: publish output shipped only `libonnxruntime-genai-cuda.so`, not the base `libonnxruntime-genai.so` the loader probes for, so no GenAI model could load in the image at all. The Dockerfile now copies the base library from the GenAI NuGet package, the same pattern as the GPU ONNX Runtime core overwrite.
+
+One related question was evaluated and rejected: serving CosyVoice through TensorRT-LLM or vLLM. CosyVoice `int8` already runs on the CUDA execution provider in Trackdub; what fails is TensorRT engine building from the int8 ModelOpt graphs, which is an export problem. TensorRT-LLM and vLLM host PyTorch LLM weights in a separate Python runtime, which would break the single self-contained binary and container deployment model, and neither would accelerate the HiFT vocoder that stays on CPU either way. If TTS latency ever measures as the bottleneck, the in-architecture path is an fp16 TensorRT-qualified CosyVoice export, qualified by the same isolated retest.
+
 ## Per-worker provider install and engine warm
 
 Install the NVIDIA driver and NVIDIA Container Toolkit on the EC2 host first. Review the NVIDIA TensorRT-RTX and CUDA license terms, then accept them explicitly for this worker:
