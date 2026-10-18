@@ -10,6 +10,7 @@ using Trackdub.Inference.Runtime.TensorRtRtx;
 using Trackdub.Inference.Onnx.WindowsMl;
 #endif
 using Microsoft.ML.OnnxRuntime;
+using Microsoft.ML.OnnxRuntime.Tensors;
 
 namespace Trackdub.Inference.Onnx.EpContext;
 
@@ -91,7 +92,11 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
 
     // Classic TensorRT has no EP-context AOT: warm by creating a real session on the
     // original graph with the persistent engine cache enabled, then classify the cache
-    // directory growth as compiled vs reused.
+    // directory growth as compiled vs reused. Session creation alone is not enough:
+    // for dynamic-shape graphs the TensorRT EP defers engine building to the first
+    // inference, and only then writes the engine/timing-cache files (verified live on
+    // ORT 1.31 with DeepFilterNet3 and Parakeet: no files after Create, .engine +
+    // .profile + .timing after one Run). So warm runs one zero-input inference.
     private (EpContextWarmItem Item, bool Compiled, bool Reused) WarmClassicTensorRtSource(
         string sourcePath,
         string classicCacheDirectory,
@@ -165,16 +170,64 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
 
             options.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING;
             using InferenceSession session = new(modelPath, options);
+            using var results = session.Run(BuildClassicTensorRtWarmInputs(session.InputMetadata));
             stopwatch.Stop();
             failureReason = null;
             return stopwatch.Elapsed.TotalMilliseconds;
         }
-        catch (Exception ex) when (ex is OnnxRuntimeException or InvalidOperationException or DllNotFoundException or EntryPointNotFoundException)
+        catch (Exception ex) when (ex is OnnxRuntimeException or InvalidOperationException or DllNotFoundException or EntryPointNotFoundException or NotSupportedException)
         {
             stopwatch.Stop();
             failureReason = ex.Message;
             return stopwatch.Elapsed.TotalMilliseconds;
         }
+    }
+
+    internal static IReadOnlyList<NamedOnnxValue> BuildClassicTensorRtWarmInputs(
+        IReadOnlyDictionary<string, NodeMetadata> inputMetadata)
+    {
+        var values = new List<NamedOnnxValue>(inputMetadata.Count);
+        foreach ((string inputName, NodeMetadata metadata) in inputMetadata)
+        {
+            if (!metadata.IsTensor)
+            {
+                throw new NotSupportedException($"Warm input '{inputName}' is not a tensor input.");
+            }
+
+            values.Add(BuildClassicTensorRtWarmInput(inputName, metadata.ElementDataType, metadata.Dimensions));
+        }
+
+        return values;
+    }
+
+    internal static NamedOnnxValue BuildClassicTensorRtWarmInput(
+        string inputName,
+        TensorElementType elementType,
+        IReadOnlyList<int> dimensions)
+    {
+        int[] resolvedDimensions = dimensions.Select(static dimension => dimension > 0 ? dimension : 1).ToArray();
+        int elementCount = resolvedDimensions.Aggregate(1, static (product, dimension) => checked(product * dimension));
+
+        return elementType switch
+        {
+            TensorElementType.Float => NamedOnnxValue.CreateFromTensor(
+                inputName,
+                new DenseTensor<float>(new float[elementCount], resolvedDimensions)),
+            TensorElementType.Float16 => NamedOnnxValue.CreateFromTensor(
+                inputName,
+                new DenseTensor<Float16>(new Float16[elementCount], resolvedDimensions)),
+            TensorElementType.Int32 => NamedOnnxValue.CreateFromTensor(
+                inputName,
+                new DenseTensor<int>(new int[elementCount], resolvedDimensions)),
+            TensorElementType.Int64 => NamedOnnxValue.CreateFromTensor(
+                inputName,
+                new DenseTensor<long>(new long[elementCount], resolvedDimensions)),
+            TensorElementType.Bool => NamedOnnxValue.CreateFromTensor(
+                inputName,
+                new DenseTensor<bool>(new bool[elementCount], resolvedDimensions)),
+            _ => throw new NotSupportedException(
+                $"Warm input '{inputName}' uses unsupported tensor element type '{elementType}'."),
+        };
     }
 
     private async Task<(EpContextWarmItem Item, bool Compiled, bool Reused)> WarmSourceAsync(

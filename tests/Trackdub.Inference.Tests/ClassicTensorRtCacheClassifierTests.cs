@@ -1,3 +1,5 @@
+using Microsoft.ML.OnnxRuntime;
+using Microsoft.ML.OnnxRuntime.Tensors;
 using Trackdub.Inference.Onnx;
 using Trackdub.Inference.Onnx.EpContext;
 
@@ -60,6 +62,26 @@ public sealed class ClassicTensorRtCacheClassifierTests
                 Directory.Delete(Path.GetDirectoryName(Path.GetDirectoryName(directory)!)!, recursive: true);
             }
         }
+    }
+
+    [Fact]
+    public void BuildClassicTensorRtWarmInput_replaces_dynamic_dimensions_with_one()
+    {
+        NamedOnnxValue input = EpContextWarmupService.BuildClassicTensorRtWarmInput(
+            "audio_signal", TensorElementType.Float, [-1, 128, -1]);
+
+        Assert.Equal("audio_signal", input.Name);
+        Assert.Equal([1, 128, 1], input.AsTensor<float>().Dimensions.ToArray());
+    }
+
+    [Fact]
+    public void BuildClassicTensorRtWarmInput_builds_zero_length_tensor_for_int64()
+    {
+        NamedOnnxValue input = EpContextWarmupService.BuildClassicTensorRtWarmInput(
+            "length", TensorElementType.Int64, [-1]);
+
+        Assert.Equal([1], input.AsTensor<long>().Dimensions.ToArray());
+        Assert.Equal(0L, input.AsTensor<long>()[0]);
     }
 
     [Fact]
