@@ -1,0 +1,12 @@
+# Optional EC2 override for a dedicated EBS filesystem mounted at /mnt/trackdub-data.
+# Format/attach/mount the EBS volume on the host first, then chown it to uid/gid 10001.
+services:
+  trackdub:
+    environment:
+      # Trackdub's Linux /proc probe can be unavailable inside container runtimes; this
+      # conservative 16 GiB budget suits the 24/48 GiB AWS G6/G6e GPUs used by the POC.
+      TRACKDUB_SESSION_VRAM_BUDGET_MB: "${TRACKDUB_SESSION_VRAM_BUDGET_MB:-16384}"
+    volumes:
+      - type: bind
+        source: /mnt/trackdub-data
+        target: /data
