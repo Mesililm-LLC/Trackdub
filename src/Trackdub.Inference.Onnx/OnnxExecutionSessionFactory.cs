@@ -162,13 +162,14 @@ internal static class OnnxExecutionSessionFactory
         WindowsMlExecutionDevicePolicy devicePolicy,
         IReadOnlyDictionary<string, string>? additionalTrtEncoderOptions,
         IReadOnlyDictionary<string, string>? additionalTrtDecoderOptions,
-        bool enableEncoderCudaGraph = false, string? encoderLogId = null, string? decoderLogId = null)
+        bool enableEncoderCudaGraph = false, string? encoderLogId = null, string? decoderLogId = null,
+        string? encoderModelPath = null, string? decoderModelPath = null)
     {
         ExecutionProviderKind sessionProvider =
             ResolveSessionOptionsProvider(provider, bootstrapResult.SelectedProvider);
         return new DualOptionsSelections(
-            CreateSessionOptions(sessionProvider, devicePolicy, additionalTrtEncoderOptions, enableEncoderCudaGraph, encoderLogId),
-            CreateSessionOptions(sessionProvider, devicePolicy, additionalTrtDecoderOptions, enableCudaGraph: false, decoderLogId));
+            CreateSessionOptions(sessionProvider, devicePolicy, additionalTrtEncoderOptions, enableEncoderCudaGraph, encoderLogId, encoderModelPath),
+            CreateSessionOptions(sessionProvider, devicePolicy, additionalTrtDecoderOptions, enableCudaGraph: false, decoderLogId, decoderModelPath));
     }
 
     private static DualSessionMetadata ResolveDualSessionMetadata(
@@ -303,7 +304,8 @@ internal static class OnnxExecutionSessionFactory
             ResolveSessionOptionsProvider(provider, bootstrapResult.SelectedProvider),
             devicePolicy,
             additionalTrtOptions,
-            logId: logId);
+            logId: logId,
+            trtModelPath: modelPath);
         InferenceSession? session = null;
         try
         {
@@ -643,7 +645,8 @@ internal static class OnnxExecutionSessionFactory
             .ConfigureAwait(false);
         DualOptionsSelections selections = CreateDualOptionsSelections(
             provider, bootstrap.Bootstrap, bootstrap.DevicePolicy,
-            additionalTrtEncoderOptions, additionalTrtDecoderOptions);
+            additionalTrtEncoderOptions, additionalTrtDecoderOptions,
+            encoderModelPath: encoderModelPath, decoderModelPath: decoderModelPath);
         using SessionOptions encoderOptions = selections.Encoder.Options;
         using SessionOptions decoderOptions = selections.Decoder.Options;
         InferenceSession? encoderSession = null;
@@ -687,7 +690,8 @@ internal static class OnnxExecutionSessionFactory
             .ConfigureAwait(false);
         DualOptionsSelections selections = CreateDualOptionsSelections(
             provider, bootstrap.Bootstrap, bootstrap.DevicePolicy,
-            additionalTrtEncoderOptions, additionalTrtDecoderOptions);
+            additionalTrtEncoderOptions, additionalTrtDecoderOptions,
+            encoderModelPath: encoderModelPath, decoderModelPath: decoderModelPath);
         using SessionOptions encoderOptions = selections.Encoder.Options;
         using SessionOptions decoderOptions = selections.Decoder.Options;
         InferenceSession? encoderSession = null;
@@ -804,7 +808,8 @@ internal static class OnnxExecutionSessionFactory
         SessionOptionsSelection optionsSelection = CreateSessionOptions(
             ResolveSessionOptionsProvider(provider, bootstrapResult.SelectedProvider),
             devicePolicy,
-            additionalTrtOptions);
+            additionalTrtOptions,
+            trtModelPath: modelPath);
 
         // Options ownership may transfer to a replacement SessionOptionsSelection when TRT init
         // falls back; keep a movable dispose target managed by a `using` scope.
@@ -1096,7 +1101,8 @@ internal static class OnnxExecutionSessionFactory
             provider, bootstrap.Bootstrap, bootstrap.DevicePolicy,
             additionalTrtEncoderOptions, additionalTrtDecoderOptions,
             encoderLogId: ExtractLogId(encoderModelPath),
-            decoderLogId: ExtractLogId(decoderModelPath));
+            decoderLogId: ExtractLogId(decoderModelPath),
+            encoderModelPath: encoderModelPath, decoderModelPath: decoderModelPath);
         using SessionOptions encoderOptions = selections.Encoder.Options;
         using SessionOptions decoderOptions = selections.Decoder.Options;
         (SessionPoolKey encoderKey, SessionPoolKey decoderKey) = await BuildDualPooledKeysAsync(
@@ -1155,13 +1161,15 @@ internal static class OnnxExecutionSessionFactory
                 ? ResolveSessionOptionsProvider(encoderProvider, bootstrapResult.SelectedProvider)
                 : encoderProvider,
             devicePolicy,
-            additionalTrtEncoderOptions);
+            additionalTrtEncoderOptions,
+            trtModelPath: encoderModelPath);
         SessionOptionsSelection decoderOptionsSelection = CreateSessionOptions(
             decoderProvider == bootstrapProvider
                 ? ResolveSessionOptionsProvider(decoderProvider, bootstrapResult.SelectedProvider)
                 : decoderProvider,
             devicePolicy,
-            additionalTrtDecoderOptions);
+            additionalTrtDecoderOptions,
+            trtModelPath: decoderInitModelPath);
 
         using SessionOptions encoderOptions = encoderOptionsSelection.Options;
         using SessionOptions decoderInitOptions = decoderOptionsSelection.Options;
@@ -1291,10 +1299,10 @@ internal static class OnnxExecutionSessionFactory
             .ConfigureAwait(false);
 
         ExecutionProviderKind sessionProvider = ResolveSessionOptionsProvider(provider, bootstrapResult.SelectedProvider);
-        SessionOptionsSelection unetOptionsSelection = CreateSessionOptions(sessionProvider, devicePolicy, null);
-        SessionOptionsSelection vaeEncOptionsSelection = CreateSessionOptions(sessionProvider, devicePolicy, null);
-        SessionOptionsSelection vaeDecOptionsSelection = CreateSessionOptions(sessionProvider, devicePolicy, null);
-        SessionOptionsSelection whisperOptionsSelection = CreateSessionOptions(sessionProvider, devicePolicy, null);
+        SessionOptionsSelection unetOptionsSelection = CreateSessionOptions(sessionProvider, devicePolicy, null, trtModelPath: unetModelPath);
+        SessionOptionsSelection vaeEncOptionsSelection = CreateSessionOptions(sessionProvider, devicePolicy, null, trtModelPath: vaeEncoderModelPath);
+        SessionOptionsSelection vaeDecOptionsSelection = CreateSessionOptions(sessionProvider, devicePolicy, null, trtModelPath: vaeDecoderModelPath);
+        SessionOptionsSelection whisperOptionsSelection = CreateSessionOptions(sessionProvider, devicePolicy, null, trtModelPath: whisperEncoderModelPath);
         using SessionOptions unetOptions = unetOptionsSelection.Options;
         using SessionOptions vaeEncOptions = vaeEncOptionsSelection.Options;
         using SessionOptions vaeDecOptions = vaeDecOptionsSelection.Options;
@@ -1502,7 +1510,8 @@ internal static class OnnxExecutionSessionFactory
             .ConfigureAwait(false);
         DualOptionsSelections selections = CreateDualOptionsSelections(
             provider, bootstrap.Bootstrap, bootstrap.DevicePolicy,
-            additionalTrtEncoderOptions, additionalTrtDecoderOptions);
+            additionalTrtEncoderOptions, additionalTrtDecoderOptions,
+            encoderModelPath: encoderModelPath, decoderModelPath: decoderModelPath);
         using SessionOptions encoderOptions = selections.Encoder.Options;
         using SessionOptions decoderOptions = selections.Decoder.Options;
         (SessionPoolKey encoderKey, SessionPoolKey decoderKey) = await BuildDualPooledKeysAsync(
@@ -1611,7 +1620,7 @@ internal static class OnnxExecutionSessionFactory
         ExecutionProviderKind provider,
         WindowsMlExecutionDevicePolicy devicePolicy,
         IReadOnlyDictionary<string, string>? additionalTrtOptions = null,
-        bool enableCudaGraph = false, string? logId = null)
+        bool enableCudaGraph = false, string? logId = null, string? trtModelPath = null)
     {
         bool useCatalogDevicePolicy = ShouldUseCatalogDevicePolicy(devicePolicy, provider);
         SessionOptions options = CreateBaseSessionOptions(
@@ -1632,7 +1641,7 @@ internal static class OnnxExecutionSessionFactory
                 BuildDevicePolicyFallbackReason(devicePolicy, devicePolicyApplied));
         }
 
-        return AppendProviderSpecificSelection(options, provider, additionalTrtOptions, enableCudaGraph)
+        return AppendProviderSpecificSelection(options, provider, additionalTrtOptions, enableCudaGraph, trtModelPath)
             ?? throw new ArgumentOutOfRangeException(nameof(provider), provider, "Unsupported execution provider kind.");
     }
 
@@ -1640,7 +1649,7 @@ internal static class OnnxExecutionSessionFactory
         SessionOptions options,
         ExecutionProviderKind provider,
         IReadOnlyDictionary<string, string>? additionalTrtOptions,
-        bool enableCudaGraph = false)
+        bool enableCudaGraph = false, string? trtModelPath = null)
     {
         return provider switch
         {
@@ -1653,7 +1662,7 @@ internal static class OnnxExecutionSessionFactory
             ExecutionProviderKind.Qnn => CreateQnnSelection(options),
             ExecutionProviderKind.VitisAi => CreateVitisAiSelection(options),
             ExecutionProviderKind.Cuda when !OperatingSystem.IsMacOS() => CreateCudaSelection(options),
-            ExecutionProviderKind.TensorRt when !OperatingSystem.IsMacOS() => CreateTensorRtSelection(options, additionalTrtOptions),
+            ExecutionProviderKind.TensorRt when !OperatingSystem.IsMacOS() => CreateTensorRtSelection(options, additionalTrtOptions, trtModelPath),
 #if LINML
             ExecutionProviderKind.OpenVino when OperatingSystem.IsLinux() => CreateLinuxOpenVinoSelection(options),
 #endif
@@ -1730,9 +1739,10 @@ internal static class OnnxExecutionSessionFactory
 
     private static SessionOptionsSelection CreateTensorRtSelection(
         SessionOptions options,
-        IReadOnlyDictionary<string, string>? additionalTrtOptions)
+        IReadOnlyDictionary<string, string>? additionalTrtOptions,
+        string? trtModelPath = null)
     {
-        ExecutionProviderKind selectedProvider = AppendTensorRtOrFallbackProvider(options, additionalTrtOptions);
+        ExecutionProviderKind selectedProvider = AppendTensorRtOrFallbackProvider(options, additionalTrtOptions, trtModelPath);
         if (selectedProvider is ExecutionProviderKind.TensorRt)
         {
             return new SessionOptionsSelection(options, selectedProvider);
@@ -2128,7 +2138,8 @@ internal static class OnnxExecutionSessionFactory
     /// </summary>
     internal static ExecutionProviderKind AppendTensorRtOrFallbackProvider(
         SessionOptions options,
-        IReadOnlyDictionary<string, string>? additionalTrtOptions = null)
+        IReadOnlyDictionary<string, string>? additionalTrtOptions = null,
+        string? trtModelPath = null)
     {
 #if WINDOWS
         WindowsMlOnnxRuntimeNativeResolver.EnsureInitialized();
@@ -2137,7 +2148,7 @@ internal static class OnnxExecutionSessionFactory
         var trtDevice = devices.FirstOrDefault(d => IsTensorRtDeviceCandidate(d.EpName, d.HardwareDevice.Type));
         if (trtDevice != null)
         {
-            IReadOnlyDictionary<string, string> trtOptions = BuildTensorRtOptions(additionalTrtOptions);
+            IReadOnlyDictionary<string, string> trtOptions = BuildTensorRtOptionsForModel(additionalTrtOptions, trtModelPath);
             EnsureClassicTensorRtCacheDirectory(trtOptions);
             options.AppendExecutionProvider(OrtEnv.Instance(), new[] { trtDevice }, trtOptions);
             AppendedTensorRtOptions.AddOrUpdate(options, trtOptions);
@@ -2146,7 +2157,7 @@ internal static class OnnxExecutionSessionFactory
 
         try
         {
-            IReadOnlyDictionary<string, string> trtOptions = BuildTensorRtOptions(additionalTrtOptions);
+            IReadOnlyDictionary<string, string> trtOptions = BuildTensorRtOptionsForModel(additionalTrtOptions, trtModelPath);
             using OrtTensorRTProviderOptions providerOptions = BuildTensorRtProviderOptions(trtOptions);
             options.AppendExecutionProvider_Tensorrt(providerOptions);
             AppendedTensorRtOptions.AddOrUpdate(options, trtOptions);
@@ -2164,8 +2175,9 @@ internal static class OnnxExecutionSessionFactory
 
     internal static OrtTensorRTProviderOptions BuildTensorRtProviderOptions(
         IReadOnlyDictionary<string, string>? additionalTrtOptions,
-        string environmentFingerprint) =>
-        BuildTensorRtProviderOptions(BuildTensorRtOptions(additionalTrtOptions, environmentFingerprint));
+        string environmentFingerprint,
+        string? trtModelPath = null) =>
+        BuildTensorRtProviderOptions(BuildTensorRtOptions(additionalTrtOptions, environmentFingerprint, trtModelPath));
 
     internal static OrtTensorRTProviderOptions BuildTensorRtProviderOptions(
         IReadOnlyDictionary<string, string> trtOptions)
@@ -2318,9 +2330,20 @@ internal static class OnnxExecutionSessionFactory
         IReadOnlyDictionary<string, string>? additionalTrtOptions) =>
         BuildTensorRtOptions(additionalTrtOptions, BuildClassicTensorRtEnvironmentFingerprint());
 
+    internal static IReadOnlyDictionary<string, string> BuildTensorRtOptionsForModel(
+        IReadOnlyDictionary<string, string>? additionalTrtOptions,
+        string? trtModelPath) =>
+        BuildTensorRtOptions(additionalTrtOptions, BuildClassicTensorRtEnvironmentFingerprint(), trtModelPath);
+
     internal static IReadOnlyDictionary<string, string> BuildTensorRtOptions(
         IReadOnlyDictionary<string, string>? additionalTrtOptions,
-        string environmentFingerprint)
+        string environmentFingerprint) =>
+        BuildTensorRtOptions(additionalTrtOptions, environmentFingerprint, trtModelPath: null);
+
+    private static IReadOnlyDictionary<string, string> BuildTensorRtOptions(
+        IReadOnlyDictionary<string, string>? additionalTrtOptions,
+        string environmentFingerprint,
+        string? trtModelPath)
     {
         var trtOptions = new Dictionary<string, string>(StringComparer.Ordinal);
         if (additionalTrtOptions is not null)
@@ -2342,7 +2365,18 @@ internal static class OnnxExecutionSessionFactory
 
         trtOptions["trt_engine_cache_enable"] = "1";
         trtOptions["trt_engine_cache_path"] = ResolveClassicTensorRtEngineCacheDirectory(environmentFingerprint);
+        if (!string.IsNullOrWhiteSpace(trtModelPath))
+        {
+            trtOptions["trt_engine_cache_prefix"] = BuildClassicTensorRtModelCachePrefix(trtModelPath);
+        }
         return trtOptions;
+    }
+
+    internal static string BuildClassicTensorRtModelCachePrefix(string modelPath)
+    {
+        string normalizedPath = Path.GetFullPath(modelPath);
+        byte[] digest = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(normalizedPath));
+        return $"trackdub-{Convert.ToHexString(digest.AsSpan(0, 8)).ToLowerInvariant()}-";
     }
 
     internal static string ResolveClassicTensorRtEngineCacheDirectory() =>

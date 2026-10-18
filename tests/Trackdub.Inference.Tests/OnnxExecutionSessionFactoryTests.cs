@@ -805,6 +805,27 @@ public sealed class OnnxExecutionSessionFactoryTests
     }
 
     [Fact]
+    public void BuildTensorRtOptionsForModel_uses_distinct_stable_authoritative_graph_prefixes()
+    {
+        string modelPath = Path.Join(Path.GetTempPath(), "trackdub-prefix-test", "encoder.onnx");
+        string otherPath = Path.Join(Path.GetTempPath(), "trackdub-prefix-test", "decoder.onnx");
+        var callerOptions = new Dictionary<string, string>
+        {
+            ["trt_engine_cache_prefix"] = "another-model",
+            ["trt_profile_min_shapes"] = "audio:1x80x1",
+        };
+
+        IReadOnlyDictionary<string, string> options =
+            OnnxExecutionSessionFactory.BuildTensorRtOptionsForModel(callerOptions, modelPath);
+        string prefix = options["trt_engine_cache_prefix"];
+        Assert.Equal(OnnxExecutionSessionFactory.BuildClassicTensorRtModelCachePrefix(modelPath), prefix);
+        Assert.Equal(prefix, OnnxExecutionSessionFactory.BuildClassicTensorRtModelCachePrefix(
+            Path.Join(Path.GetDirectoryName(modelPath)!, ".", "encoder.onnx")));
+        Assert.NotEqual(prefix, OnnxExecutionSessionFactory.BuildClassicTensorRtModelCachePrefix(otherPath));
+        Assert.Equal("audio:1x80x1", options["trt_profile_min_shapes"]);
+    }
+
+    [Fact]
     public void BuildTensorRtOptions_cache_path_changes_when_environment_fingerprint_changes()
     {
         IReadOnlyDictionary<string, string> first = OnnxExecutionSessionFactory.BuildTensorRtOptions(
@@ -1029,7 +1050,7 @@ public sealed class OnnxExecutionSessionFactoryTests
 
         object result = method.Invoke(
             null,
-            [ExecutionProviderKind.DirectMl, devicePolicy, null, false, null])
+            [ExecutionProviderKind.DirectMl, devicePolicy, null, false, null, null])
             ?? throw new InvalidOperationException("Session options factory returned null.");
         Type resultType = result.GetType();
         using var options = Assert.IsAssignableFrom<SessionOptions>(
@@ -1072,7 +1093,7 @@ public sealed class OnnxExecutionSessionFactoryTests
 
         object result = method.Invoke(
             null,
-            [ExecutionProviderKind.Dnnl, WindowsMlExecutionDevicePolicy.Explicit, null, false, null])
+            [ExecutionProviderKind.Dnnl, WindowsMlExecutionDevicePolicy.Explicit, null, false, null, null])
             ?? throw new InvalidOperationException("Session options factory returned null.");
         Type resultType = result.GetType();
         using var options = Assert.IsAssignableFrom<SessionOptions>(

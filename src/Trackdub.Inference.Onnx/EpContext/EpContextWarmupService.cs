@@ -94,7 +94,7 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
 
     // Classic TensorRT has no EP-context AOT: warm by creating a real session on the
     // original graph with the persistent engine cache enabled, then classify the cache
-    // directory growth as compiled vs reused. Session creation alone is not enough:
+    // graph-prefixed engine growth as compiled vs reused. Session creation alone is not enough:
     // for dynamic-shape graphs the TensorRT EP defers engine building to the first
     // inference, and only then writes the engine/timing-cache files (verified live on
     // ORT 1.31 with DeepFilterNet3 and Parakeet: no files after Create, .engine +
@@ -117,13 +117,14 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
         }
 
         progress?.Report($"warm {Path.GetFileName(sourcePath)}");
-        EngineCacheProbe.Snapshot before = ClassicTensorRtCacheClassifier.CaptureSnapshot(classicCacheDirectory);
+        string cachePrefix = OnnxExecutionSessionFactory.BuildClassicTensorRtModelCachePrefix(sourcePath);
+        EngineCacheProbe.Snapshot before = ClassicTensorRtCacheClassifier.CaptureSnapshot(classicCacheDirectory, cachePrefix);
         double warmMs = TryWarmLoadClassicTensorRt(
             sourcePath,
             EpContextTrtProfiles.Resolve(sourcePath),
             cancellationToken,
             out string? warmFailure);
-        EngineCacheProbe.Snapshot after = ClassicTensorRtCacheClassifier.CaptureSnapshot(classicCacheDirectory);
+        EngineCacheProbe.Snapshot after = ClassicTensorRtCacheClassifier.CaptureSnapshot(classicCacheDirectory, cachePrefix);
 
         if (warmFailure is not null)
         {
@@ -135,14 +136,14 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
         {
             "compiled" => (new EpContextWarmItem(
                 sourcePath, "compiled", null, 0, warmMs,
-                $"Classic TensorRT engine cache grew ({before.FileCount} -> {after.FileCount} file(s), "
+                $"Classic TensorRT engine cache for '{cachePrefix}' grew ({before.FileCount} -> {after.FileCount} file(s), "
                 + $"{before.TotalBytes} -> {after.TotalBytes} byte(s)) in '{classicCacheDirectory}'."), true, false),
             "reused" => (new EpContextWarmItem(
                 sourcePath, "reused", null, 0, warmMs,
-                $"Classic TensorRT engine cache in '{classicCacheDirectory}' was already populated and did not grow."), false, true),
+                $"Classic TensorRT engines for '{cachePrefix}' in '{classicCacheDirectory}' were already populated and did not grow."), false, true),
             _ => (new EpContextWarmItem(
                 sourcePath, "failed", null, 0, warmMs,
-                $"Session created but the classic TensorRT engine cache in '{classicCacheDirectory}' remained empty; no engine was cached."), false, false),
+                $"Session ran but no nonempty classic TensorRT engine for '{cachePrefix}' was found in '{classicCacheDirectory}'."), false, false),
         };
     }
 
@@ -162,7 +163,7 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
             using SessionOptions options = new();
             options.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING;
             ExecutionProviderKind selectedProvider =
-                OnnxExecutionSessionFactory.AppendTensorRtOrFallbackProvider(options, modelTrtOptions);
+                OnnxExecutionSessionFactory.AppendTensorRtOrFallbackProvider(options, modelTrtOptions, modelPath);
             if (selectedProvider is not ExecutionProviderKind.TensorRt)
             {
                 stopwatch.Stop();
