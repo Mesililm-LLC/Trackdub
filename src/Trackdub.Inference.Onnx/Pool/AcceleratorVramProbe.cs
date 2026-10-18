@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace Trackdub.Inference.Onnx.Pool;
 
@@ -177,6 +178,95 @@ internal static class AcceleratorVramProbe
         (long)(totalBytes / 1024 / 1024);
 
     /// <summary>
+    /// Decodes an NVML fixed-size string buffer: NUL-padded UTF-8, terminated
+    /// at the first NUL. Returns null for null/empty/whitespace-only buffers
+    /// so callers treat the value as unknown.
+    /// </summary>
+    internal static string? DecodeNvmlString(byte[]? buffer)
+    {
+        if (buffer is null || buffer.Length == 0)
+            return null;
+
+        int length = Array.IndexOf(buffer, (byte)0);
+        if (length < 0)
+            length = buffer.Length;
+        if (length == 0)
+            return null;
+
+        string decoded = Encoding.UTF8.GetString(buffer, 0, length).Trim();
+        return decoded.Length == 0 ? null : decoded;
+    }
+
+    private static bool TryLoadNvmlLibrary(out nint library) =>
+        NativeLibrary.TryLoad("libnvidia-ml.so.1", out library) ||
+        NativeLibrary.TryLoad("libnvidia-ml.so", out library);
+
+    /// <summary>
+    /// Device name and driver version of the first NVIDIA device via NVML
+    /// (libnvidia-ml.so.1, injected by the NVIDIA container toolkit with
+    /// --gpus all), plus the system driver version. Linux only; returns
+    /// (null, null) on any failure (library absent, NVML error, empty
+    /// strings) so callers treat identity as unknown. Sysfs/proc do not
+    /// expose a usable GPU name or driver version inside containers, which
+    /// left the hardware fingerprint at Unknown/unknown there.
+    /// </summary>
+    internal static (string? DeviceName, string? DriverVersion) QueryNvmlGpuIdentity()
+    {
+        if (!OperatingSystem.IsLinux())
+            return (null, null);
+
+        nint library = nint.Zero;
+        try
+        {
+            if (!TryLoadNvmlLibrary(out library))
+                return (null, null);
+
+            if (!TryGetExport<NvmlInitDelegate>(library, "nvmlInit_v2", out var init) ||
+                !TryGetExport<NvmlDeviceGetHandleDelegate>(library, "nvmlDeviceGetHandleByIndex_v2", out var getHandle) ||
+                !TryGetExport<NvmlSystemGetDriverVersionDelegate>(library, "nvmlSystemGetDriverVersion", out var getDriverVersion) ||
+                !TryGetExport<NvmlDeviceGetNameDelegate>(library, "nvmlDeviceGetName", out var getName))
+            {
+                return (null, null);
+            }
+
+            if (init() != 0)
+                return (null, null);
+
+            try
+            {
+                string? driverVersion = null;
+                byte[] driverBuffer = new byte[80];
+                if (getDriverVersion(driverBuffer, (uint)driverBuffer.Length) == 0)
+                    driverVersion = DecodeNvmlString(driverBuffer);
+
+                string? deviceName = null;
+                if (getHandle(0, out nint device) == 0 && device != nint.Zero)
+                {
+                    byte[] nameBuffer = new byte[128];
+                    if (getName(device, nameBuffer, (uint)nameBuffer.Length) == 0)
+                        deviceName = DecodeNvmlString(nameBuffer);
+                }
+
+                return (deviceName, driverVersion);
+            }
+            finally
+            {
+                if (TryGetExport<NvmlShutdownDelegate>(library, "nvmlShutdown", out var shutdown))
+                    _ = shutdown();
+            }
+        }
+        catch
+        {
+            return (null, null);
+        }
+        finally
+        {
+            if (library != nint.Zero)
+                NativeLibrary.Free(library);
+        }
+    }
+
+    /// <summary>
     /// Largest dedicated VRAM (MB) across NVIDIA devices via NVML
     /// (libnvidia-ml.so.1, injected by the NVIDIA container toolkit with
     /// --gpus all). Linux only; returns 0 on any failure (library absent,
@@ -190,8 +280,7 @@ internal static class AcceleratorVramProbe
         nint library = nint.Zero;
         try
         {
-            if (!NativeLibrary.TryLoad("libnvidia-ml.so.1", out library) &&
-                !NativeLibrary.TryLoad("libnvidia-ml.so", out library))
+            if (!TryLoadNvmlLibrary(out library))
             {
                 return 0;
             }
@@ -270,6 +359,12 @@ internal static class AcceleratorVramProbe
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int NvmlDeviceGetMemoryInfoDelegate(nint device, out NvmlMemory memory);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NvmlSystemGetDriverVersionDelegate(byte[] buffer, uint length);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NvmlDeviceGetNameDelegate(nint device, byte[] buffer, uint length);
 
     /// <summary>nvmlMemory_t: total/free/used bytes, in that order.</summary>
     [StructLayout(LayoutKind.Sequential)]

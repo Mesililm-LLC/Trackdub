@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Trackdub.Domain;
+using Trackdub.Inference.Onnx.Pool;
 using Trackdub.Inference.Onnx.Runtime;
 using Trackdub.Inference.Runtime.Planning;
 
@@ -112,6 +113,21 @@ public sealed class MachineHardwareProfileProvider : IHardwareProfileProvider
             var sysfs = new PhysicalSysfsReader();
             hasGpu = LinuxPciDeviceScanner.HasAnyGpu(sysfs);
             gpuDescription = hasGpu ? LinuxPciDeviceScanner.DetectPrimaryVendorName(sysfs) : null;
+
+            // Sysfs yields only a generic vendor name ("NVIDIA") and no driver
+            // version, and inside containers it may not be visible at all.
+            // NVML (injected by the NVIDIA container toolkit with --gpus all)
+            // gives the real device name (for architecture classification) and
+            // driver version (for the engine-cache fingerprint).
+            (string? nvmlDeviceName, string? nvmlDriverVersion) = AcceleratorVramProbe.QueryNvmlGpuIdentity();
+            if (!string.IsNullOrWhiteSpace(nvmlDeviceName))
+            {
+                gpuDescription = nvmlDeviceName;
+                hasGpu = true;
+            }
+
+            if (!string.IsNullOrWhiteSpace(nvmlDriverVersion))
+                gpuDriverVersion = nvmlDriverVersion;
             try
             {
                 string? cpuLine = System.IO.File.ReadAllLines("/proc/cpuinfo")

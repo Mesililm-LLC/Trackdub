@@ -1892,6 +1892,46 @@ public sealed class InferenceSessionPoolTests
         Assert.Equal(0, AcceleratorVramProbe.QueryNvmlMaxDedicatedVramMb());
     }
 
+    [Fact]
+    public void DecodeNvmlString_StripsAtFirstNulAndTrims()
+    {
+        byte[] buffer = new byte[64];
+        byte[] name = System.Text.Encoding.UTF8.GetBytes("  NVIDIA GeForce RTX 5070  ");
+        name.CopyTo(buffer, 0);
+        buffer[name.Length] = 0;
+        System.Text.Encoding.UTF8.GetBytes("trailing-garbage").CopyTo(buffer, name.Length + 1);
+
+        Assert.Equal("NVIDIA GeForce RTX 5070", AcceleratorVramProbe.DecodeNvmlString(buffer));
+    }
+
+    [Fact]
+    public void DecodeNvmlString_EmptyOrAllNul_ReturnsNull()
+    {
+        Assert.Null(AcceleratorVramProbe.DecodeNvmlString([]));
+        Assert.Null(AcceleratorVramProbe.DecodeNvmlString(new byte[16]));
+        Assert.Null(AcceleratorVramProbe.DecodeNvmlString(null));
+    }
+
+    [Fact]
+    public void DecodeNvmlString_WhitespaceOnly_ReturnsNull()
+    {
+        byte[] buffer = System.Text.Encoding.UTF8.GetBytes("   \0");
+        Assert.Null(AcceleratorVramProbe.DecodeNvmlString(buffer));
+    }
+
+    [Fact]
+    public void QueryNvmlGpuIdentity_ReturnsNullsOffLinux()
+    {
+        if (OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        (string? deviceName, string? driverVersion) = AcceleratorVramProbe.QueryNvmlGpuIdentity();
+        Assert.Null(deviceName);
+        Assert.Null(driverVersion);
+    }
+
     [Theory]
     [InlineData("8589934592", 8192L)]
     [InlineData("  12884901888\n", 12288L)]
