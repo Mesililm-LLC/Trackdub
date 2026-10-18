@@ -87,11 +87,13 @@ public static class TrtRtxSmokeCatalog
             .. RemainingOnnxGpu,
             .. StarterPackTurboGpu,
             new Target("onnx-community/Kokoro-82M-v1.0-ONNX", null, "tts-kokoro"),
+            new Target("tonythethompson/CosyVoice-300M-ONNX", "int8", "tts-cosyvoice-int8"),
         ]),
         ExecutionProviderKind.TensorRt => DeduplicateByLabel(
         [
             .. RemainingOnnxGpu,
             .. StarterPackTurboGpu,
+            new Target("tonythethompson/CosyVoice-300M-ONNX", "int8", "tts-cosyvoice-int8"),
         ]),
         _ => [],
     };
