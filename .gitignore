@@ -39,6 +39,8 @@ model-cache/
 native/win-x64/
 pretrained_models/
 *.onnx
+!tests/Trackdub.Inference.Onnx.Tests/Fixtures/NemotronAsr/managed-encoder.onnx
+!tests/Trackdub.Inference.Onnx.Tests/Fixtures/NemotronAsr/managed-decoder.onnx
 *.onnx_data
 *.pt
 *.pth

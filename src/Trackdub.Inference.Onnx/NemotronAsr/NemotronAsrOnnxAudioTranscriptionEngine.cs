@@ -99,6 +99,8 @@ public sealed class NemotronAsrOnnxAudioTranscriptionEngine(
             effectiveRegions = [new SpeechRegion(0, 0.0, durationSeconds)];
         }
 
+        NemotronAsrEncoderTrtProfiles.SessionOptions sessionOptions =
+            NemotronAsrEncoderTrtProfiles.BuildRuntimeOptions(modelPaths.EncoderPath);
         using OnnxExecutionSessionFactory.NemotronAsrSessionLease sessionLease = await OnnxExecutionSessionFactory
             .CreatePooledNemotronAsrAsync(
                 EngineFamilyName,
@@ -110,9 +112,11 @@ public sealed class NemotronAsrOnnxAudioTranscriptionEngine(
                 // so a proven smoke session is reused here instead of a second cold create.
                 modelId: plan.ModelId,
                 variant: plan.Variant,
-                additionalTrtEncoderOptions: OnnxExecutionSessionFactory.WithCudaGraphsEnabled(
-                    NemotronAsrEncoderTrtProfiles.BuildOptions(modelPaths.EncoderPath)),
-                additionalTrtDecoderOptions: NemotronAsrEncoderTrtProfiles.DecoderJointCudaGraphOptions)
+                // Allocator availability is discovered after creation. Keep capture disabled
+                // so either the device-bound path or its managed fallback can use this lease.
+                // Smoke uses these same options and therefore validates the same pool keys.
+                additionalTrtEncoderOptions: sessionOptions.Encoder,
+                additionalTrtDecoderOptions: sessionOptions.Decoder)
             .ConfigureAwait(false);
 
         // Use the original (filtered) caller-provided SpeechRegions for the transcription loop.
