@@ -2501,6 +2501,7 @@ internal static class OnnxExecutionSessionFactory
         }
     }
 
+    /// <summary>
     /// Composes enable_cuda_graph onto a caller-supplied TRT option set. Production callsites that
     /// keep every bound OrtValue at a fixed address opt in here; profile dictionaries themselves
     /// stay free of the flag so benchmark/AOT consumers keep explicit control of the session mode.
