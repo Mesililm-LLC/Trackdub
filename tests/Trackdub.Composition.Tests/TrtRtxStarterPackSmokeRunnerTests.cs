@@ -55,6 +55,110 @@ public sealed class TrtRtxStarterPackSmokeRunnerTests
     }
 
     [Fact]
+    public async Task RunAsync_PassesRequestedProviderToSmokeTester()
+    {
+        string modelCacheDirectory = CreateCacheWithSingleModel();
+        try
+        {
+            ExecutionProviderSmokeTestRequest? capturedRequest = null;
+            var smokeTester = new FakeExecutionProviderSmokeTester((request, _) =>
+            {
+                capturedRequest = request;
+                return new ExecutionProviderSmokeTestResult(true);
+            });
+
+            TrtRtxStarterPackSmokeReport report = await TrtRtxStarterPackSmokeRunner.RunAsync(
+                modelCacheDirectory,
+                smokeTester,
+                [new TrtRtxSmokeCatalog.Target("cgus/diar_streaming_sortformer_4spk-v2.1-onnx", null, "diarization")],
+                progress: null,
+                CancellationToken.None,
+                provider: ExecutionProviderKind.Cuda);
+
+            Assert.Equal(1, report.Attempted);
+            Assert.Equal(1, report.Passed);
+            Assert.NotNull(capturedRequest);
+            Assert.Equal(ExecutionProviderKind.Cuda, capturedRequest!.ExecutionProvider);
+        }
+        finally
+        {
+            Directory.Delete(modelCacheDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_DefaultsToTensorRTRtxWhenProviderOmitted()
+    {
+        string modelCacheDirectory = CreateCacheWithSingleModel();
+        try
+        {
+            ExecutionProviderSmokeTestRequest? capturedRequest = null;
+            var smokeTester = new FakeExecutionProviderSmokeTester((request, _) =>
+            {
+                capturedRequest = request;
+                return new ExecutionProviderSmokeTestResult(true);
+            });
+
+            TrtRtxStarterPackSmokeReport report = await TrtRtxStarterPackSmokeRunner.RunAsync(
+                modelCacheDirectory,
+                smokeTester,
+                [new TrtRtxSmokeCatalog.Target("cgus/diar_streaming_sortformer_4spk-v2.1-onnx", null, "diarization")],
+                progress: null,
+                CancellationToken.None);
+
+            Assert.Equal(1, report.Attempted);
+            Assert.NotNull(capturedRequest);
+            Assert.Equal(ExecutionProviderKind.TensorRTRtx, capturedRequest!.ExecutionProvider);
+        }
+        finally
+        {
+            Directory.Delete(modelCacheDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task VerifyEntryPathAsync_PassesRequestedProviderToSmokeTester()
+    {
+        string entryFile = Path.Join(Path.GetTempPath(), $"{Guid.NewGuid():N}.onnx");
+        File.WriteAllBytes(entryFile, [0x00]);
+        try
+        {
+            ExecutionProviderSmokeTestRequest? capturedRequest = null;
+            var smokeTester = new FakeExecutionProviderSmokeTester((request, _) =>
+            {
+                capturedRequest = request;
+                return new ExecutionProviderSmokeTestResult(true);
+            });
+
+            TrtRtxStarterPackSmokeTargetResult result = await TrtRtxStarterPackSmokeRunner.VerifyEntryPathAsync(
+                "cgus/diar_streaming_sortformer_4spk-v2.1-onnx",
+                entryFile,
+                variant: null,
+                smokeTester,
+                CancellationToken.None,
+                provider: ExecutionProviderKind.TensorRt);
+
+            Assert.Equal(TrtRtxStarterPackSmokeTargetStatus.Passed, result.Status);
+            Assert.NotNull(capturedRequest);
+            Assert.Equal(ExecutionProviderKind.TensorRt, capturedRequest!.ExecutionProvider);
+        }
+        finally
+        {
+            File.Delete(entryFile);
+        }
+    }
+
+    private static string CreateCacheWithSingleModel()
+    {
+        string modelCacheDirectory = Path.Join(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        string modelDirectory = Path.Join(
+            modelCacheDirectory, "cgus", "diar_streaming_sortformer_4spk-v2.1-onnx");
+        Directory.CreateDirectory(modelDirectory);
+        File.WriteAllBytes(Path.Join(modelDirectory, "model.onnx"), [0x00]);
+        return modelCacheDirectory;
+    }
+
+    [Fact]
     public async Task VerifyEntryPathAsync_PassesRequestedEntryPathAndProviderToSmokeTester()
     {
         string entryFile = Path.Join(Path.GetTempPath(), $"{Guid.NewGuid():N}.onnx");
