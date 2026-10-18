@@ -54,20 +54,7 @@ public static class HeadlessCompositionRoot
         // Step 2: Override storage paths if custom directories provided.
         if (options.ModelDirectory is not null || options.ModelCacheDirectory is not null || options.LogDirectory is not null)
         {
-            string userDataRoot = options.LogDirectory
-                ?? options.ModelDirectory
-                ?? options.ModelCacheDirectory!;
-            string userCacheRoot = options.ModelDirectory
-                ?? options.ModelCacheDirectory
-                ?? options.LogDirectory!;
-
-            var storageOptions = new TrackdubStorageOptions(
-                UserDataRoot: userDataRoot,
-                UserCacheRoot: userCacheRoot,
-                SharedAssetRoot: null,
-                IsPortable: false,
-                ExplicitModelCacheDirectory: options.ModelCacheDirectory ?? options.ModelDirectory);
-            var storagePaths = new TrackdubStoragePaths(storageOptions);
+            TrackdubStoragePaths storagePaths = HeadlessPersistedEpLicenses.ResolveStoragePaths(options);
 
             // Reapply to the process env too: static consumers that read these vars directly
             // (e.g. OnnxExecutionSessionFactory, FfmpegAutoDownloader) don't go through DI.

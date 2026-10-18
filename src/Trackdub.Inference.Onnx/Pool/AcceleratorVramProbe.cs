@@ -1,6 +1,5 @@
-#if WINDOWS
 using System.Runtime.InteropServices;
-#endif
+using System.Text;
 
 namespace Trackdub.Inference.Onnx.Pool;
 
@@ -79,6 +78,19 @@ internal static class AcceleratorVramProbe
     /// on every leg; returns 0 off-Linux or on any failure.
     /// </summary>
     internal static long QueryLinuxMaxDedicatedVramMb()
+    {
+        long sysfsMb = QueryLinuxSysfsMaxDedicatedVramMb();
+        if (sysfsMb > 0)
+            return sysfsMb;
+
+        // Container runtimes often hide /proc/driver/nvidia even with --gpus all,
+        // which silently dropped the budget to the floor. NVML is injected by the
+        // NVIDIA container toolkit whenever a GPU is passed through, so it is the
+        // reliable in-container source.
+        return QueryNvmlMaxDedicatedVramMb();
+    }
+
+    private static long QueryLinuxSysfsMaxDedicatedVramMb()
     {
         if (!OperatingSystem.IsLinux())
             return 0;
@@ -160,6 +172,224 @@ internal static class AcceleratorVramProbe
         }
 
         return 0;
+    }
+
+    internal static long MbFromNvmlMemoryInfo(ulong totalBytes) =>
+        (long)(totalBytes / 1024 / 1024);
+
+    /// <summary>
+    /// Decodes an NVML fixed-size string buffer: NUL-padded UTF-8, terminated
+    /// at the first NUL. Returns null for null/empty/whitespace-only buffers
+    /// so callers treat the value as unknown.
+    /// </summary>
+    internal static string? DecodeNvmlString(byte[]? buffer)
+    {
+        if (buffer is null || buffer.Length == 0)
+            return null;
+
+        int length = Array.IndexOf(buffer, (byte)0);
+        if (length < 0)
+            length = buffer.Length;
+        if (length == 0)
+            return null;
+
+        string decoded = Encoding.UTF8.GetString(buffer, 0, length).Trim();
+        return decoded.Length == 0 ? null : decoded;
+    }
+
+    private static bool TryLoadNvmlLibrary(out nint library)
+    {
+        if (NativeLibrary.TryLoad("libnvidia-ml.so.1", out library))
+            return true;
+
+        library = nint.Zero;
+        return NativeLibrary.TryLoad("libnvidia-ml.so", out library);
+    }
+
+    private static readonly Lazy<(string? DeviceName, string? DriverVersion)> CachedNvmlGpuIdentity =
+        new(ProbeNvmlGpuIdentity);
+
+    /// <summary>
+    /// Device name and driver version of the first NVIDIA device via NVML
+    /// (libnvidia-ml.so.1, injected by the NVIDIA container toolkit with
+    /// --gpus all), plus the system driver version. Linux only; returns
+    /// (null, null) on any failure (library absent, NVML error, empty
+    /// strings) so callers treat identity as unknown. Sysfs/proc do not
+    /// expose a usable GPU name or driver version inside containers, which
+    /// left the hardware fingerprint at Unknown/unknown there. The result is
+    /// computed once per process: NVML init/shutdown blocks on driver device
+    /// initialization without persistence mode, and identity does not change.
+    /// </summary>
+    internal static (string? DeviceName, string? DriverVersion) QueryNvmlGpuIdentity() =>
+        CachedNvmlGpuIdentity.Value;
+
+    private static (string? DeviceName, string? DriverVersion) ProbeNvmlGpuIdentity()
+    {
+        if (!OperatingSystem.IsLinux())
+            return (null, null);
+
+        nint library = nint.Zero;
+        try
+        {
+            if (!TryLoadNvmlLibrary(out library))
+                return (null, null);
+
+            if (!TryGetExport<NvmlInitDelegate>(library, "nvmlInit_v2", out var init) ||
+                !TryGetExport<NvmlDeviceGetHandleDelegate>(library, "nvmlDeviceGetHandleByIndex_v2", out var getHandle) ||
+                !TryGetExport<NvmlSystemGetDriverVersionDelegate>(library, "nvmlSystemGetDriverVersion", out var getDriverVersion) ||
+                !TryGetExport<NvmlDeviceGetNameDelegate>(library, "nvmlDeviceGetName", out var getName))
+            {
+                return (null, null);
+            }
+
+            if (init() != 0)
+                return (null, null);
+
+            try
+            {
+                string? driverVersion = null;
+                byte[] driverBuffer = new byte[80];
+                if (getDriverVersion(driverBuffer, (uint)driverBuffer.Length) == 0)
+                    driverVersion = DecodeNvmlString(driverBuffer);
+
+                string? deviceName = null;
+                if (getHandle(0, out nint device) == 0 && device != nint.Zero)
+                {
+                    byte[] nameBuffer = new byte[128];
+                    if (getName(device, nameBuffer, (uint)nameBuffer.Length) == 0)
+                        deviceName = DecodeNvmlString(nameBuffer);
+                }
+
+                return (deviceName, driverVersion);
+            }
+            finally
+            {
+                if (TryGetExport<NvmlShutdownDelegate>(library, "nvmlShutdown", out var shutdown))
+                    _ = shutdown();
+            }
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException
+            or BadImageFormatException or InvalidOperationException or ArgumentException
+            or NotSupportedException or MarshalDirectiveException or SEHException)
+        {
+            return (null, null);
+        }
+        finally
+        {
+            if (library != nint.Zero)
+                NativeLibrary.Free(library);
+        }
+    }
+
+    /// <summary>
+    /// Largest dedicated VRAM (MB) across NVIDIA devices via NVML
+    /// (libnvidia-ml.so.1, injected by the NVIDIA container toolkit with
+    /// --gpus all). Linux only; returns 0 on any failure (library absent,
+    /// no devices, NVML error) so callers treat it as unknown.
+    /// </summary>
+    internal static long QueryNvmlMaxDedicatedVramMb()
+    {
+        if (!OperatingSystem.IsLinux())
+            return 0;
+
+        nint library = nint.Zero;
+        try
+        {
+            if (!TryLoadNvmlLibrary(out library))
+            {
+                return 0;
+            }
+
+            if (!TryGetExport<NvmlInitDelegate>(library, "nvmlInit_v2", out var init) ||
+                !TryGetExport<NvmlDeviceGetCountDelegate>(library, "nvmlDeviceGetCount_v2", out var getCount) ||
+                !TryGetExport<NvmlDeviceGetHandleDelegate>(library, "nvmlDeviceGetHandleByIndex_v2", out var getHandle) ||
+                !TryGetExport<NvmlDeviceGetMemoryInfoDelegate>(library, "nvmlDeviceGetMemoryInfo", out var getMemoryInfo))
+            {
+                return 0;
+            }
+
+            if (init() != 0)
+                return 0;
+
+            try
+            {
+                if (getCount(out uint count) != 0 || count == 0)
+                    return 0;
+
+                long maxMb = 0;
+                for (uint i = 0; i < count; i++)
+                {
+                    if (getHandle(i, out nint device) != 0)
+                        continue;
+
+                    if (getMemoryInfo(device, out NvmlMemory memory) != 0)
+                        continue;
+
+                    long mb = MbFromNvmlMemoryInfo(memory.Total);
+                    if (mb > maxMb)
+                        maxMb = mb;
+                }
+
+                return maxMb;
+            }
+            finally
+            {
+                if (TryGetExport<NvmlShutdownDelegate>(library, "nvmlShutdown", out var shutdown))
+                    _ = shutdown();
+            }
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException
+            or BadImageFormatException or InvalidOperationException or ArgumentException
+            or NotSupportedException or MarshalDirectiveException or SEHException)
+        {
+            return 0;
+        }
+        finally
+        {
+            if (library != nint.Zero)
+                NativeLibrary.Free(library);
+        }
+    }
+
+    private static bool TryGetExport<TDelegate>(nint library, string name, out TDelegate fn)
+        where TDelegate : Delegate
+    {
+        fn = null!;
+        if (!NativeLibrary.TryGetExport(library, name, out nint address) || address == nint.Zero)
+            return false;
+
+        fn = Marshal.GetDelegateForFunctionPointer<TDelegate>(address);
+        return true;
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NvmlInitDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NvmlShutdownDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NvmlDeviceGetCountDelegate(out uint count);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NvmlDeviceGetHandleDelegate(uint index, out nint device);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NvmlDeviceGetMemoryInfoDelegate(nint device, out NvmlMemory memory);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NvmlSystemGetDriverVersionDelegate(byte[] buffer, uint length);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NvmlDeviceGetNameDelegate(nint device, byte[] buffer, uint length);
+
+    /// <summary>nvmlMemory_t: total/free/used bytes, in that order.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NvmlMemory
+    {
+        public ulong Total;
+        public ulong Free;
+        public ulong Used;
     }
 
     private static long ReadAmdVramMb(string deviceDir)

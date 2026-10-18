@@ -1,0 +1,20 @@
+# Source ONNX graphs to EP-context warm on a fresh POC GPU worker.
+# Paths are relative to /data/models. Keep this list explicit: cache warm scans every ONNX
+# file by default, including model families that must not be offered to TRT-RTX.
+# Deliberately omitted: default MADLAD quantized graphs (not the validated TRT export), OPUS-MT
+# (native stack overflow), Silero VAD (TensorRT importer rejects its If/Squeeze branches), and
+# CosyVoice hift/vocoder.onnx (the production route falls back to CPU). CosyVoice int8
+# quantized graphs are also omitted: the TRT-RTX Myelin builder rejects their int8 dtype
+# (verified live 2026-10-17); the int8 variant runs on the CUDA route, which needs no
+# EP-context warm. Kokoro is CUDA-only by planner policy and likewise needs no TRT warm.
+Rikorose/DeepFilterNet3/enc.onnx
+cgus/diar_streaming_sortformer_4spk-v2.1-onnx/onnx/model.onnx
+csukuangfj/sherpa-onnx-spleeter-2stems/accompaniment.onnx
+csukuangfj/sherpa-onnx-spleeter-2stems/vocals.onnx
+google/madlad400-3b-mt/trt_rtx_mixed_fp16_fp32/encoder_model.onnx
+google/madlad400-3b-mt/trt_rtx_mixed_fp16_fp32/decoder_model.onnx
+tonythethompson/parakeet-tdt-0.6b-v3-onnx/encoder-model.onnx
+tonythethompson/parakeet-tdt-0.6b-v3-onnx/decoder_joint-model.onnx
+tonythethompson/CosyVoice-300M-ONNX/campplus.onnx
+tonythethompson/CosyVoice-300M-ONNX/flow.decoder.estimator.fp32.onnx
+tonythethompson/CosyVoice-300M-ONNX/speech_tokenizer_v1.onnx

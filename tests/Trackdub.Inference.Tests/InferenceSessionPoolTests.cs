@@ -1,3 +1,4 @@
+using Trackdub.Contracts;
 using Trackdub.Contracts.Benchmarking;
 using Trackdub.Domain;
 using Trackdub.Inference.Onnx.Pool;
@@ -1771,8 +1772,9 @@ public sealed class InferenceSessionPoolTests
         Assert.Null(SharedPoolOptions.ReadPositiveInt64(SharedPoolOptions.HostBudgetMbVariable));
         Assert.Null(SharedPoolOptions.ReadPositiveInt32(SharedPoolOptions.MaxSessionsVariable));
         Assert.Equal(12, InferenceSessionPool.DefaultMaxSessions);
-        // Accelerator default scales with detected GPU VRAM (floor 4GB, cap 16GB)
-        // so it is machine-dependent; it must stay within the documented band.
+        // Accelerator default scales with detected GPU VRAM (floor 4GB, 75% up to
+        // 16GB cards, 85% above) so it is machine-dependent; it must stay within
+        // the documented band.
         Assert.InRange(
             InferenceSessionPool.DefaultMemoryBudgetMb,
             InferenceSessionPool.AcceleratorBudgetFloorMb,
@@ -1805,9 +1807,13 @@ public sealed class InferenceSessionPoolTests
     [InlineData(10240L, 7680L)]
     [InlineData(12288L, 9216L)]
     [InlineData(16384L, 12288L)]
-    [InlineData(24576L, 16384L)]
-    [InlineData(49152L, 16384L)]
-    public void ScaleAcceleratorBudgetMb_ThreeQuarterVram_Floor4Gb_Cap16Gb(long maxVramMb, long expectedMb)
+    // Above 16 GB, large-memory cards (consumer RTX 4090/5090 as well as
+    // L4 24 GB, L40S 48 GB) have the headroom to keep 85% instead of 75% so
+    // the admission budget does not strand a third of the device. The 16 GB
+    // hard cap is gone for these.
+    [InlineData(24576L, 20889L)]
+    [InlineData(49152L, 41779L)]
+    public void ScaleAcceleratorBudgetMb_ScalesWithVram_LargeMemoryCardsKeep85Percent(long maxVramMb, long expectedMb)
     {
         Assert.Equal(expectedMb, InferenceSessionPool.ScaleAcceleratorBudgetMb(maxVramMb));
     }
@@ -1832,6 +1838,98 @@ public sealed class InferenceSessionPoolTests
     public void ParseNvidiaInformationMb_ReadsProcDriverFormat(string text, long expectedMb)
     {
         Assert.Equal(expectedMb, AcceleratorVramProbe.ParseNvidiaInformationMb(text));
+    }
+
+    [Fact]
+    public void AcceleratorBudgetInfo_NoOverride_ReportsDetectedSource()
+    {
+        using var env = new ScopedEnvironment();
+        env.Clear(SharedPoolOptions.BudgetMbVariable);
+
+        AcceleratorBudgetInfo info = new AcceleratorBudgetInfoService().GetBudgetInfo();
+
+        Assert.Null(info.OverrideBudgetMb);
+        Assert.Equal(InferenceSessionPool.DetectMaxAcceleratorVramMb(), info.DetectedVramMb);
+        Assert.Equal(InferenceSessionPool.DefaultMemoryBudgetMb, info.DefaultBudgetMb);
+        Assert.Equal(info.DefaultBudgetMb, info.EffectiveBudgetMb);
+        Assert.Equal(
+            info.DetectedVramMb > 0 ? "detected VRAM" : "floor fallback (no GPU VRAM detected)",
+            info.Source);
+    }
+
+    [Fact]
+    public void AcceleratorBudgetInfo_WithOverride_OverrideWins()
+    {
+        using var env = new ScopedEnvironment();
+        env.Set(SharedPoolOptions.BudgetMbVariable, "12345");
+
+        AcceleratorBudgetInfo info = new AcceleratorBudgetInfoService().GetBudgetInfo();
+
+        Assert.Equal(12345, info.OverrideBudgetMb);
+        Assert.Equal(12345, info.EffectiveBudgetMb);
+        Assert.Equal("override (TRACKDUB_SESSION_VRAM_BUDGET_MB)", info.Source);
+    }
+
+    [Theory]
+    [InlineData(12UL * 1024 * 1024 * 1024, 12288L)]
+    [InlineData(48UL * 1024 * 1024 * 1024, 49152L)]
+    [InlineData(0UL, 0L)]
+    public void MbFromNvmlMemoryInfo_ConvertsTotalBytesToMb(ulong totalBytes, long expectedMb)
+    {
+        Assert.Equal(expectedMb, AcceleratorVramProbe.MbFromNvmlMemoryInfo(totalBytes));
+    }
+
+    [Fact]
+    public void QueryNvmlMaxDedicatedVramMb_ReturnsZeroOffLinux()
+    {
+        // The NVML fallback only applies on Linux (containers/EC2). Off-Linux it
+        // must report unknown (0) without touching native libraries.
+        if (OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        Assert.Equal(0, AcceleratorVramProbe.QueryNvmlMaxDedicatedVramMb());
+    }
+
+    [Fact]
+    public void DecodeNvmlString_StripsAtFirstNulAndTrims()
+    {
+        byte[] buffer = new byte[64];
+        byte[] name = System.Text.Encoding.UTF8.GetBytes("  NVIDIA GeForce RTX 5070  ");
+        name.CopyTo(buffer, 0);
+        buffer[name.Length] = 0;
+        System.Text.Encoding.UTF8.GetBytes("trailing-garbage").CopyTo(buffer, name.Length + 1);
+
+        Assert.Equal("NVIDIA GeForce RTX 5070", AcceleratorVramProbe.DecodeNvmlString(buffer));
+    }
+
+    [Fact]
+    public void DecodeNvmlString_EmptyOrAllNul_ReturnsNull()
+    {
+        Assert.Null(AcceleratorVramProbe.DecodeNvmlString([]));
+        Assert.Null(AcceleratorVramProbe.DecodeNvmlString(new byte[16]));
+        Assert.Null(AcceleratorVramProbe.DecodeNvmlString(null));
+    }
+
+    [Fact]
+    public void DecodeNvmlString_WhitespaceOnly_ReturnsNull()
+    {
+        byte[] buffer = System.Text.Encoding.UTF8.GetBytes("   \0");
+        Assert.Null(AcceleratorVramProbe.DecodeNvmlString(buffer));
+    }
+
+    [Fact]
+    public void QueryNvmlGpuIdentity_ReturnsNullsOffLinux()
+    {
+        if (OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        (string? deviceName, string? driverVersion) = AcceleratorVramProbe.QueryNvmlGpuIdentity();
+        Assert.Null(deviceName);
+        Assert.Null(driverVersion);
     }
 
     [Theory]

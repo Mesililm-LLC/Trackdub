@@ -85,7 +85,8 @@ public static class TrtRtxStarterPackSmokeRunner
         IExecutionProviderSmokeTester smokeTester,
         IReadOnlyList<TrtRtxSmokeCatalog.Target> targets,
         IProgress<TrtRtxStarterPackSmokeTargetResult>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        ExecutionProviderKind provider = ExecutionProviderKind.TensorRTRtx)
     {
         ArgumentNullException.ThrowIfNull(smokeTester);
         ArgumentNullException.ThrowIfNull(targets);
@@ -171,7 +172,7 @@ public static class TrtRtxStarterPackSmokeRunner
                 entry.Aliases[0],
                 entry.EngineFamily,
                 variantAlias,
-                ExecutionProviderKind.TensorRTRtx,
+                provider,
                 modelRootPath,
                 candidate.ModelPath);
 
@@ -222,15 +223,16 @@ public static class TrtRtxStarterPackSmokeRunner
     /// Runs the real, production-parity TRT RTX smoke path (same <see cref="OnnxExecutionProviderSmokeTester"/>
     /// code the runtime uses) against an explicit ONNX entry path instead of the model cache — for an
     /// Olive-recipe-staged output directory an Olive validator script just produced, before that
-    /// output is trusted. Confirms the model actually loads and the effective provider is TensorRT
-    /// RTX, not a silent CPU/DirectML fallback (see <see cref="ExecutionProviderSmokeTestResult"/>).
+    /// output is trusted. Confirms the model actually loads and the effective provider is the
+    /// requested one (TensorRT RTX by default), not a silent CPU/DirectML fallback (see <see cref="ExecutionProviderSmokeTestResult"/>).
     /// </summary>
     public static async Task<TrtRtxStarterPackSmokeTargetResult> VerifyEntryPathAsync(
         string modelId,
         string entryPath,
         string? variant = null,
         IExecutionProviderSmokeTester? smokeTester = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        ExecutionProviderKind provider = ExecutionProviderKind.TensorRTRtx)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(modelId);
         ArgumentException.ThrowIfNullOrWhiteSpace(entryPath);
@@ -265,7 +267,7 @@ public static class TrtRtxStarterPackSmokeRunner
             alias,
             entry.EngineFamily,
             variant ?? "default",
-            ExecutionProviderKind.TensorRTRtx,
+            provider,
             modelRootPath,
             absoluteEntryPath);
 

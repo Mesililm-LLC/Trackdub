@@ -79,7 +79,8 @@ public sealed class GenAiNativeCompatibilityTests
     [Theory]
     [InlineData("Cpu", "Microsoft.ML.OnnxRuntimeGenAI")]
     [InlineData("Cuda", "Microsoft.ML.OnnxRuntimeGenAI.Cuda")]
-    public void StockOrtAtTheCentralPackagePinIsSupportedWithGenAi(string genAiFlavor, string genAiPackageId)
+    [InlineData("WinML", "Microsoft.ML.OnnxRuntimeGenAI.WinML")]
+    public void CentralPackagePinsAreSupportedWithGenAi(string genAiFlavor, string genAiPackageId)
     {
         string? directory = AppContext.BaseDirectory;
         while (directory is not null && !File.Exists(Path.Join(directory, "Directory.Packages.props")))
@@ -89,11 +90,22 @@ public sealed class GenAiNativeCompatibilityTests
 
         Assert.NotNull(directory);
         XElement packageVersions = XDocument.Load(Path.Join(directory, "Directory.Packages.props")).Root!;
-        string ortVersion = packageVersions.Descendants("OnnxRuntimeVersion").Single().Value.Trim();
+        bool winMl = genAiFlavor == "WinML";
+        string ortVersion = packageVersions.Descendants(winMl ? "WindowsMlOnnxRuntimeVersion" : "OnnxRuntimeVersion")
+            .Single().Value.Trim();
+        string ortPackageVersion = winMl
+            ? packageVersions.Descendants("PackageVersion")
+                .Single(element => (string?)element.Attribute("Include") == "Microsoft.Windows.AI.MachineLearning")
+                .Attribute("Version")!.Value
+            : ortVersion;
         string genAiVersion = packageVersions.Descendants("PackageVersion")
             .Single(element => (string?)element.Attribute("Include") == genAiPackageId)
             .Attribute("Version")!.Value;
-        var pair = new NativePairManifest("Stock", ortVersion, ortVersion, genAiFlavor, genAiVersion, "win-x64", "ort", "genai");
+        Assert.All(packageVersions.Descendants("PackageVersion")
+                .Where(element => ((string?)element.Attribute("Include"))?.StartsWith("Microsoft.ML.OnnxRuntimeGenAI", StringComparison.Ordinal) == true),
+            element => Assert.Equal(genAiVersion, element.Attribute("Version")!.Value));
+        var pair = new NativePairManifest(winMl ? "WindowsML" : "Stock", ortPackageVersion, ortVersion,
+            genAiFlavor, genAiVersion, "win-x64", "ort", "genai");
 
         Assert.True(GenAiNativeRuntimeSelection.IsSupported(pair),
             $"Update the stock ORT and GenAI allow-list in GenAiNativeRuntimeSelection for {genAiPackageId} {genAiVersion} with ORT {ortVersion}.");

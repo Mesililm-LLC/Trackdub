@@ -436,19 +436,23 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
             .ConfigureAwait(false);
     }
 
-    // Approved-export guard for the bundled GenAI graphs (GenAI 0.17.1 on Windows ML 2.4).
-    // Those exports are CPU/CUDA-targeted. On that pair, NvTensorRtRtx terminated the host and
-    // DirectML segfaulted or failed the first kernel. This is not a claim that every GenAI graph
-    // is incompatible with those providers. A fatal crash cannot be reported as a smoke failure,
-    // so the attempt is refused until an export built for the provider is retested in an isolated process.
+    // Approved-export guard for the bundled GenAI graphs. Those exports are CPU/CUDA-targeted.
+    // A fatal crash cannot be reported as a smoke failure, so the attempt is refused until an
+    // export built for the provider is retested in an isolated process. Retest history:
+    // GenAI 0.17.1 / Windows ML 2.4 terminated the host on NvTensorRtRtx, and the 2026-10-18
+    // isolated-process retest (GenAI 0.17.1, ORT 1.31, Linux container, RTX 5070) confirmed it
+    // on the current stack: the NvTensorRtRtx device aborted the host process (exit 134).
+    // Classic TensorRT is not an ORT GenAI device at all ("NvTensorRtRtx execution provider
+    // is not supported in this build"), so both TensorRT kinds stay refused here.
     private static void ThrowIfGenAiTensorRtProvider(ExecutionProviderKind provider)
     {
         if (provider is ExecutionProviderKind.TensorRTRtx or ExecutionProviderKind.TensorRt)
         {
             throw new NotSupportedException(
-                "Bundled GenAI exports are excluded from NvTensorRtRtx: on GenAI 0.17.1 / Windows ML 2.4 "
-                + "those CPU/CUDA exports terminated the host (native stack overflow). This is an approved-export "
-                + "guard, not a provider-wide ban. Use cpu until a TensorRT-targeted export is retested.");
+                "Bundled GenAI exports are excluded from NvTensorRtRtx: the NvTensorRtRtx device "
+                + "terminated the host process in isolated retests (GenAI 0.17.1, ORT 1.31). This is an "
+                + "approved-export guard, not a provider-wide ban. Use cpu or cuda until a "
+                + "TensorRT-targeted GenAI export is retested.");
         }
 
         if (provider is ExecutionProviderKind.DirectMl)
@@ -460,27 +464,52 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
         }
     }
 
-    // Encoder-decoder InferenceSession construction for OPUS-MT terminates the host process
-    // (stack overflow) under TensorRT providers; the reason its stage allow-list override exists.
-    // The smoke sweep bypasses stage allow-lists, so refuse the attempt before session creation;
-    // a fatal crash cannot be caught and reported. MADLAD's trt-fp16 export constructs and runs
-    // under the TensorRT RTX EP ABI plugin, so it is smoke-tested like any other pair.
+    // TensorRT support is a property of the export, not the model family: an export qualifies
+    // when it was built for TensorRT (plain graphs, bucketed static shapes) and has passed an
+    // isolated-process smoke on the provider. Session construction for an unqualified
+    // encoder-decoder export can terminate the host process (native stack overflow), and a
+    // fatal crash cannot be caught and reported, so qualification is checked before session
+    // creation; the smoke sweep needs this guard because it bypasses stage allow-lists.
+    // Extending support means producing a TensorRT-built export of another variant and
+    // qualifying it here after an isolated retest, not lifting the guard wholesale.
+    // OPUS-MT is split by provider: its merged-decoder export qualified on classic TensorRT
+    // in the 2026-10-18 retest (smoke passed), but session construction on TensorRT-RTX
+    // aborted the host process in the same retest (exit 134), so the RTX refusal stays.
     internal static void ThrowIfFatalTensorRtFamily(
         string? engineFamily, ExecutionProviderKind provider, string variant, string entryPath)
     {
+        // The only currently qualified MADLAD export: the pinned trt-fp16 build (plain
+        // encoder/decoder under trt_rtx_mixed_fp16_fp32/). It passed under TensorRT RTX and,
+        // in an isolated-process retest on 2026-10-18 (ORT 1.31, TensorRT 10.13, RTX 5070),
+        // under classic TensorRT. The quantized, merged-decoder, and int4-kv exports were
+        // never built for TensorRT and remain unqualified on both providers.
+        bool isTensorRtQualifiedMadladExport =
+            string.Equals(engineFamily, "madlad", StringComparison.OrdinalIgnoreCase) &&
+            variant.Equals("trt-fp16", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(Path.GetFileName(Path.GetDirectoryName(entryPath)),
+                "trt_rtx_mixed_fp16_fp32", StringComparison.OrdinalIgnoreCase);
         bool unsafeMadlad = string.Equals(engineFamily, "madlad", StringComparison.OrdinalIgnoreCase) &&
-            (provider == ExecutionProviderKind.TensorRt ||
-             (provider == ExecutionProviderKind.TensorRTRtx &&
-                (!variant.Equals("trt-fp16", StringComparison.OrdinalIgnoreCase) ||
-                 !string.Equals(Path.GetFileName(Path.GetDirectoryName(entryPath)),
-                     "trt_rtx_mixed_fp16_fp32", StringComparison.OrdinalIgnoreCase))));
-        if (provider is ExecutionProviderKind.TensorRTRtx or ExecutionProviderKind.TensorRt
-            && (unsafeMadlad || string.Equals(engineFamily, "opus-mt", StringComparison.OrdinalIgnoreCase)))
+            !isTensorRtQualifiedMadladExport;
+        bool unsafeOpusMt = string.Equals(engineFamily, "opus-mt", StringComparison.OrdinalIgnoreCase) &&
+            provider == ExecutionProviderKind.TensorRTRtx;
+        // Classic TensorRT import of the bundled Qwen3-ASR export terminated the host process
+        // (2026-10-18 isolated retest). Refuse before any native call so a sweep keeps going.
+        if (string.Equals(engineFamily, "qwen3-asr", StringComparison.OrdinalIgnoreCase) &&
+            provider == ExecutionProviderKind.TensorRt)
         {
             throw new NotSupportedException(
-                $"Engine family '{engineFamily}' is excluded from TensorRT providers: "
-                + "encoder-decoder InferenceSession construction terminates the host process "
-                + "(native stack overflow). Use dml or cpu.");
+                "Engine family 'qwen3-asr' is not TensorRT-qualified on classic TensorRT: "
+                + "session import terminates the host process. Use TensorRT-RTX or another provider.");
+        }
+
+        if (provider is ExecutionProviderKind.TensorRTRtx or ExecutionProviderKind.TensorRt
+            && (unsafeMadlad || unsafeOpusMt))
+        {
+            throw new NotSupportedException(
+                $"Export for engine family '{engineFamily}' is not TensorRT-qualified: "
+                + "InferenceSession construction for an unqualified encoder-decoder export "
+                + "terminates the host process (native stack overflow). Qualify a "
+                + "TensorRT-built export via an isolated-process retest, or use dml or cpu.");
         }
     }
 

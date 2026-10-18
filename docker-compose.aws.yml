@@ -1,0 +1,19 @@
+# Optional EC2 override for a dedicated EBS filesystem mounted at /mnt/trackdub-data.
+# Format/attach/mount the EBS volume on the host first, then chown it to uid/gid 10001.
+# No VRAM budget is pinned here: the session pool auto-scales its admission
+# budget from detected GPU VRAM (75% up to 16 GiB cards, 85% above; NVML
+# fallback inside containers). Set TRACKDUB_SESSION_VRAM_BUDGET_MB in the
+# environment only as an explicit operator override, and check the resolved
+# budget with: trackdub doctor (row "accelerator-vram-budget").
+services:
+  trackdub:
+    # EC2 workers use the strict classic TensorRT + CUDA server profile.
+    # Compose pulls the published server image; the build target stays so a
+    # worker can still build it locally if the pull is unavailable.
+    image: "${TRACKDUB_IMAGE:-ghcr.io/trackdubllc/trackdub:main-server}"
+    build:
+      target: server
+    volumes:
+      - type: bind
+        source: /mnt/trackdub-data
+        target: /data

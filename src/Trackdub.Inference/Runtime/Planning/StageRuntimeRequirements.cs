@@ -61,6 +61,10 @@ internal static class StageRuntimeRequirementsCatalog
         IReadOnlyList<ExecutionProviderKind> providers) =>
         [.. providers.Where(static p => p is not ExecutionProviderKind.TensorRTRtx)];
 
+    private static IReadOnlyList<ExecutionProviderKind> WithoutClassicTensorRt(
+        IReadOnlyList<ExecutionProviderKind> providers) =>
+        [.. providers.Where(static p => p is not ExecutionProviderKind.TensorRt)];
+
     private static IReadOnlyList<ExecutionProviderKind> PreferDirectMl(
         IReadOnlyList<ExecutionProviderKind> providers) =>
         [ExecutionProviderKind.DirectMl, .. providers.Where(static p => p != ExecutionProviderKind.DirectMl)];
@@ -72,20 +76,23 @@ internal static class StageRuntimeRequirementsCatalog
                 RuntimeStage.Vad,
                 ModelTask.Vad,
                 ["silero-vad", "silero"],
-                // TensorRT RTX is excluded for VAD. silero-vad's If/else-branch subgraph fails
-                // the TensorRT RTX build on every attempt (EP ABI 0.4.2/cu13, TensorRT-RTX 1.6.1:
-                // "squeeze index (1) must be less than length (0)", then IConditionalOutputLayer rank
-                // mismatch). Session-init fallback recovers it to DirectML, but each run paid a failed
-                // engine build and emitted native stderr that was misattributed to TTS in #329.
-                // The model is tiny, so DirectML/CPU cost nothing meaningful. Classic TensorRT is a
-                // separate provider with no evidence of the failure, so it stays allowed.
-                WithoutTensorRtRtx(DefaultOnnxStageAllowedProviders),
+                // Both TensorRT providers are excluded for VAD. Silero-vad's If/else-branch
+                // subgraph fails TensorRT engine building on both: TensorRT-RTX rejects it
+                // (EP ABI 0.4.2/cu13, TensorRT-RTX 1.6.1: "squeeze index (1) must be less than
+                // length (0)", then IConditionalOutputLayer rank mismatch, #329), and the
+                // 2026-10-18 isolated retest showed classic TensorRT rejecting the same export
+                // with a catchable shape-inference failure ("TensorRT input ... has no shape
+                // specified"). Session-init fallback recovers it to CPU/DirectML, but each run
+                // paid a failed engine build. The model is tiny, so CPU/DirectML cost nothing
+                // meaningful. Revisit if a shape-inferred Silero export ships.
+                WithoutTensorRtFamilies(DefaultOnnxStageAllowedProviders),
                 ["fp16", "q4f16"],
                 ["int8", "quantized", "uint8", "q4"]),
             [RuntimeStage.Asr] = new(
                 RuntimeStage.Asr,
                 ModelTask.Asr,
                 [
+                    "parakeet-tdt-0.6b-v3",
                     "qwen3-asr-0.6b",
                     "qwen3-asr-balanced",
                     "qwen3-asr-1.7b",
@@ -98,25 +105,25 @@ internal static class StageRuntimeRequirementsCatalog
                 DefaultOnnxStageAllowedProviders,
                 ["default", "fp16"],
                 ["default", "int8", "quantized", "uint8", "q4"],
-                // Stock Olive whisper-onnx graphs omit trt-rtx in supported_providers and use
-                // fused contrib ops TensorRT RTX cannot import. The bundled qwen3-asr export also
-                // contains SkipLayerNormalization/BiasGelu, so its TRT RTX smoke falls back and the
-                // planner lands on DirectML (Windows build) or CPU.
-                // whisper-genai loads through ORT GenAI, whose NvTensorRtRtx device can
-                // terminate the process (native stack overflow) during model init/generation.
+                // Parakeet TDT 0.6B v3 is the default ASR POC model: the bundled ONNX encoder and
+                // decoder passed the live Linux TRT-RTX smoke and cache-warm tests on an RTX 5070.
+                // Qwen3 remains available but is not TensorRT-qualified: its bundled export uses
+                // plugin ops the TensorRT importer cannot resolve, and the 2026-10-18 isolated
+                // retest on classic TensorRT terminated the host process during import, so prefer
+                // DML (or CUDA where usable) ahead of TRT. Whisper ONNX was previously denied
+                // TensorRT over fused contrib ops; the 2026-10-18 retest passed Xenova
+                // whisper-medium on both TensorRT providers, so it uses the default list and
+                // the planner smoke-gates each Whisper variant individually.
                 new Dictionary<string, IReadOnlyList<ExecutionProviderKind>>(StringComparer.OrdinalIgnoreCase)
                 {
-                    // Qwen's TensorRT RTX smoke compiled for minutes on the live Windows path
-                    // before ASR proceeded on DirectML. Try DirectML first, retaining
-                    // TensorRT RTX as a fallback or explicit provider choice.
-                    ["qwen3-asr"] = PreferDirectMl(DefaultOnnxStageAllowedProviders),
-                    ["whisper-onnx"] = WithoutTensorRtFamilies(DefaultOnnxStageAllowedProviders),
+                    ["qwen3-asr"] = PreferDirectMl(WithoutClassicTensorRt(DefaultOnnxStageAllowedProviders)),
+                    ["whisper-onnx"] = DefaultOnnxStageAllowedProviders,
                     ["whisper-genai"] = GenAiProviders(DefaultOnnxStageAllowedProviders),
                 },
                 // Nemotron ASR is not in the shipping auto-planning lane: quality-tier ranking
                 // previously selected it ahead of working ONNX models and produced empty
                 // transcripts. Explicit Nemotron override still resolves by alias if needed.
-                AllowedEngineFamilies: ["qwen3-asr", "whisper-onnx", "whisper-genai"]),
+                AllowedEngineFamilies: ["parakeet-tdt", "qwen3-asr", "whisper-onnx", "whisper-genai"]),
             [RuntimeStage.Translation] = new(
                 RuntimeStage.Translation,
                 ModelTask.Translation,
@@ -124,19 +131,29 @@ internal static class StageRuntimeRequirementsCatalog
                 DefaultOnnxStageAllowedProviders,
                 ["trt-fp16", "int4-kv", "merged-decoder", "quantized", "fp16"],
                 ["int4-kv", "merged-decoder", "quantized", "int8", "fp16"],
-                // Encoder-decoder InferenceSession ctor stack-overflows under TensorRT RTX (ORT 1.24.5).
-                // phi-genai loads through ORT GenAI, whose NvTensorRtRtx device can terminate
-                // the process (native stack overflow) during model init/generation.
+                // OPUS-MT split by provider after the 2026-10-18 isolated retest: the
+                // merged-decoder export passed classic TensorRT smoke, but TensorRT-RTX
+                // session construction aborted the host process (exit 134), so only RTX is
+                // excluded here. (The older note blamed encoder-decoder construction under
+                // TensorRT generally, ORT 1.24.5 era; classic TensorRT on ORT 1.31 is fine.)
                 new Dictionary<string, IReadOnlyList<ExecutionProviderKind>>(StringComparer.OrdinalIgnoreCase)
                 {
-                    ["opus-mt"] = WithoutTensorRtFamilies(DefaultOnnxStageAllowedProviders),
-                    // MADLAD-400 3B: TensorRT RTX runs the trt-fp16 variant (the only one listing trt-rtx)
-                    // with bucketed static shapes, ~19x faster than the int4 KV-cache decoder on CPU at fp16
-                    // quality. Otherwise CPU-first: the int4 decoder translates a warm clip in ~8 s on CPU,
-                    // while DirectML pages on a 12 GB card (int4 81-89 s, fp16 160+ s) because the model and
-                    // DirectML's working set do not fit beside the desktop. DirectML stays reachable through
-                    // an explicit provider pin.
-                    ["madlad"] = [ExecutionProviderKind.TensorRTRtx, .. CpuFirst(WithoutTensorRtFamilies(DefaultOnnxStageAllowedProviders))],
+                    ["opus-mt"] = WithoutTensorRtRtx(DefaultOnnxStageAllowedProviders),
+                    // MADLAD-400 3B: TensorRT support is an export property, and trt-fp16 is
+                    // currently the only TensorRT-qualified MADLAD export; it runs on
+                    // both TensorRT providers with bucketed static shapes, ~19x faster than the
+                    // int4 KV-cache decoder on CPU at fp16 quality. TensorRT RTX stays first
+                    // (per-worker EP-context warm, ~8 GB admission estimate vs ~12.7 GB for
+                    // classic TensorRT); classic TensorRT follows as a GPU fallback after the
+                    // 2026-10-18 isolated-process retest passed it. The smoke guard still
+                    // refuses every non-trt-fp16 MADLAD pairing on either TensorRT provider.
+                    // Otherwise CPU-first: the int4 decoder translates a warm clip in ~8 s on
+                    // CPU, while DirectML pages on a 12 GB card (int4 81-89 s, fp16 160+ s)
+                    // because the model and DirectML's working set do not fit beside the
+                    // desktop. DirectML stays reachable through an explicit provider pin.
+                    ["madlad"] = [ExecutionProviderKind.TensorRTRtx, ExecutionProviderKind.TensorRt, .. CpuFirst(WithoutTensorRtFamilies(DefaultOnnxStageAllowedProviders))],
+                    // phi-genai loads through ORT GenAI, whose NvTensorRtRtx device terminates
+                    // the host process (confirmed in the 2026-10-18 isolated retest, exit 134).
                     ["phi-genai"] = GenAiProviders(DefaultOnnxStageAllowedProviders),
                 }),
             [RuntimeStage.Diarization] = new(

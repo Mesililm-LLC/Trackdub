@@ -1,0 +1,17 @@
+# Curated first cloud POC set, one pinned manifest model per required stage.
+# Scope: EN->ES and EN->ZH; source/target coverage is checked in bundled-models.manifest.json.
+# The volume downloader resolves each model at its pinned manifest revision and verifies hashes.
+onnx-community/silero-vad
+Rikorose/DeepFilterNet3
+cgus/diar_streaming_sortformer_4spk-v2.1-onnx
+tonythethompson/parakeet-tdt-0.6b-v3-onnx
+# Use the manifest-pinned TRT-RTX variant instead of the large CPU fallback.
+google/madlad400-3b-mt|trt-fp16
+csukuangfj/sherpa-onnx-spleeter-2stems
+# TTS tentpole: planner's first TTS preference, restricted to CUDA/CPU in
+# StageRuntimeRequirements, and the CUDA route is now live-verified in the
+# container (check --execution-provider cuda --require-execution-provider).
+onnx-community/Kokoro-82M-v1.0-ONNX
+# Voice-cloning dubbing: int8 variant declares CUDA; its quantized graphs are
+# not TRT-RTX compilable, so it runs on the CUDA route with CPU vocoder fallback.
+tonythethompson/CosyVoice-300M-ONNX|int8

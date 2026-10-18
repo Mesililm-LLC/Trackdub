@@ -616,6 +616,7 @@ public static class CompositionRoot
                 sp.GetRequiredService<LocalModelCacheInventory>(),
                 sp.GetRequiredService<BundledManifestModelCacheInventory>()));
         services.TryAddSingleton<IHardwareProfileProvider, MachineHardwareProfileProvider>();
+        services.TryAddSingleton<IAcceleratorBudgetInfoService, AcceleratorBudgetInfoService>();
         services.TryAddSingleton<IHardwareInfoService, HardwareInfoService>();
         services.TryAddSingleton<IMediaGpuHintProvider, MediaGpuHintProvider>();
         services.TryAddSingleton<IMediaHardwareCapabilitiesService, MediaHardwareCapabilitiesService>();

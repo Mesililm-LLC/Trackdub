@@ -221,7 +221,9 @@ public sealed class MadladTranslationEngine(IRuntimePlanner runtimePlanner,
         string decoderModelPath,
         CancellationToken cancellationToken)
     {
-        bool tensorRtRtx = plan.ExecutionProvider is ExecutionProviderKind.TensorRTRtx;
+        // Classic TensorRT takes the same bounded profiles as TensorRT-RTX so production loads the
+        // engines that the classic warm path built (EpContextTrtProfiles.Resolve).
+        bool boundedTensorRtProfiles = plan.ExecutionProvider is ExecutionProviderKind.TensorRTRtx or ExecutionProviderKind.TensorRt;
         return await OnnxExecutionSessionFactory
             .CreatePooledOpusAsync(
                 "madlad",
@@ -229,8 +231,8 @@ public sealed class MadladTranslationEngine(IRuntimePlanner runtimePlanner,
                 decoderModelPath,
                 plan.ExecutionProvider!.Value,
                 cancellationToken,
-                additionalTrtEncoderOptions: tensorRtRtx ? MadladTrtProfiles.Encoder : null,
-                additionalTrtDecoderOptions: tensorRtRtx ? MadladTrtProfiles.Decoder : null)
+                additionalTrtEncoderOptions: boundedTensorRtProfiles ? MadladTrtProfiles.Encoder : null,
+                additionalTrtDecoderOptions: boundedTensorRtProfiles ? MadladTrtProfiles.Decoder : null)
             .ConfigureAwait(false);
     }
 

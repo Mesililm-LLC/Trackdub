@@ -1,3 +1,5 @@
+using Trackdub.Domain;
+
 namespace Trackdub.Composition.StarterPacks;
 
 /// <summary>
@@ -30,7 +32,7 @@ public static class TrtRtxSmokeCatalog
 
     /// <summary>
     /// Bundled ONNX GPU models not in <see cref="StarterPackTurboGpu"/>.
-    /// Omits Silero (TRT excluded), Kokoro (CPU-only), python-musetalk, and
+    /// Includes Silero VAD. Omits Kokoro (no TRT-RTX route; CUDA or CPU only), python-musetalk, and
     /// Phi-3.5 (CPU-only bundle: no GPU variant in the manifest).
     /// </summary>
     public static IReadOnlyList<Target> RemainingOnnxGpu { get; } =
@@ -46,6 +48,7 @@ public static class TrtRtxSmokeCatalog
         new("tonythethompson/nemotron-3.5-asr-streaming-0.6b-onnx", null, "asr-nemotron-0.6b"),
         new("tonythethompson/parakeet-tdt-0.6b-v3-onnx", null, "asr-parakeet-tdt-0.6b-v3"),
         new("tonythethompson/Qwen2.5-1.5B-Instruct", null, "text-refinement-qwen"),
+        new("google/madlad400-3b-mt", "trt-fp16", "translation-madlad-trt-fp16"),
         new("onnx-community/opus-mt-en-es", "merged-decoder", "translation-opus-en-es"),
         new("onnx-community/opus-mt-es-en", "merged-decoder", "translation-opus-es-en"),
         new("onnx-community/opus-mt-en-fr", "merged-decoder", "translation-opus-en-fr"),
@@ -64,6 +67,7 @@ public static class TrtRtxSmokeCatalog
         new("tonythethompson/Qwen3-TTS-12Hz-1.7B-Base-ONNX", null, "tts-qwen-1.7b-base"),
         new("csukuangfj/sherpa-onnx-spleeter-2stems", null, "separation-spleeter"),
         new("Rikorose/DeepFilterNet3", null, "enhancement-deepfilternet3"),
+        new("onnx-community/silero-vad", null, "vad-silero"),
         new("tonythethompson/sepformer-whamr16k-onnx", null, "overlap-sepformer"),
         new("wav2vec2-lv60-espeak-cv-ft-onnx", null, "align-wav2vec2"),
         new("qwen3-forced-aligner-0.6b-q4-onnx", null, "align-qwen"),
@@ -71,4 +75,31 @@ public static class TrtRtxSmokeCatalog
         new("InsightFace/scrfd-500m", null, "face-scrfd"),
         new("InsightFace/2d106det", null, "face-2d106"),
     ];
+
+    /// <summary>
+    /// Smoke targets for a given execution provider. Kokoro is CUDA-only here (no TRT-RTX or
+    /// native TensorRT route per planner policy), so it appears only in the CUDA list.
+    /// </summary>
+    public static IReadOnlyList<Target> TargetsForProvider(ExecutionProviderKind provider) => provider switch
+    {
+        ExecutionProviderKind.TensorRTRtx => RemainingOnnxGpu,
+        ExecutionProviderKind.Cuda => DeduplicateByLabel(
+        [
+            .. RemainingOnnxGpu,
+            .. StarterPackTurboGpu,
+            new Target("onnx-community/Kokoro-82M-v1.0-ONNX", null, "tts-kokoro"),
+            new Target("tonythethompson/CosyVoice-300M-ONNX", "int8", "tts-cosyvoice-int8"),
+            new Target("google/madlad400-3b-mt", "int4-kv", "translation-madlad-int4-kv"),
+        ]),
+        ExecutionProviderKind.TensorRt => DeduplicateByLabel(
+        [
+            .. RemainingOnnxGpu,
+            .. StarterPackTurboGpu,
+            new Target("tonythethompson/CosyVoice-300M-ONNX", "int8", "tts-cosyvoice-int8"),
+        ]),
+        _ => [],
+    };
+
+    private static IReadOnlyList<Target> DeduplicateByLabel(IEnumerable<Target> targets) =>
+        targets.DistinctBy(target => target.Label, StringComparer.OrdinalIgnoreCase).ToArray();
 }

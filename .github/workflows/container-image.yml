@@ -1,0 +1,136 @@
+name: Container Image
+
+on:
+  push:
+    branches: [main]
+    tags: ['container-v*']
+    paths:
+      - '.dockerignore'
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+      - 'docker-compose.aws.yml'
+      - 'docker/**'
+      - 'scripts/docker/**'
+      - 'src/**'
+      - 'build/**'
+      - 'runtime/**'
+      - 'Directory.Build.*'
+      - 'Directory.Packages.props'
+      - 'NuGet.config'
+      - 'global.json'
+      - 'BannedSymbols.txt'
+      - '.github/workflows/container-image.yml'
+  pull_request:
+    paths:
+      - '.dockerignore'
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+      - 'docker-compose.aws.yml'
+      - 'docker/**'
+      - 'scripts/docker/**'
+      - 'src/**'
+      - 'build/**'
+      - 'runtime/**'
+      - 'Directory.Build.*'
+      - 'Directory.Packages.props'
+      - 'NuGet.config'
+      - 'global.json'
+      - 'BannedSymbols.txt'
+      - '.github/workflows/container-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-image-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: Build, verify, and publish Linux GPU image (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [rtx, server]
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE_NAME: ghcr.io/trackdubllc/trackdub
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          flavor: |
+            suffix=-${{ matrix.profile }},onlatest=true
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=ref,event=pr
+            type=sha,format=long,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and publish (main / container tags); load on PR for verification
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          target: ${{ matrix.profile }}
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
+          cache-from: type=gha,scope=trackdub-linux-amd64-${{ matrix.profile }}
+          cache-to: type=gha,mode=max,scope=trackdub-linux-amd64-${{ matrix.profile }}
+          provenance: ${{ github.event_name != 'pull_request' && 'mode=max' || 'false' }}
+          sbom: ${{ github.event_name != 'pull_request' }}
+
+      - name: Pull the just-published commit image
+        if: github.event_name != 'pull_request'
+        run: docker pull "$IMAGE_NAME:sha-${GITHUB_SHA}-${{ matrix.profile }}"
+
+      - name: Verify image runtime and bundled tools
+        env:
+          IMAGE_REF: ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}-${{ matrix.profile }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          docker run --rm "$IMAGE_REF" doctor > doctor.json 2>doctor.stderr
+          doctor_status=$?
+          set -e
+          cat doctor.json
+          cat doctor.stderr >&2
+          # An empty model volume is intentional in CI; doctor exits 2 because pipeline
+          # models are not seeded. These image/runtime checks must nevertheless pass.
+          test "$doctor_status" -eq 2
+          jq -e '[.checks[] | select(.id == "bundled-manifest" and .status == "pass")] | length == 1' doctor.json
+          jq -e '[.checks[] | select(.id == "ffmpeg-tools" and .status == "pass")] | length == 1' doctor.json
+          jq -e '[.checks[] | select(.id == "espeak-ng" and .status == "pass")] | length == 1' doctor.json
+          jq -e '[.checks[] | select(.id == "model-cache-writable" and .status == "pass")] | length == 1' doctor.json
+          jq -e '[.checks[] | select(.id == "pipeline-readiness" and .status == "fail")] | length == 1' doctor.json
+
+      - name: Record published digest
+        if: github.event_name != 'pull_request'
+        run: echo "Published $IMAGE_NAME:sha-${GITHUB_SHA}-${{ matrix.profile }} (${{ steps.build.outputs.digest }})" >> "$GITHUB_STEP_SUMMARY"

@@ -37,6 +37,7 @@ internal static class DoctorHandler
         checks.Add(CheckEspeakNg(factory.GetRequiredService<IEspeakNgHealthCheck>()));
 
         checks.Add(CheckLogPath(storagePaths));
+        checks.Add(CheckAcceleratorBudget(factory));
         checks.Add(CheckEngineCache(factory));
         checks.Add(CheckPlaybackNatives());
         checks.Add(CheckWindowsMlSummary());
@@ -60,6 +61,50 @@ internal static class DoctorHandler
         await output.WriteLineAsync(json).ConfigureAwait(false);
 
         return overallStatus == "fail" ? Program.ExitPipelineFailure : Program.ExitSuccess;
+    }
+
+    private static DoctorCheckRow CheckAcceleratorBudget(TrackdubSessionFactory factory)
+    {
+        AcceleratorBudgetInfo info = factory
+            .GetRequiredService<IAcceleratorBudgetInfoService>()
+            .GetBudgetInfo();
+
+        if (info.OverrideBudgetMb.HasValue)
+        {
+            return new DoctorCheckRow
+            {
+                Id = "accelerator-vram-budget",
+                Status = "pass",
+                Message =
+                    $"Session VRAM admission budget is {info.EffectiveBudgetMb} MB " +
+                    $"(source: {info.Source}; detected GPU VRAM {info.DetectedVramMb} MB, " +
+                    $"auto-scaled default would be {info.DefaultBudgetMb} MB).",
+            };
+        }
+
+        if (info.DetectedVramMb > 0)
+        {
+            return new DoctorCheckRow
+            {
+                Id = "accelerator-vram-budget",
+                Status = "pass",
+                Message =
+                    $"Session VRAM admission budget is {info.EffectiveBudgetMb} MB " +
+                    $"(source: {info.Source}; detected GPU VRAM {info.DetectedVramMb} MB).",
+            };
+        }
+
+        return new DoctorCheckRow
+        {
+            Id = "accelerator-vram-budget",
+            Status = "warn",
+            Message =
+                $"No GPU VRAM detected; session VRAM admission budget fell back to the " +
+                $"{info.EffectiveBudgetMb} MB floor. Large GPU bundles will be refused admission.",
+            Remediation =
+                "Check GPU passthrough (docker run --gpus all) and driver visibility, or set " +
+                "TRACKDUB_SESSION_VRAM_BUDGET_MB explicitly to override detection.",
+        };
     }
 
     private static DoctorCheckRow CheckEngineCache(TrackdubSessionFactory factory)
