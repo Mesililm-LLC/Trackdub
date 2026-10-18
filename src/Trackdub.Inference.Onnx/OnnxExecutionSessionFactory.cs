@@ -2436,9 +2436,10 @@ internal static class OnnxExecutionSessionFactory
                     }
 
                     foreach (string version in Directory.EnumerateFiles(directory, "libnvinfer.so*", SearchOption.TopDirectoryOnly)
-                        .Select(ParseTensorRtVersionFromLibraryFileName))
+                        .Select(ParseTensorRtVersionFromLibraryFileName)
+                        .Where(static version => version != "unknown"))
                     {
-                        if (version != "unknown" && (best is null || IsNewerTensorRtVersion(version, best)))
+                        if (best is null || IsNewerTensorRtVersion(version, best))
                         {
                             best = version;
                         }
