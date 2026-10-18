@@ -1,6 +1,4 @@
-#if WINDOWS
 using System.Runtime.InteropServices;
-#endif
 
 namespace Trackdub.Inference.Onnx.Pool;
 
@@ -79,6 +77,19 @@ internal static class AcceleratorVramProbe
     /// on every leg; returns 0 off-Linux or on any failure.
     /// </summary>
     internal static long QueryLinuxMaxDedicatedVramMb()
+    {
+        long sysfsMb = QueryLinuxSysfsMaxDedicatedVramMb();
+        if (sysfsMb > 0)
+            return sysfsMb;
+
+        // Container runtimes often hide /proc/driver/nvidia even with --gpus all,
+        // which silently dropped the budget to the floor. NVML is injected by the
+        // NVIDIA container toolkit whenever a GPU is passed through, so it is the
+        // reliable in-container source.
+        return QueryNvmlMaxDedicatedVramMb();
+    }
+
+    private static long QueryLinuxSysfsMaxDedicatedVramMb()
     {
         if (!OperatingSystem.IsLinux())
             return 0;
@@ -160,6 +171,113 @@ internal static class AcceleratorVramProbe
         }
 
         return 0;
+    }
+
+    internal static long MbFromNvmlMemoryInfo(ulong totalBytes) =>
+        (long)(totalBytes / 1024 / 1024);
+
+    /// <summary>
+    /// Largest dedicated VRAM (MB) across NVIDIA devices via NVML
+    /// (libnvidia-ml.so.1, injected by the NVIDIA container toolkit with
+    /// --gpus all). Linux only; returns 0 on any failure (library absent,
+    /// no devices, NVML error) so callers treat it as unknown.
+    /// </summary>
+    internal static long QueryNvmlMaxDedicatedVramMb()
+    {
+        if (!OperatingSystem.IsLinux())
+            return 0;
+
+        nint library = nint.Zero;
+        try
+        {
+            if (!NativeLibrary.TryLoad("libnvidia-ml.so.1", out library) &&
+                !NativeLibrary.TryLoad("libnvidia-ml.so", out library))
+            {
+                return 0;
+            }
+
+            if (!TryGetExport<NvmlInitDelegate>(library, "nvmlInit_v2", out var init) ||
+                !TryGetExport<NvmlDeviceGetCountDelegate>(library, "nvmlDeviceGetCount_v2", out var getCount) ||
+                !TryGetExport<NvmlDeviceGetHandleDelegate>(library, "nvmlDeviceGetHandleByIndex_v2", out var getHandle) ||
+                !TryGetExport<NvmlDeviceGetMemoryInfoDelegate>(library, "nvmlDeviceGetMemoryInfo", out var getMemoryInfo))
+            {
+                return 0;
+            }
+
+            if (init() != 0)
+                return 0;
+
+            try
+            {
+                if (getCount(out uint count) != 0 || count == 0)
+                    return 0;
+
+                long maxMb = 0;
+                for (uint i = 0; i < count; i++)
+                {
+                    if (getHandle(i, out nint device) != 0)
+                        continue;
+
+                    if (getMemoryInfo(device, out NvmlMemory memory) != 0)
+                        continue;
+
+                    long mb = MbFromNvmlMemoryInfo(memory.Total);
+                    if (mb > maxMb)
+                        maxMb = mb;
+                }
+
+                return maxMb;
+            }
+            finally
+            {
+                if (TryGetExport<NvmlShutdownDelegate>(library, "nvmlShutdown", out var shutdown))
+                    _ = shutdown();
+            }
+        }
+        catch
+        {
+            return 0;
+        }
+        finally
+        {
+            if (library != nint.Zero)
+                NativeLibrary.Free(library);
+        }
+    }
+
+    private static bool TryGetExport<TDelegate>(nint library, string name, out TDelegate fn)
+        where TDelegate : Delegate
+    {
+        fn = null!;
+        if (!NativeLibrary.TryGetExport(library, name, out nint address) || address == nint.Zero)
+            return false;
+
+        fn = Marshal.GetDelegateForFunctionPointer<TDelegate>(address);
+        return true;
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NvmlInitDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NvmlShutdownDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NvmlDeviceGetCountDelegate(out uint count);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NvmlDeviceGetHandleDelegate(uint index, out nint device);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NvmlDeviceGetMemoryInfoDelegate(nint device, out NvmlMemory memory);
+
+    /// <summary>nvmlMemory_t: total/free/used bytes, in that order.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NvmlMemory
+    {
+        public ulong Total;
+        public ulong Free;
+        public ulong Used;
     }
 
     private static long ReadAmdVramMb(string deviceDir)

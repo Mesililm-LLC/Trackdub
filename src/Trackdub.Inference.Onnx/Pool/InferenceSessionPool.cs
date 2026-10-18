@@ -97,8 +97,10 @@ internal sealed class InferenceSessionPool : IDisposable
 
     /// <summary>
     /// Default accelerator (VRAM) admission budget per device when <c>enableMemoryAdmission</c> is on.
-    /// Scaled with detected GPU VRAM (three-quarters of the largest adapter, floor 4GB,
-    /// cap 16GB) so large bundles such as MADLAD-400 (~6.4GB quantized reservation at 2x, ~8.1GB
+    /// Scaled with detected GPU VRAM (three-quarters of the largest adapter up to 16GB,
+    /// 85% above that for large-memory cards above 16 GiB — a band that includes
+    /// consumer cards such as the RTX 4090 (24GB) and RTX 5090 (32GB) as well as
+    /// L4/L40S — floor 4GB, cap 64GB) so large bundles such as MADLAD-400 (~6.4GB quantized reservation at 2x, ~8.1GB
     /// for the external-data fp16 export on TensorRT RTX) fit on 12GB GPUs out-of-the-box,
     /// while small GPUs keep the conservative 4GB guard.
     /// Deliberately a larger fraction than the host-RAM default (quarter): VRAM is the
@@ -115,11 +117,19 @@ internal sealed class InferenceSessionPool : IDisposable
     /// <summary>Floor for the scaled accelerator budget: the historical conservative guard.</summary>
     public const long AcceleratorBudgetFloorMb = 4096;
 
-    /// <summary>Cap for the scaled accelerator budget.</summary>
-    public const long AcceleratorBudgetCapMb = 16384;
+    /// <summary>Cap for the scaled accelerator budget. Only binds on very large-memory
+    /// cards; the binding constraint there is the 85% fraction.</summary>
+    public const long AcceleratorBudgetCapMb = 65536;
 
-    internal static long ScaleAcceleratorBudgetMb(long maxVramMb) =>
-        Math.Clamp(maxVramMb * 3 / 4, AcceleratorBudgetFloorMb, AcceleratorBudgetCapMb);
+    internal static long ScaleAcceleratorBudgetMb(long maxVramMb)
+    {
+        // Large-memory cards above 16 GiB (consumer RTX 4090/5090 as well as
+        // L4/L40S/A100) have the headroom to keep 85% of VRAM for admission
+        // instead of 75%: the old 16GB hard cap stranded two-thirds of an L40S.
+        // Cards at or below 16 GiB keep the more conservative 75%.
+        long scaled = maxVramMb > 16384 ? maxVramMb * 85 / 100 : maxVramMb * 3 / 4;
+        return Math.Clamp(scaled, AcceleratorBudgetFloorMb, AcceleratorBudgetCapMb);
+    }
 
     internal static long DetectMaxAcceleratorVramMb()
     {
