@@ -227,16 +227,16 @@
       "trackdub.media.playback": {
         "type": "Project",
         "dependencies": {
-          "LibVLCSharp": "[3.10.1, )",
+          "LibVLCSharp": "[3.10.2, )",
           "Trackdub.Application": "[1.0.0, )",
           "Trackdub.Domain": "[1.0.0, )"
         }
       },
       "LibVLCSharp": {
         "type": "CentralTransitive",
-        "requested": "[3.10.1, )",
-        "resolved": "3.10.1",
-        "contentHash": "6iSrYMk6RU8fyftdXrfR1TW3xpR/WhEmliORuWvAu2N05wECb8k2hykWiU53/1zqx616v/qUlDbJJyqv78MDkQ=="
+        "requested": "[3.10.2, )",
+        "resolved": "3.10.2",
+        "contentHash": "WNLHBIK5QcOH0kNGBGupKC9Ds3hksPthHyp6ueE8zG5Hy/6EBwAU0BbMqukBCdLatCOY+V9DYHDwSVSXSmPGSA=="
       },
       "MathNet.Numerics": {
         "type": "CentralTransitive",

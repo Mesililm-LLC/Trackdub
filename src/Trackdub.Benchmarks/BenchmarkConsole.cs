@@ -167,10 +167,10 @@ public static class BenchmarkConsole
                 }
             }
         }
-        if (report.Metadata?.CudaGraphLanes.Count > 1)
+        if (report.Metadata is { CudaGraphLanes.Count: > 1 } reportMetadata)
         {
             writer.WriteLine("CUDA graph comparison:");
-            foreach (var lane in report.Metadata.CudaGraphLanes)
+            foreach (var lane in reportMetadata.CudaGraphLanes)
             {
                 writer.WriteLine(
                     $"  {lane.Lane}: avg={FormatMilliseconds(lane.Statistics?.MeanMilliseconds)} "
@@ -179,9 +179,9 @@ public static class BenchmarkConsole
                     + (lane.UnavailableReason is null ? string.Empty : $" ({lane.UnavailableReason})"));
             }
         }
-        if (report.Metadata?.ReferenceToolResults.Count > 0)
+        if (report.Metadata is { ReferenceToolResults.Count: > 0 } metadataWithReferenceResults)
         {
-            foreach (var referenceResult in report.Metadata.ReferenceToolResults)
+            foreach (var referenceResult in metadataWithReferenceResults.ReferenceToolResults)
             {
                 writer.WriteLine(
                     $"Reference tool {referenceResult.Tool} [{referenceResult.GraphRole}]: {referenceResult.Status}"
