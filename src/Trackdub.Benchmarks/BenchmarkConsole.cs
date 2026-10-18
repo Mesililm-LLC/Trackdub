@@ -167,33 +167,6 @@ public static class BenchmarkConsole
                 }
             }
         }
-        if (report.Metadata is { CudaGraphLanes.Count: > 1 } reportMetadata)
-        {
-            writer.WriteLine("CUDA graph comparison:");
-            foreach (var lane in reportMetadata.CudaGraphLanes)
-            {
-                writer.WriteLine(
-                    $"  {lane.Lane}: avg={FormatMilliseconds(lane.Statistics?.MeanMilliseconds)} "
-                    + $"p95={FormatMilliseconds(lane.Statistics?.P95Milliseconds)} "
-                    + $"samples={lane.Sampling?.SampleCount.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "n/a"}"
-                    + (lane.UnavailableReason is null ? string.Empty : $" ({lane.UnavailableReason})"));
-            }
-        }
-        if (report.Metadata is { ReferenceToolResults.Count: > 0 } metadataWithReferenceResults)
-        {
-            foreach (var referenceResult in metadataWithReferenceResults.ReferenceToolResults)
-            {
-                writer.WriteLine(
-                    $"Reference tool {referenceResult.Tool} [{referenceResult.GraphRole}]: {referenceResult.Status}"
-                    + (referenceResult.FailureReason is null ? string.Empty : $" ({referenceResult.FailureReason})")
-                    + (referenceResult.ExecutablePath is null ? string.Empty : $" at {referenceResult.ExecutablePath}"));
-                foreach (var metric in referenceResult.Metrics)
-                {
-                    writer.WriteLine(
-                        $"  {metric.Name}: {metric.Value.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)} {metric.Unit} ({metric.TimingDomain})");
-                }
-            }
-        }
         writer.WriteLine($"Report path: {report.ReportPath}");
 
         if (!string.IsNullOrWhiteSpace(report.FailureReason))

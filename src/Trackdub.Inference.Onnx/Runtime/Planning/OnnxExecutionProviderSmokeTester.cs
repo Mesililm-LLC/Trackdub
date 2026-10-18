@@ -596,6 +596,8 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
     {
         string encoderModelPath = request.EntryPath;
         string decoderJointPath = ResolveNemotronDecoderJointPath(encoderModelPath);
+        NemotronAsrEncoderTrtProfiles.SessionOptions sessionOptions =
+            NemotronAsrEncoderTrtProfiles.BuildRuntimeOptions(encoderModelPath);
         // modelId/variant must match NemotronAsrOnnxAudioTranscriptionEngine or the stage
         // misses this pooled session and pays cold load again.
         using OnnxExecutionSessionFactory.NemotronAsrSessionLease sessionLease = await OnnxExecutionSessionFactory
@@ -607,7 +609,8 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
                 cancellationToken,
                 modelId: request.ModelId,
                 variant: request.Variant,
-                additionalTrtEncoderOptions: NemotronAsrEncoderTrtProfiles.BuildOptions(encoderModelPath))
+                additionalTrtEncoderOptions: sessionOptions.Encoder,
+                additionalTrtDecoderOptions: sessionOptions.Decoder)
             .ConfigureAwait(false);
         EnsureSelectedProviderMatchesRequested(request.ExecutionProvider, sessionLease.SelectedProvider);
 

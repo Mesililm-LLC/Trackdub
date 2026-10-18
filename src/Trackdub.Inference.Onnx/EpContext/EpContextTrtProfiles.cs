@@ -28,8 +28,7 @@ internal static class EpContextTrtProfiles
             inputNames = session.InputMetadata.Keys.ToArray();
             // No-past whisper decoder: the hidden width comes from the declared dims, so the
             // profile needs the opened session, not just names.
-            if (inputNames.Count == 2
-                && session.InputMetadata.ContainsKey("input_ids")
+            if (session.InputMetadata.ContainsKey("input_ids")
                 && session.InputMetadata.ContainsKey("encoder_hidden_states"))
             {
                 return WhisperOnnxAudioTranscriptionEngine.BuildTrtDecoderOptions(sourceModelPath);

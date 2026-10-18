@@ -1440,10 +1440,10 @@ internal static class OnnxExecutionSessionFactory
             .ConfigureAwait(false);
         // CUDA graph replay requires every binding to stay at a fixed address across runs.
         // This flag must stay off here: the dual-session factory is shared with callers whose
-        // callsites rebind fresh OrtValues (ParakeetTdtGreedyDecoder, smoke probes). Nemotron ASR
-        // opts in per-caller by passing enable_cuda_graph inside its additionalTrt*Options, which
-        // also flows into the pool-key fingerprint so graph-enabled sessions never collide with
-        // managed-path sessions.
+        // callsites rebind fresh OrtValues (ParakeetTdtGreedyDecoder, smoke probes), and Nemotron
+        // can fall back to managed feeds when shared device allocators are unavailable.
+        // Explicit per-caller graph options also flow into the pool-key fingerprint so capture
+        // modes cannot collide.
         const bool enableEncoderCudaGraph = false;
         DualOptionsSelections selections = CreateDualOptionsSelections(
             provider, bootstrap.Bootstrap, bootstrap.DevicePolicy,

@@ -875,7 +875,9 @@ public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimeP
             // Metadata only: a CPU session never touches the TRT plugin.
             using InferenceSession session = new(path);
             HashSet<string> inputNames = session.InputMetadata.Keys.ToHashSet(StringComparer.Ordinal);
-            if (!HasFixedAddressDecoderInputs(inputNames))
+            // Extra decoder inputs rule out fixed-address binding, but do not invalidate
+            // the shape profiles for the two inputs this engine knows how to size.
+            if (!inputNames.Contains("input_ids") || !inputNames.Contains("encoder_hidden_states"))
             {
                 return new DecoderTrtConfiguration(new Dictionary<string, string>(), inputNames);
             }
