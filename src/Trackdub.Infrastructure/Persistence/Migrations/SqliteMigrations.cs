@@ -307,6 +307,31 @@ internal static class SqliteMigrations
             ALTER TABLE StageRuns ADD COLUMN FallbackReason TEXT NULL;
             ALTER TABLE StageRuns ADD COLUMN SmokeEvidenceId TEXT NULL;
             ALTER TABLE StageRuns ADD COLUMN BenchmarkEvidenceId TEXT NULL;
+            """),
+        new(
+            13,
+            "benchmark-measurement-metadata",
+            """
+            ALTER TABLE BenchmarkRuns ADD COLUMN FirstRunMilliseconds REAL NULL;
+            ALTER TABLE BenchmarkRuns ADD COLUMN WarmupMilliseconds REAL NULL;
+            ALTER TABLE BenchmarkRuns ADD COLUMN WarmupRunCount INTEGER NULL;
+            ALTER TABLE BenchmarkRuns ADD COLUMN SampleCount INTEGER NULL;
+            ALTER TABLE BenchmarkRuns ADD COLUMN WarmLatencyP50Milliseconds REAL NULL;
+            ALTER TABLE BenchmarkRuns ADD COLUMN WarmLatencyP90Milliseconds REAL NULL;
+            ALTER TABLE BenchmarkRuns ADD COLUMN WarmLatencyP95Milliseconds REAL NULL;
+            ALTER TABLE BenchmarkRuns ADD COLUMN WarmLatencyP99Milliseconds REAL NULL;
+            ALTER TABLE BenchmarkRuns ADD COLUMN MeasuredWallTimeMilliseconds REAL NULL;
+            ALTER TABLE BenchmarkRuns ADD COLUMN PassesPerSecond REAL NULL;
+            ALTER TABLE BenchmarkRuns ADD COLUMN ThroughputUnitsPerSecond REAL NULL;
+            ALTER TABLE BenchmarkRuns ADD COLUMN AudioDurationSeconds REAL NULL;
+            ALTER TABLE BenchmarkRuns ADD COLUMN RealTimeFactorAverage REAL NULL;
+            ALTER TABLE BenchmarkRuns ADD COLUMN ThroughputUnit TEXT NULL;
+            ALTER TABLE BenchmarkRuns ADD COLUMN TimingMode TEXT NULL;
+            ALTER TABLE BenchmarkRuns ADD COLUMN InputProfileId TEXT NULL;
+            ALTER TABLE BenchmarkRuns ADD COLUMN ComparisonKey TEXT NULL;
+            ALTER TABLE BenchmarkRuns ADD COLUMN MetadataJson TEXT NULL;
+            CREATE INDEX IF NOT EXISTS IX_BenchmarkRuns_ComparisonKey_GeneratedAtUtc
+                ON BenchmarkRuns(ComparisonKey, GeneratedAtUtc);
             """)
     ];
 }

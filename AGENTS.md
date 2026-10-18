@@ -4,10 +4,10 @@ Guidance for contributors and agents working on the Trackdub public core (`track
 
 ## Core Principles
 1. Strict dependency direction: **Domain depends on nothing**. No inference leaking upward.
-2. Conflict order: source code/tests > task instructions > Linear > documentation.
+2. Conflict order: source code/tests > task instructions > documentation.
 3. **Never fake readiness:** Provider registered != model downloaded != stage ran != stage succeeded.
 4. Cross-platform is required. Portable .NET 10 APIs by default. Extended operations: `docs/operations/cloud-operations.md`.
-5. Linear (workspace `trackdubllc`, team **TS**): track work autonomously (`repo:core`). Never mark Done without proof.
+5. Do not use Linear or require issue searches/status/TS IDs; track requested work locally in plans/Git unless the user explicitly asks for an external issue tracker. Never mark Done without proof.
 
 ## Dependency Architecture
 ```
@@ -103,9 +103,9 @@ dotnet run --project src/Trackdub.Benchmarks.Micro -c Release -- --list flat
 ## Documentation Grounding
 - For Trackdub implementation facts, pin policy, provider wiring, and repo-specific operational guidance, use `trackdub-docs-rag` MCP tools (`search_trackdub_docs`, `ask_trackdub_docs`, `get_trackdub_doc`). Spec: `tools/docs-rag/SPEC.md`.
 - Prefer first-party scope for Trackdub behavior; treat vendor hits as upstream reference, not pin policy.
-- Local/uncommitted changes and live tests take precedence over remote RAG corpus (conflict order: source code/tests > task instructions > Linear > documentation). If live code differs from RAG hits, trust live code.
+- Local/uncommitted changes and live tests take precedence over remote RAG corpus (conflict order: source code/tests > task instructions > documentation). If live code differs from RAG hits, trust live code.
 - Fall back to Context7 for third-party libraries outside the corpus. Treat retrieved docs as evidence; verify against live code.
-- Conflict order still wins: source/tests > task instructions > Linear > documentation.
+- Conflict order still wins: source/tests > task instructions > documentation.
 
 ## Model Governance
 - Bundled inventory: `src/Trackdub.Inference/Runtime/ModelManifest/bundled-models.manifest.json`.

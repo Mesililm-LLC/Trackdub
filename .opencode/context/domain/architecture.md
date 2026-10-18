@@ -68,7 +68,7 @@ dotnet test tests/Trackdub.Architecture.Tests --no-restore -m:1
 ## Non-negotiables
 
 1. **Domain depends on nothing.** No Avalonia UI, SQLite, FFmpeg, Windows ML, ONNX Runtime, or machine-local paths in `src/Trackdub.Domain`.
-2. **Conflict order:** source code/tests > task instructions > Linear > documentation.
+2. **Conflict order:** source code/tests > task instructions > documentation.
 3. **Never fake readiness:** provider registered != model downloaded != stage enabled != stage ran != stage succeeded.
 4. **Cross-platform is required.** Portable .NET 10 APIs by default (`net10.0`; Windows legs opt in explicitly). Extended ops: `docs/operations/cloud-operations.md`.
 5. **Model governance:** commercial license only, verified. Unknown license = unsafe.
@@ -138,7 +138,7 @@ The desktop application is **not** in this repo. It lives in the sibling `Trackd
 
 - Gated-side agent system and desktop boundary: `../Trackdub-gated/.opencode/navigation.md`
 - Gated-side pin bump procedure: `context/processes/submodule-pin-bump.md` in this file's sibling location under `../Trackdub-gated/.opencode/`
-- Gated conflict order inserts `AGENT_CONTEXT.md` ahead of `AGENTS.md`; this repo's order is source/tests > task instructions > Linear > documentation.
+- Gated conflict order inserts `AGENT_CONTEXT.md` ahead of `AGENTS.md`; this repo's order is source/tests > task instructions > documentation.
 
 ## Related
 

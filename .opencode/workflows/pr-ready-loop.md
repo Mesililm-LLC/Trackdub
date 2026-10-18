@@ -22,7 +22,7 @@ Do NOT use for:
 |---|---|---|---|
 | Target branch | yes | Branch the change lands on, usually `main` | `main` |
 | Scope | yes | What is in this change, in one sentence | none |
-| Linear issue | no | Issue id in workspace `trackdubllc`, team **TS**, project `repo:core` | none |
+| External issue ref | no | Only if the user explicitly provides one | none |
 | Base of stack | if stacked | Branch that must merge first | none |
 | Push authorization | yes | Human approval to push | required at Stage 7 |
 
@@ -142,7 +142,7 @@ Do NOT use for:
 - **Actions**:
   1. Open or update with `gh pr create` / `gh pr edit`.
   2. Body states: what changed, why, the exact commands run with results, and what was deliberately not changed.
-  3. Reference the Linear issue id. Do **not** change Linear status from this loop.
+  3. Reference an issue ID only if the user provided one. Use an external tracker only when the user explicitly asks; otherwise track work in Git and create persisted plans only when requested.
   4. Keep the PR scope to one logical change.
 - **Exit criteria**: PR open against the correct base; body carries the gate evidence.
 - **Failure handling**: Wrong base ⇒ recreate against the intended base.
@@ -184,8 +184,8 @@ Do NOT use for:
   1. Confirm: gate green, CI green, threads resolved, branch up to date with its base.
   2. Merge. Re-run Stage 3 locally if the base moved during review.
   3. Confirm the change landed on `main` and post-merge CI is green.
-  4. **Linear is a manual human step.** The agent does not call the Linear API. Never mark an issue Done without proof — the proof is the green post-merge run, attached to the issue.
-- **Exit criteria**: Change on `main`; post-merge CI green; Linear status decided by the human.
+  4. **External issue trackers are opt-in.** Update one only on explicit user request. Never claim Done without proof: the proof is the green post-merge run, recorded in the handoff.
+- **Exit criteria**: Change on `main`; post-merge CI green.
 - **Failure handling**: Post-merge red ⇒ revert promptly and diagnose.
 
 ## Decision Points
@@ -200,7 +200,7 @@ Do NOT use for:
 | Cubic finding is not real | Reply with reasoning; mark `false_positive` / `intended_behavior` |
 | Checks pending after push | Wait. Never merge around a pending check |
 | Only benchmarks are red | Out of scope for this gate — `benchmark-regression-triage.md` |
-| Human wants Linear updated | Human does it, with attached proof |
+| Human wants an external tracker updated | Only on explicit request, with attached proof |
 
 ## Gates
 
@@ -236,7 +236,7 @@ Per `.opencode/context/templates/evidence-report.md`:
 - PR URL, base branch, commit sha.
 - `gh pr checks` terminal output with each check name and state.
 - Every review thread with its triage decision and the code change that resolved it.
-- Confirmation that no Linear status was changed by the agent.
+- Confirmation that no external issue tracker was touched, or the explicit user request that authorized an update.
 
 ## Completion Checklist
 
@@ -255,4 +255,4 @@ Per `.opencode/context/templates/evidence-report.md`:
 - [ ] Every review thread resolved by fix or documented intent.
 - [ ] Stacked work modeled with `gh stack` where a base fix was required.
 - [ ] Merged; post-merge CI green.
-- [ ] Linear left untouched by the agent; no Done without proof.
+- [ ] No external issue tracker touched by the agent; no Done without proof.

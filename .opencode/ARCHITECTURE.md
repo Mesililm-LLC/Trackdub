@@ -79,7 +79,7 @@ Therefore:
 - **`NOT VERIFIED` is a valid and expected output**, not a failure to be papered over. It is the honest state when a rung has no evidence behind it. Every rung of `/ready`, every gate of `/validate`, every delta of `/bench` accepts it.
 - **Partial evidence never becomes a pass.** `/validate` stops at the first failing gate and shows the exact command and output. `/bench` reports measured numbers only — a missing baseline means `NOT VERIFIED`, never "no regression". `/ready` never rounds a rung up.
 - **Rules are enforced by the build wherever possible.** `BannedSymbols.txt` via `Microsoft.CodeAnalysis.BannedApiAnalyzers`; dependency direction, acyclicity, ADR-0011 Contracts isolation, ONNX/WinML/DNNL asset invariants and portable-RID lock graphs via `tests/Trackdub.Architecture.Tests`; analyzer diagnostics via `src/Trackdub.Analyzers`. A rule that can be a test should be a test — a test fails deterministically, and an instruction does not.
-- **Documentation is not evidence.** For implementation facts, `trackdub-docs-rag` MCP (spec `tools/docs-rag/SPEC.md`) grounds answers, Context7 covers third-party libraries, and both are treated as evidence to be verified against live code. The conflict order still governs: source/tests > task instructions > Linear > documentation.
+- **Documentation is not evidence.** For implementation facts, `trackdub-docs-rag` MCP (spec `tools/docs-rag/SPEC.md`) grounds answers, Context7 covers third-party libraries, and both are treated as evidence to be verified against live code. The conflict order still governs: source/tests > task instructions > documentation.
 
 ## Stateless design
 
@@ -107,7 +107,7 @@ The cost is duplication at the boundary: core and gated each describe the pin pr
 
 ## Known gaps
 
-- **Linear is referenced but not integrated.** `AGENTS.md` names workspace `trackdubllc`, team **TS**, `repo:core`, requires autonomous tracking, and forbids marking Done without proof. No Linear MCP server or tool is wired into this system. Reading and updating Linear issues stays a **manual human step**. This is the largest gap: the "never mark Done without proof" rule is currently enforced socially, not mechanically.
+- **External issue trackers are opt-in.** Do not use Linear or require issue searches/status/TS IDs by default. Track work in Git; create a persisted plan only when the user requests one. Update an external tracker only when the user explicitly asks. "Never mark Done without proof" stays enforced by the evidence in the handoff.
 - **The desktop repo has its own system.** Core and gated are separate trees with separate context. Cross-cutting reasoning that spans both — anything touching the core/desktop contract — must load two systems. `/pin` and the breaking-change triage are the mitigation, not a solution.
 - **Two planned workflows are unwritten.** `feature-change` and `release-and-pin` are named in the routing table but do not exist. The three shipped workflows are `new-inference-stage`, `pr-ready-loop`, and `benchmark-regression-triage`.
 - **Factual claims decay.** Every grounding statement in `context/` was verified at authoring time against a specific revision. Counts, file paths, test names, and type names drift. Anything asserted here should be re-verified with `verify with: <command>` before being relied on, and this tree will otherwise start lying to its own agents.

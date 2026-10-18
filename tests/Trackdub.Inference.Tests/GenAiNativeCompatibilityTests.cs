@@ -77,9 +77,9 @@ public sealed class GenAiNativeCompatibilityTests
     }
 
     [Theory]
-    [InlineData("Cpu")]
-    [InlineData("Cuda")]
-    public void StockOrtAtTheCentralPackagePinIsSupportedWithGenAi(string genAiFlavor)
+    [InlineData("Cpu", "Microsoft.ML.OnnxRuntimeGenAI")]
+    [InlineData("Cuda", "Microsoft.ML.OnnxRuntimeGenAI.Cuda")]
+    public void StockOrtAtTheCentralPackagePinIsSupportedWithGenAi(string genAiFlavor, string genAiPackageId)
     {
         string? directory = AppContext.BaseDirectory;
         while (directory is not null && !File.Exists(Path.Join(directory, "Directory.Packages.props")))
@@ -88,14 +88,17 @@ public sealed class GenAiNativeCompatibilityTests
         }
 
         Assert.NotNull(directory);
-        string version = XDocument.Load(Path.Join(directory, "Directory.Packages.props"))
-            .Root!.Descendants("OnnxRuntimeVersion").Single().Value.Trim();
-        var pair = new NativePairManifest("Stock", version, version, genAiFlavor, "0.17.1", "win-x64", "ort", "genai");
+        XElement packageVersions = XDocument.Load(Path.Join(directory, "Directory.Packages.props")).Root!;
+        string ortVersion = packageVersions.Descendants("OnnxRuntimeVersion").Single().Value.Trim();
+        string genAiVersion = packageVersions.Descendants("PackageVersion")
+            .Single(element => (string?)element.Attribute("Include") == genAiPackageId)
+            .Attribute("Version")!.Value;
+        var pair = new NativePairManifest("Stock", ortVersion, ortVersion, genAiFlavor, genAiVersion, "win-x64", "ort", "genai");
 
         Assert.True(GenAiNativeRuntimeSelection.IsSupported(pair),
-            $"Update the stock ORT allow-list in GenAiNativeRuntimeSelection to {version}.");
+            $"Update the stock ORT and GenAI allow-list in GenAiNativeRuntimeSelection for {genAiPackageId} {genAiVersion} with ORT {ortVersion}.");
         Assert.True(GenAiNativeRuntimeSelection.IsKnownOrt(pair),
-            $"Update the stock ORT allow-list in GenAiNativeRuntimeSelection to {version}.");
+            $"Update the stock ORT allow-list in GenAiNativeRuntimeSelection to {ortVersion}.");
     }
 
     private static NativePairManifest Pair(string ort, string genAi) =>

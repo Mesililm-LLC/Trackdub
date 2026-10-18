@@ -86,7 +86,7 @@ dotnet test Trackdub.slnx -m:1
 .\run.cmd    # UI-affecting changes only; a build is not proof the shell renders
 ```
 
-Both green, or the pin does not move. If a consumer failure is caused by core, fix core; if it is caused by the consumer's own binding, fix the consumer and note it on the Linear issue (`repo:gated` vs `repo:core`).
+Both green, or the pin does not move. If a consumer failure is caused by core, fix core; if it is caused by the consumer's own binding, fix the consumer and note it in the handoff.
 
 ## Recording the pin
 

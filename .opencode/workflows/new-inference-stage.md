@@ -49,7 +49,7 @@ Do NOT use for:
   2. Decide `needs new provider`. If yes, enumerate the provider type and the execution providers it may bind to.
   3. Confirm model license is commercial. Unknown license ⇒ **abort**, do not speculate.
   4. Confirm the model belongs in `bundled-models.manifest.json` and state its checksum source.
-  5. Record the Linear issue id (workspace `trackdubllc`, team **TS**, project `repo:core`). The orchestrator never calls the Linear API; the human does.
+  5. Do not use Linear or require issue searches/status/TS IDs by default. Track work in Git, create persisted plans only when requested, and update an external tracker only on explicit user request.
 - **Exit criteria**: A written stage contract exists; provider decision is binary; license is confirmed commercial.
 - **Failure handling**: Ambiguous contract, missing model, or unknown license ⇒ stop and hand to human. Do not proceed to implementation.
 
@@ -187,8 +187,8 @@ Do NOT use for:
 - **Actions**:
   1. Update `.opencode/ARCHITECTURE.md` and `.opencode/navigation.md` if stage topology changed.
   2. If the dependency graph changed, update the AGENTS.md diagram — Architecture tests compare it against every csproj reference in both directions.
-  3. Hand the Linear item to the human. The agent does not call Linear. **Never mark Done without proof**; the proof is the Stage 9 gate output plus Stage 8 artifacts.
-- **Exit criteria**: Docs consistent with code; Linear status is the human's decision, informed by attached proof.
+  3. Do not use Linear. **Never mark Done without proof**; the proof is the Stage 9 gate output plus Stage 8 artifacts.
+- **Exit criteria**: Docs consistent with code.
 - **Failure handling**: Docs/code drift → `core-diagnostics`.
 
 ## Decision Points
@@ -257,4 +257,4 @@ Record under `.opencode/context/templates/evidence-report.md`:
 - [ ] CLI lists the stage: `dotnet run --project src/Trackdub.Cli --framework net10.0 -- --help`.
 - [ ] Execution proof captured with real artifact, `actualProvider`, `actualModel`.
 - [ ] `validateRuntime` semantics respected — no Ready presented as Verified; Release build passes `-warnaserror` with the full Release test suite green.
-- [ ] No new `Path.Combine` in changed lines; docs updated; Linear left to the human, not marked Done without proof.
+- [ ] No new `Path.Combine` in changed lines; docs updated; no external issue tracker touched unless explicitly requested by the user; no Done claim without proof.

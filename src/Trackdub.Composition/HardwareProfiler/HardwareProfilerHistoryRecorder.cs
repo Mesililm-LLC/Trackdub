@@ -157,7 +157,27 @@ public sealed class HardwareProfilerHistoryRecorder(
             report?.Measurements.WarmLatencyMinimumMilliseconds,
             report?.Measurements.WarmLatencyMaximumMilliseconds,
             scenario.FailureReason ?? report?.FailureReason,
-            snapshot.CompletedAtUtc);
+            snapshot.CompletedAtUtc)
+        {
+            FirstRunMilliseconds = report?.Measurements.FirstRunMilliseconds,
+            WarmupMilliseconds = report?.Measurements.WarmupMilliseconds,
+            WarmupRunCount = report?.Measurements.WarmupRunCount,
+            SampleCount = report?.Measurements.SampleCount,
+            WarmLatencyP50Milliseconds = report?.Measurements.WarmLatencyP50Milliseconds,
+            WarmLatencyP90Milliseconds = report?.Measurements.WarmLatencyP90Milliseconds,
+            WarmLatencyP95Milliseconds = report?.Measurements.WarmLatencyP95Milliseconds,
+            WarmLatencyP99Milliseconds = report?.Measurements.WarmLatencyP99Milliseconds,
+            MeasuredWallTimeMilliseconds = report?.Measurements.MeasuredWallTimeMilliseconds,
+            PassesPerSecond = report?.Measurements.PassesPerSecond,
+            ThroughputUnitsPerSecond = report?.Measurements.ThroughputUnitsPerSecond,
+            ThroughputUnit = report?.Measurements.ThroughputUnit,
+            AudioDurationSeconds = report?.Measurements.AudioDurationSeconds,
+            RealTimeFactorAverage = scenario.RealTimeFactorAverage ?? report?.Measurements.RealTimeFactorAverage,
+            TimingMode = report?.Metadata?.Configuration?.TimingMode,
+            InputProfileId = report?.Metadata?.Configuration?.InputProfileId,
+            ComparisonKey = report?.Metadata?.ComparisonKey,
+            Metadata = report?.Metadata
+        };
     }
 
     internal static string BuildProfilerModelId(Guid evidenceId, string fingerprintHash, string scenarioName) =>
