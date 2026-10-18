@@ -38,8 +38,43 @@ internal sealed class NemotronAsrGreedyDecoder(
     {
         ArgumentNullException.ThrowIfNull(mel);
         ResetState(out int lastToken);
-        using var encoderRun = EncoderRun.Create(sessionLease.EncoderSession, config, promptIndex);
-        using var decoderRun = DecoderRun.Create(sessionLease.DecoderJointSession, config);
+        bool encoderHasDeviceAllocator = providerHint is ExecutionProviderKind.TensorRTRtx
+            && HasSharedDeviceAllocator(sessionLease.EncoderSession);
+        bool decoderHasDeviceAllocator = providerHint is ExecutionProviderKind.TensorRTRtx
+            && HasSharedDeviceAllocator(sessionLease.DecoderJointSession);
+        bool useDeviceBoundRuns = ShouldUseDeviceBoundRuns(
+            providerHint, encoderHasDeviceAllocator, decoderHasDeviceAllocator);
+        using var encoderRun = useDeviceBoundRuns
+            ? EncoderRun.Create(sessionLease.EncoderSession, config, promptIndex)
+            : null;
+        using var decoderRun = useDeviceBoundRuns
+            ? DecoderRun.Create(sessionLease.DecoderJointSession, config)
+            : null;
+
+        int[]? cacheChannelShape = null;
+        int[]? cacheTimeShape = null;
+        float[]? cacheChannel = null;
+        float[]? cacheTime = null;
+        float[]? decoderState1 = null;
+        float[]? decoderState2 = null;
+        long cacheChannelLength = 0;
+        if (!useDeviceBoundRuns)
+        {
+            IReadOnlyDictionary<string, NodeMetadata> encoderMetadata = sessionLease.EncoderSession.InputMetadata;
+            cacheChannelShape = ResolveCacheShape(encoderMetadata, "cache_last_channel",
+                [config.NumEncoderLayers, 1, config.LeftContext, config.HiddenDim]);
+            cacheTimeShape = ResolveCacheShape(encoderMetadata, "cache_last_time",
+                [config.NumEncoderLayers, 1, config.HiddenDim, config.ConvContext]);
+            cacheChannel = new float[GetElementCount(cacheChannelShape)];
+            cacheTime = new float[GetElementCount(cacheTimeShape)];
+
+            int[] decoderStateShape = ResolveCacheShape(
+                sessionLease.DecoderJointSession.InputMetadata,
+                "input_states_1",
+                [config.DecoderLstmLayers, 1, config.DecoderLstmDim]);
+            decoderState1 = new float[GetElementCount(decoderStateShape)];
+            decoderState2 = new float[GetElementCount(decoderStateShape)];
+        }
 
         int totalFrames = mel.GetLength(1);
         var allTokens = new List<int>();
@@ -77,31 +112,51 @@ internal sealed class NemotronAsrGreedyDecoder(
                 prefetchedChunk = null;
             }
 
-            // All bound OrtValues are device allocations at fixed addresses across the whole
-            // decode (the CUDA-graph replay precondition): chunk data is copied host->device
-            // with OrtEnv.CopyTensors, and the streaming cache outputs are copied back into
-            // the host staging of the cache inputs after each run.
-            encoderRun.Load(chunkData, NemotronAsrMelFeatureExtractor.PreEncodeCacheFrames + mainFrameCount);
-            encoderRun.CopyInputsToDevice();
-            using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> encoderResults =
-                sessionLease.EncoderSession.RunWithBindingAndNamesRetry(
-                    encoderRun.RunOptions,
-                    encoderRun.Binding,
-                    EncoderBoundOutputNames,
-                    cancellationToken: cancellationToken,
-                    provider: providerHint);
+            int chunkLength = NemotronAsrMelFeatureExtractor.PreEncodeCacheFrames + mainFrameCount;
+            if (useDeviceBoundRuns)
+            {
+                // The device-bound path is restricted to sessions with an effective TRT-RTX
+                // provider and shared device allocators. Its pinned inputs keep stable addresses
+                // for CUDA graph replay; CPU and DML use managed NamedOnnxValue inputs below.
+                encoderRun!.Load(chunkData, chunkLength);
+                encoderRun.CopyInputsToDevice();
+                using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> encoderResults =
+                    sessionLease.EncoderSession.RunWithBindingAndNamesRetry(
+                        encoderRun.RunOptions,
+                        encoderRun.Binding,
+                        EncoderBoundOutputNames,
+                        cancellationToken: cancellationToken,
+                        provider: providerHint);
 
-            Tensor<float> encoded = GetTensor<float>(encoderResults, "encoded");
-            int encodedLength = (int)GetTensor<long>(encoderResults, "encoded_len").FirstOrDefault();
-            Tensor<float> cacheChannelNext = GetTensor<float>(encoderResults, "cache_last_channel_next");
-            Tensor<float> cacheTimeNext = GetTensor<float>(encoderResults, "cache_last_time_next");
-            long cacheLengthNext = GetTensor<long>(encoderResults, "cache_last_channel_len_next").FirstOrDefault();
-            LastEncodedAbsSum = encoded.Select(Math.Abs).Sum();
-            LastEncodedLength = encodedLength;
+                Tensor<float> encoded = GetTensor<float>(encoderResults, "encoded");
+                int encodedLength = (int)GetTensor<long>(encoderResults, "encoded_len").FirstOrDefault();
+                Tensor<float> cacheChannelNext = GetTensor<float>(encoderResults, "cache_last_channel_next");
+                Tensor<float> cacheTimeNext = GetTensor<float>(encoderResults, "cache_last_time_next");
+                long cacheLengthNext = GetTensor<long>(encoderResults, "cache_last_channel_len_next").FirstOrDefault();
+                LastEncodedAbsSum = encoded.Select(Math.Abs).Sum();
+                LastEncodedLength = encodedLength;
 
-            DecodeEncoderFrames(
-                encoded, encodedLength, allTokens, decoderRun, ref lastToken, cancellationToken);
-            encoderRun.CommitCaches(cacheChannelNext, cacheTimeNext, cacheLengthNext);
+                DecodeEncoderFrames(
+                    encoded, encodedLength, allTokens, decoderRun!, ref lastToken, cancellationToken);
+                encoderRun.CommitCaches(cacheChannelNext, cacheTimeNext, cacheLengthNext);
+            }
+            else
+            {
+                RunManagedEncoderAndDecodeFrames(
+                    chunkData,
+                    chunkLength,
+                    promptIndex,
+                    allTokens,
+                    cacheChannel!,
+                    cacheChannelShape!,
+                    cacheTime!,
+                    cacheTimeShape!,
+                    ref cacheChannelLength,
+                    decoderState1!,
+                    decoderState2!,
+                    ref lastToken,
+                    cancellationToken);
+            }
 
             chunkIndex++;
         }
@@ -173,6 +228,148 @@ internal sealed class NemotronAsrGreedyDecoder(
                 tokens.Add(nextToken);
             }
         }
+    }
+
+    private void RunManagedEncoderAndDecodeFrames(
+        float[] chunkData,
+        int chunkLength,
+        long promptIndex,
+        List<int> tokens,
+        float[] cacheChannel,
+        int[] cacheChannelShape,
+        float[] cacheTime,
+        int[] cacheTimeShape,
+        ref long cacheChannelLength,
+        float[] decoderState1,
+        float[] decoderState2,
+        ref int lastToken,
+        CancellationToken cancellationToken)
+    {
+        var encoderInputs = new List<NamedOnnxValue>
+        {
+            NamedOnnxValue.CreateFromTensor(
+                "processed_signal",
+                new DenseTensor<float>(chunkData, Array.ConvertAll(ProcessedSignalShape, static d => checked((int)d)))),
+            NamedOnnxValue.CreateFromTensor("processed_signal_length", new DenseTensor<long>(new long[] { chunkLength }, [1])),
+            NamedOnnxValue.CreateFromTensor("cache_last_channel", new DenseTensor<float>(cacheChannel, cacheChannelShape)),
+            NamedOnnxValue.CreateFromTensor("cache_last_time", new DenseTensor<float>(cacheTime, cacheTimeShape)),
+            NamedOnnxValue.CreateFromTensor("cache_last_channel_len", new DenseTensor<long>(new long[] { cacheChannelLength }, [1]))
+        };
+        if (config.HasPromptInput)
+        {
+            encoderInputs.Add(NamedOnnxValue.CreateFromTensor(
+                "prompt_index", new DenseTensor<long>(new long[] { promptIndex }, [1])));
+        }
+
+        using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> encoderResults =
+            sessionLease.EncoderSession.RunWithRetry(
+                encoderInputs,
+                cancellationToken: cancellationToken,
+                provider: providerHint);
+        Tensor<float> encoded = GetTensor<float>(encoderResults, "encoded");
+        int encodedLength = checked((int)GetTensor<long>(encoderResults, "encoded_len").FirstOrDefault());
+        LastEncodedAbsSum = encoded.Select(Math.Abs).Sum();
+        LastEncodedLength = encodedLength;
+
+        DecodeEncoderFramesManaged(
+            encoded,
+            encodedLength,
+            tokens,
+            decoderState1,
+            decoderState2,
+            ref lastToken,
+            cancellationToken);
+
+        CopyTensor(GetTensor<float>(encoderResults, "cache_last_channel_next"), cacheChannel);
+        CopyTensor(GetTensor<float>(encoderResults, "cache_last_time_next"), cacheTime);
+        cacheChannelLength = GetTensor<long>(encoderResults, "cache_last_channel_len_next").FirstOrDefault();
+    }
+
+    private void DecodeEncoderFramesManaged(
+        Tensor<float> encoded,
+        int encodedLength,
+        List<int> tokens,
+        float[] decoderState1,
+        float[] decoderState2,
+        ref int lastToken,
+        CancellationToken cancellationToken)
+    {
+        NemotronAsrEncodedTensorLayout.EncodedLayout layout = NemotronAsrEncodedTensorLayout.Resolve(
+            encoded.Dimensions,
+            encodedLength,
+            config.HiddenDim);
+        for (int frameIndex = 0; frameIndex < layout.AvailableFrames; frameIndex++)
+        {
+            DenseTensor<float> frame = NemotronAsrEncodedTensorLayout.SliceFrame(encoded, layout, frameIndex);
+            for (int symbol = 0; symbol < MaxSymbolsPerStep; symbol++)
+            {
+                int nextToken = RunManagedDecoder(frame, lastToken, decoderState1, decoderState2, cancellationToken);
+                if (nextToken == config.BlankId)
+                {
+                    // RNNT: blank consumes no token, so the predictor state must not advance.
+                    break;
+                }
+
+                lastToken = nextToken;
+                tokens.Add(nextToken);
+            }
+        }
+    }
+
+    private int RunManagedDecoder(
+        DenseTensor<float> frame,
+        int lastToken,
+        float[] state1,
+        float[] state2,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyDictionary<string, NodeMetadata> decoderMetadata = sessionLease.DecoderJointSession.InputMetadata;
+        int[] stateShape = ResolveCacheShape(
+            decoderMetadata,
+            "input_states_1",
+            [config.DecoderLstmLayers, 1, config.DecoderLstmDim]);
+        var decoderInputs = new List<NamedOnnxValue>
+        {
+            NamedOnnxValue.CreateFromTensor("encoder_outputs", frame),
+            CreateTokenInput(decoderMetadata, "targets", lastToken, [1, 1]),
+            CreateTokenInput(decoderMetadata, "target_length", 1, [1]),
+            NamedOnnxValue.CreateFromTensor("input_states_1", new DenseTensor<float>(state1, stateShape)),
+            NamedOnnxValue.CreateFromTensor("input_states_2", new DenseTensor<float>(state2, stateShape))
+        };
+
+        using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> decoderResults =
+            sessionLease.DecoderJointSession.RunWithRetry(
+                decoderInputs,
+                cancellationToken: cancellationToken,
+                provider: providerHint);
+        int nextToken = ArgMax(GetTensor<float>(decoderResults, "outputs"));
+        if (nextToken != config.BlankId)
+        {
+            CopyTensor(GetTensor<float>(decoderResults, "output_states_1"), state1);
+            CopyTensor(GetTensor<float>(decoderResults, "output_states_2"), state2);
+        }
+
+        return nextToken;
+    }
+
+    private static NamedOnnxValue CreateTokenInput(
+        IReadOnlyDictionary<string, NodeMetadata> metadata,
+        string name,
+        long value,
+        int[] dimensions)
+    {
+        TensorElementType elementType = metadata.TryGetValue(name, out NodeMetadata? nodeMetadata)
+            ? nodeMetadata.ElementDataType
+            : TensorElementType.Int64;
+        return elementType switch
+        {
+            TensorElementType.Int32 => NamedOnnxValue.CreateFromTensor(
+                name, new DenseTensor<int>(new int[] { checked((int)value) }, dimensions)),
+            TensorElementType.Int64 => NamedOnnxValue.CreateFromTensor(
+                name, new DenseTensor<long>(new long[] { value }, dimensions)),
+            _ => throw new NotSupportedException(
+                $"Nemotron decoder input '{name}' uses unsupported token tensor element type '{elementType}'.")
+        };
     }
 
     private static readonly long[] ProcessedSignalShape =
@@ -465,6 +662,30 @@ internal sealed class NemotronAsrGreedyDecoder(
         return (int[])fallback.Clone();
     }
 
+    private static int GetElementCount(IEnumerable<int> dimensions) =>
+        dimensions.Aggregate(1, static (product, dimension) => checked(product * dimension));
+
+    internal static bool ShouldUseDeviceBoundRuns(
+        ExecutionProviderKind? provider,
+        bool encoderHasDeviceAllocator,
+        bool decoderHasDeviceAllocator) =>
+        provider is ExecutionProviderKind.TensorRTRtx
+        && encoderHasDeviceAllocator
+        && decoderHasDeviceAllocator;
+
+    private static bool HasSharedDeviceAllocator(InferenceSession session)
+    {
+        OrtMemoryInfo? deviceMemoryInfo = session.GetMemoryInfosForInputs()
+            .FirstOrDefault(static memoryInfo => !memoryInfo.Equals(OrtMemoryInfo.DefaultInstance));
+        if (deviceMemoryInfo is null)
+        {
+            return false;
+        }
+
+        OrtAllocator? allocator = OrtEnv.Instance().GetSharedAllocator(deviceMemoryInfo);
+        return allocator is not null && !allocator.IsInvalid;
+    }
+
     private static Tensor<T> GetTensor<T>(
         IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results,
         string name)
@@ -481,8 +702,8 @@ internal sealed class NemotronAsrGreedyDecoder(
                 "Session reports host-resident inputs only; the persistent bound path requires a device-resident provider.");
         }
 
-        OrtAllocator allocator = OrtEnv.Instance().GetSharedAllocator(deviceMemInfo);
-        if (allocator.IsInvalid)
+        OrtAllocator? allocator = OrtEnv.Instance().GetSharedAllocator(deviceMemInfo);
+        if (allocator is null || allocator.IsInvalid)
         {
             throw new NotSupportedException(
                 $"No shared allocator registered for '{deviceMemInfo.Name}'.");

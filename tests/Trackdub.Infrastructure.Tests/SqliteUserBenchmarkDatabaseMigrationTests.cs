@@ -16,6 +16,22 @@ public sealed class SqliteUserBenchmarkDatabaseMigrationTests
         "ThroughputUnit", "TimingMode", "InputProfileId", "ComparisonKey", "MetadataJson"
     ];
 
+    [Theory]
+    [InlineData("BenchmarkRuns", "MetadataJson", "TEXT", true)]
+    [InlineData("BenchmarkRuns; DROP TABLE BenchmarkRuns;--", "MetadataJson", "TEXT", false)]
+    [InlineData("BenchmarkRuns", "MetadataJson); DROP TABLE BenchmarkRuns;--", "TEXT", false)]
+    [InlineData("BenchmarkRuns", "MetadataJson", "TEXT); DROP TABLE BenchmarkRuns;--", false)]
+    [InlineData("BenchmarkRuns", "MetadataJson", "INTEGER", false)]
+    public void IsAllowedColumnDefinition_requires_known_table_column_and_type(
+        string tableName,
+        string columnName,
+        string columnType,
+        bool expected)
+    {
+        Assert.Equal(expected,
+            SqliteUserBenchmarkDatabase.IsAllowedColumnDefinition(tableName, columnName, columnType));
+    }
+
     [Fact]
     public async Task InitializeAsync_fresh_database_has_measurement_columns_and_index()
     {

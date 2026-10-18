@@ -146,8 +146,6 @@ public sealed class BenchmarkRepositoryTests
         }
     }
 
-
-
     [Fact]
     public async Task ListByModelIdAsync_unknown_status_maps_to_failed_and_bad_enums_to_null()
     {

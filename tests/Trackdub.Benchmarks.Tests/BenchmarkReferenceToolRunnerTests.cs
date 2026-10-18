@@ -68,15 +68,22 @@ public sealed class BenchmarkReferenceToolRunnerTests
     }
 
     [Fact]
-    public void OrtPerfTest_RequiredFlags_MatchCapturedHelp()
+    public void OrtPerfTest_RequiredFlags_UseSingleDashHelpTokens()
     {
         var recipe = BenchmarkReferenceToolRunner.RecipeFor(BenchmarkReferenceToolKind.OrtPerfTest);
 
-        // Flag names must be written the way perf_test prints them in --help ("--e" style)
-        // so the gate compares like with like.
-        Assert.Equal(["--e", "--m", "--r", "--s", "--I", "--S"], recipe.RequiredFlags(RequestFor(BenchmarkReferenceToolKind.OrtPerfTest)));
-        Assert.Contains("--g", recipe.RequiredFlags(RequestFor(BenchmarkReferenceToolKind.OrtPerfTest, deviceBound: true)));
+        Assert.Equal(["-e", "-m", "-r", "-s", "-I", "-S"], recipe.RequiredFlags(RequestFor(BenchmarkReferenceToolKind.OrtPerfTest)));
+        Assert.Contains("-g", recipe.RequiredFlags(RequestFor(BenchmarkReferenceToolKind.OrtPerfTest, deviceBound: true)));
     }
+
+    [Theory]
+    [InlineData("  -e: [cpu|cuda] provider", "-e", true)]
+    [InlineData("  -e, --execution_provider: provider", "-e", true)]
+    [InlineData("  --execution_provider: provider", "-e", false)]
+    [InlineData("  --e: provider", "-e", false)]
+    [InlineData("  -execution_provider: provider", "-e", false)]
+    public void HelpAdvertisesFlag_MatchesCompleteOptionToken(string help, string flag, bool expected) =>
+        Assert.Equal(expected, BenchmarkReferenceToolRunner.HelpAdvertisesFlag(help, flag));
 
     [Fact]
     public void OrtPerfTest_Arguments_SelectNvTensorRtRtxProviderAndModel()
@@ -138,9 +145,13 @@ public sealed class BenchmarkReferenceToolRunnerTests
         var metrics = BenchmarkReferenceToolRunner.ParseMetrics(
             BenchmarkReferenceToolKind.OrtPerfTest, stdout);
 
-        Assert.Contains(metrics, m => m.Name == "avg-latency" && m.Value == 4.56 && m.Unit == "ms");
-        Assert.Contains(metrics, m => m.Name == "latency-p50" && m.Value == 4.50);
-        Assert.Contains(metrics, m => m.Name == "latency-p99" && m.Value == 6.00);
+        var average = Assert.Single(metrics, m => m.Name == "avg-latency");
+        Assert.Equal("ms", average.Unit);
+        Assert.InRange(average.Value, 4.56 - 1e-9, 4.56 + 1e-9);
+        var p50 = Assert.Single(metrics, m => m.Name == "latency-p50");
+        Assert.InRange(p50.Value, 4.50 - 1e-9, 4.50 + 1e-9);
+        var p99 = Assert.Single(metrics, m => m.Name == "latency-p99");
+        Assert.InRange(p99.Value, 6.00 - 1e-9, 6.00 + 1e-9);
         Assert.Contains(metrics, m => m.Name == "session-creation" && m.TimingDomain == "session-init");
         Assert.All(metrics, m => Assert.False(string.IsNullOrWhiteSpace(m.TimingDomain)));
     }
@@ -156,9 +167,14 @@ public sealed class BenchmarkReferenceToolRunnerTests
         var metrics = BenchmarkReferenceToolRunner.ParseMetrics(
             BenchmarkReferenceToolKind.TensorRtRtx, stdout);
 
-        Assert.Contains(metrics, m => m.Name == "gpu-compute-mean" && m.Value == 1.50 && m.TimingDomain == "gpu-compute");
-        Assert.Contains(metrics, m => m.Name == "gpu-compute-min" && m.Value == 1.23);
-        Assert.Contains(metrics, m => m.Name == "throughput" && m.Value == 123.45 && m.Unit == "qps");
+        var mean = Assert.Single(metrics, m => m.Name == "gpu-compute-mean");
+        Assert.Equal("gpu-compute", mean.TimingDomain);
+        Assert.InRange(mean.Value, 1.50 - 1e-9, 1.50 + 1e-9);
+        var minimum = Assert.Single(metrics, m => m.Name == "gpu-compute-min");
+        Assert.InRange(minimum.Value, 1.23 - 1e-9, 1.23 + 1e-9);
+        var throughput = Assert.Single(metrics, m => m.Name == "throughput");
+        Assert.Equal("qps", throughput.Unit);
+        Assert.InRange(throughput.Value, 123.45 - 1e-9, 123.45 + 1e-9);
     }
 
     [Fact]

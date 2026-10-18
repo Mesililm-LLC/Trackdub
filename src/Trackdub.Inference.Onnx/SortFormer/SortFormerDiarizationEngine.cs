@@ -128,7 +128,7 @@ public sealed class SortFormerDiarizationEngine(IRuntimePlanner runtimePlanner,
                 modelPath,
                 plan.ExecutionProvider!.Value,
                 cancellationToken,
-                additionalTrtOptions: OnnxExecutionSessionFactory.WithCudaGraphsEnabled(TrtOptions),
+                additionalTrtOptions: TrtOptions,
                 allowTrtInitFallback: !plan.RequirePreferredExecutionProvider)
             .ConfigureAwait(false);
 
@@ -203,9 +203,9 @@ public sealed class SortFormerDiarizationEngine(IRuntimePlanner runtimePlanner,
         int speakerCount = MaxSupportedSpeakers;
         int chunkCount = CeilingDivide(totalFeatureFrames, StreamingChunkStrideFeatureFrames);
 
-        // The CUDA-graph session flag is only honored when every bound OrtValue stays at a fixed
-        // address. On TRT-RTX the streaming inputs sit in pinned host buffers at their profile
-        // capacities instead of fresh per-chunk tensors, so the compiled graph replays each chunk.
+        // This session handles both managed and bound chunks, so CUDA graphs stay disabled.
+        // On TRT-RTX the streaming inputs sit in pinned host buffers at their profile capacities
+        // instead of fresh per-chunk tensors, but early/short chunks still use dynamic managed feeds.
         // The bound path is only entered once speaker cache and FIFO are fully saturated: the
         // export's attention mask is a contiguous prefix over [spkcache | fifo | chunk], so any
         // padded row inside that prefix would leak into attention and corrupt predictions.
@@ -215,7 +215,7 @@ public sealed class SortFormerDiarizationEngine(IRuntimePlanner runtimePlanner,
                 selectedProviderLabel,
                 OnnxExecutionSessionFactory.FormatProviderLabel(ExecutionProviderKind.TensorRTRtx),
                 StringComparison.Ordinal)
-                ? new SortFormerStreamingRun(session)
+                ? SortFormerStreamingRun.TryCreate(session)
                 : null;
 
         for (int chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++)
@@ -864,30 +864,101 @@ public sealed class SortFormerDiarizationEngine(IRuntimePlanner runtimePlanner,
 
         internal SortFormerStreamingRun(InferenceSession session)
         {
-            Binding = session.CreateIoBinding();
-            RunOptions = new RunOptions();
             OrtAllocator allocator = RequireDeviceAllocator(session);
-            chunk = new DeviceBoundTensor<float>(allocator, [1, StreamingFeedFeatureFrames, SortFormerFeatureExtractor.MelBins]);
-            chunkLengths = new DeviceBoundTensor<long>(allocator, [1]);
-            spkcache = new DeviceBoundTensor<float>(allocator, [1, StreamingSpeakerCacheFrames, StreamingEmbeddingDimension]);
-            spkcacheLengths = new DeviceBoundTensor<long>(allocator, [1]);
-            fifo = new DeviceBoundTensor<float>(allocator, [1, StreamingFifoFrames, StreamingEmbeddingDimension]);
-            fifoLengths = new DeviceBoundTensor<long>(allocator, [1]);
-
-            Binding.BindInput("chunk", chunk.Device);
-            Binding.BindInput("chunk_lengths", chunkLengths.Device);
-            Binding.BindInput("spkcache", spkcache.Device);
-            Binding.BindInput("spkcache_lengths", spkcacheLengths.Device);
-            Binding.BindInput("fifo", fifo.Device);
-            Binding.BindInput("fifo_lengths", fifoLengths.Device);
-
-            Binding.BindOutputToDevice("spkcache_fifo_chunk_preds", OrtMemoryInfo.DefaultInstance);
-            Binding.BindOutputToDevice("chunk_pre_encode_embs", OrtMemoryInfo.DefaultInstance);
-            Binding.BindOutputToDevice("chunk_pre_encode_lengths", OrtMemoryInfo.DefaultInstance);
-
-            hostInputs = [chunk.Host, chunkLengths.Host, spkcache.Host, spkcacheLengths.Host, fifo.Host, fifoLengths.Host];
-            deviceInputs = [chunk.Device, chunkLengths.Device, spkcache.Device, spkcacheLengths.Device, fifo.Device, fifoLengths.Device];
+            Resources resources = CreateResources(session, allocator);
+            Binding = resources.Binding;
+            RunOptions = resources.RunOptions;
+            chunk = resources.Chunk;
+            chunkLengths = resources.ChunkLengths;
+            spkcache = resources.SpeakerCache;
+            spkcacheLengths = resources.SpeakerCacheLengths;
+            fifo = resources.Fifo;
+            fifoLengths = resources.FifoLengths;
+            hostInputs = resources.HostInputs;
+            deviceInputs = resources.DeviceInputs;
         }
+
+        internal static SortFormerStreamingRun? TryCreate(InferenceSession session)
+        {
+            try
+            {
+                return new SortFormerStreamingRun(session);
+            }
+            catch (NotSupportedException)
+            {
+                return null;
+            }
+        }
+
+        private static Resources CreateResources(InferenceSession session, OrtAllocator allocator)
+        {
+            OrtIoBinding? binding = null;
+            RunOptions? runOptions = null;
+            DeviceBoundTensor<float>? chunk = null;
+            DeviceBoundTensor<long>? chunkLengths = null;
+            DeviceBoundTensor<float>? speakerCache = null;
+            DeviceBoundTensor<long>? speakerCacheLengths = null;
+            DeviceBoundTensor<float>? fifo = null;
+            DeviceBoundTensor<long>? fifoLengths = null;
+            try
+            {
+                binding = session.CreateIoBinding();
+                runOptions = new RunOptions();
+                chunk = new DeviceBoundTensor<float>(allocator, [1, StreamingFeedFeatureFrames, SortFormerFeatureExtractor.MelBins]);
+                chunkLengths = new DeviceBoundTensor<long>(allocator, [1]);
+                speakerCache = new DeviceBoundTensor<float>(allocator, [1, StreamingSpeakerCacheFrames, StreamingEmbeddingDimension]);
+                speakerCacheLengths = new DeviceBoundTensor<long>(allocator, [1]);
+                fifo = new DeviceBoundTensor<float>(allocator, [1, StreamingFifoFrames, StreamingEmbeddingDimension]);
+                fifoLengths = new DeviceBoundTensor<long>(allocator, [1]);
+
+                binding.BindInput("chunk", chunk.Device);
+                binding.BindInput("chunk_lengths", chunkLengths.Device);
+                binding.BindInput("spkcache", speakerCache.Device);
+                binding.BindInput("spkcache_lengths", speakerCacheLengths.Device);
+                binding.BindInput("fifo", fifo.Device);
+                binding.BindInput("fifo_lengths", fifoLengths.Device);
+
+                binding.BindOutputToDevice("spkcache_fifo_chunk_preds", OrtMemoryInfo.DefaultInstance);
+                binding.BindOutputToDevice("chunk_pre_encode_embs", OrtMemoryInfo.DefaultInstance);
+                binding.BindOutputToDevice("chunk_pre_encode_lengths", OrtMemoryInfo.DefaultInstance);
+
+                return new Resources(
+                    binding,
+                    runOptions,
+                    chunk,
+                    chunkLengths,
+                    speakerCache,
+                    speakerCacheLengths,
+                    fifo,
+                    fifoLengths,
+                    [chunk.Host, chunkLengths.Host, speakerCache.Host, speakerCacheLengths.Host, fifo.Host, fifoLengths.Host],
+                    [chunk.Device, chunkLengths.Device, speakerCache.Device, speakerCacheLengths.Device, fifo.Device, fifoLengths.Device]);
+            }
+            catch
+            {
+                fifoLengths?.Dispose();
+                fifo?.Dispose();
+                speakerCacheLengths?.Dispose();
+                speakerCache?.Dispose();
+                chunkLengths?.Dispose();
+                chunk?.Dispose();
+                runOptions?.Dispose();
+                binding?.Dispose();
+                throw;
+            }
+        }
+
+        private sealed record Resources(
+            OrtIoBinding Binding,
+            RunOptions RunOptions,
+            DeviceBoundTensor<float> Chunk,
+            DeviceBoundTensor<long> ChunkLengths,
+            DeviceBoundTensor<float> SpeakerCache,
+            DeviceBoundTensor<long> SpeakerCacheLengths,
+            DeviceBoundTensor<float> Fifo,
+            DeviceBoundTensor<long> FifoLengths,
+            OrtValue[] HostInputs,
+            OrtValue[] DeviceInputs);
 
         internal OrtIoBinding Binding { get; }
 
@@ -933,8 +1004,8 @@ public sealed class SortFormerDiarizationEngine(IRuntimePlanner runtimePlanner,
                     "Session reports host-resident inputs only; the persistent bound path requires a device-resident provider.");
             }
 
-            OrtAllocator allocator = OrtEnv.Instance().GetSharedAllocator(deviceMemInfo);
-            if (allocator.IsInvalid)
+            OrtAllocator? allocator = OrtEnv.Instance().GetSharedAllocator(deviceMemInfo);
+            if (allocator is null || allocator.IsInvalid)
             {
                 throw new NotSupportedException(
                     $"No shared allocator registered for '{deviceMemInfo.Name}'.");

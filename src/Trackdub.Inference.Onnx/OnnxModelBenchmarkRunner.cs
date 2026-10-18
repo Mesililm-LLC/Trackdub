@@ -135,7 +135,6 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
                     fullModelPath, request.ProviderPreference, request.RunCount, settings, notes, cancellationToken);
             }
 
-
             requestedProvider = execution.RequestedProvider;
             selectedProvider = execution.SelectedProvider;
             modelSizeBytes = execution.ModelSizeBytes;
@@ -427,10 +426,12 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             ActiveSessionPlan.Value = basePlan;
         }
 
-        string? offLoadKind = offLane.Graphs.FirstOrDefault()?.LoadKind;
-        string? onLoadKind = onLane.Graphs.FirstOrDefault()?.LoadKind;
-        string? offArtifact = offLane.Graphs.FirstOrDefault()?.ArtifactIdentity;
-        string? onArtifact = onLane.Graphs.FirstOrDefault()?.ArtifactIdentity;
+        BenchmarkGraphMetadata? offGraph = offLane.Graphs.Count > 0 ? offLane.Graphs[0] : null;
+        BenchmarkGraphMetadata? onGraph = onLane.Graphs.Count > 0 ? onLane.Graphs[0] : null;
+        string? offLoadKind = offGraph?.LoadKind;
+        string? onLoadKind = onGraph?.LoadKind;
+        string? offArtifact = offGraph?.ArtifactIdentity;
+        string? onArtifact = onGraph?.ArtifactIdentity;
         if (!string.Equals(offLoadKind, onLoadKind, StringComparison.Ordinal)
             || !string.Equals(offArtifact, onArtifact, StringComparison.Ordinal))
         {
@@ -452,7 +453,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
 
     private static BenchmarkCudaGraphLaneResult ToCudaGraphLaneResult(string lane, BenchmarkExecution execution)
     {
-        BenchmarkGraphMetadata? graph = execution.Graphs.FirstOrDefault();
+        BenchmarkGraphMetadata? graph = execution.Graphs.Count > 0 ? execution.Graphs[0] : null;
         return new(
             Lane: lane,
             EnableCudaGraph: execution.Graphs.Any(g => g.EnableCudaGraph),
@@ -752,8 +753,17 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         }
 
         IReadOnlyList<string> devices = BenchmarkMetadataBuilder.DescribeSessionDevices(session);
-        string? selectedDevice = devices.FirstOrDefault(
-            device => device.Contains("GPU", StringComparison.OrdinalIgnoreCase)) ?? devices.FirstOrDefault();
+        string? selectedDevice = null;
+        foreach (string device in devices)
+        {
+            if (device.Contains("GPU", StringComparison.OrdinalIgnoreCase))
+            {
+                selectedDevice = device;
+                break;
+            }
+        }
+
+        selectedDevice ??= devices.Count > 0 ? devices[0] : null;
         if (selectedDevice is null)
         {
             warnings.Add($"selected-device identity unavailable for graph '{plan.Role}'.");
@@ -1051,7 +1061,6 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
                 throw new InvalidOperationException(
                     "MIGraphX execution provider is not visible to ONNX Runtime; refusing CPU fallback for explicit migraphx benchmark.");
             }
-
             notes.Add($"Selected provider: {selectedProviderLabel}.");
         }
 
