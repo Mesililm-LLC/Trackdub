@@ -175,13 +175,14 @@ public sealed class ControlledDubbingBenchmarkRunnerTests
         await File.WriteAllBytesAsync(fixture, [1, 2, 3]);
         try
         {
-            // The outlier delay sets the scale: a median contaminated by it would read
-            // >= ~OutlierDelayMs, while the true p50 gap is ~30 ms of simulated work.
-            // The assertion bound sits halfway between, so it checks ordering (p50
-            // excludes the outlier) rather than a wall-clock budget that dispatch
-            // overhead on loaded nodes could cross.
-            const int outlierDelayMs = 2000;
+            // Five runs keep the median stable when the first run has cold-start overhead.
+            // The final run's deliberately large delay would dominate if the runner returned
+            // that iteration instead of aggregating the measured first-output samples.
+            const int runCount = 5;
+            const int outlierDelayMs = 5000;
             var transcriptionStage = new SequencedTranscriptionStage(
+                TimeSpan.Zero,
+                TimeSpan.Zero,
                 TimeSpan.Zero,
                 TimeSpan.Zero,
                 TimeSpan.FromMilliseconds(outlierDelayMs));
@@ -197,7 +198,7 @@ public sealed class ControlledDubbingBenchmarkRunnerTests
                 FixturePath = fixture,
                 OutputDirectory = Path.Join(directory, "output"),
                 Mock = true,
-                RunCount = 3,
+                RunCount = runCount,
             });
 
             Assert.Equal(BenchmarkEvidenceStatus.Completed, report.Status);

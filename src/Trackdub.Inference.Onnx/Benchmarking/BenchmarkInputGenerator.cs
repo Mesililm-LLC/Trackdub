@@ -32,7 +32,7 @@ internal static class BenchmarkInputGenerator
             state ^= state << 13;
             state ^= state >> 17;
             state ^= state << 5;
-            values[index] = ((state >> 8) / 8388608f - 1f) * scale;
+            values[index] = (((state >> 8) / 8388608f) - 1f) * scale;
         }
     }
 }

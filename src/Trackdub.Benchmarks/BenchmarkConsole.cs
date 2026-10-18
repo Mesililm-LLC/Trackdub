@@ -92,6 +92,7 @@ public static class BenchmarkConsole
 
     public static void WriteSummary(BenchmarkReport report, TextWriter writer)
     {
+        var metadata = report.Metadata;
         writer.WriteLine($"Scenario: {report.Scenario}");
         writer.WriteLine($"Model: {report.ModelPath}");
         writer.WriteLine($"Status: {report.Status}");
@@ -126,7 +127,7 @@ public static class BenchmarkConsole
                 : string.Empty));
         writer.WriteLine($"Audio duration: {FormatSeconds(report.Measurements.AudioDurationSeconds)}");
         writer.WriteLine($"Real-time factor: {FormatFactor(report.Measurements.RealTimeFactorAverage)}");
-        if (report.Metadata?.Environment is { } environment)
+        if (metadata?.Environment is { } environment)
         {
             writer.WriteLine(
                 $"Environment: {environment.MachineGpuName ?? "gpu n/a"}"
@@ -134,15 +135,15 @@ public static class BenchmarkConsole
                 + $" | {environment.OsDescription ?? "os n/a"}"
                 + $" | {environment.DotnetVersion ?? "dotnet n/a"}"
                 + $" | host ort {environment.HostOrtRuntimeVersion ?? "n/a"}");
-            if (report.Metadata.ComparisonKey is not null)
+            if (metadata.ComparisonKey is not null)
             {
-                writer.WriteLine($"Comparison key: {report.Metadata.ComparisonKey}");
+                writer.WriteLine($"Comparison key: {metadata.ComparisonKey}");
             }
         }
-        if (report.Metadata?.CudaGraphLanes.Count > 1)
+        if (metadata is { CudaGraphLanes.Count: > 1 })
         {
             writer.WriteLine("CUDA graph comparison:");
-            foreach (var lane in report.Metadata.CudaGraphLanes)
+            foreach (var lane in metadata.CudaGraphLanes)
             {
                 writer.WriteLine(
                     $"  {lane.Lane}: avg={FormatMilliseconds(lane.Statistics?.MeanMilliseconds)} "
@@ -151,9 +152,9 @@ public static class BenchmarkConsole
                     + (lane.UnavailableReason is null ? string.Empty : $" ({lane.UnavailableReason})"));
             }
         }
-        if (report.Metadata?.ReferenceToolResults.Count > 0)
+        if (metadata is { ReferenceToolResults.Count: > 0 })
         {
-            foreach (var referenceResult in report.Metadata.ReferenceToolResults)
+            foreach (var referenceResult in metadata.ReferenceToolResults)
             {
                 writer.WriteLine(
                     $"Reference tool {referenceResult.Tool} [{referenceResult.GraphRole}]: {referenceResult.Status}"

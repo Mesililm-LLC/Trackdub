@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 
 namespace Trackdub.Infrastructure.Persistence.Sqlite;
@@ -6,6 +5,7 @@ namespace Trackdub.Infrastructure.Persistence.Sqlite;
 public sealed class SqliteUserBenchmarkDatabase
 {
     public const string DatabaseFileName = "benchmarks.db";
+    private const string BenchmarkRunsTable = "BenchmarkRuns";
 
     private readonly string databasePath;
 
@@ -45,6 +45,35 @@ public sealed class SqliteUserBenchmarkDatabase
         ("ComparisonKey", "TEXT"),
         ("MetadataJson", "TEXT")
     ];
+
+    private static readonly IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> AllowedColumnDefinitions =
+        new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal)
+        {
+            [BenchmarkRunsTable] = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["EvidenceId"] = "TEXT",
+                ["FingerprintHash"] = "TEXT",
+                ["Scenario"] = "TEXT",
+                ["FirstRunMilliseconds"] = "REAL",
+                ["WarmupMilliseconds"] = "REAL",
+                ["WarmupRunCount"] = "INTEGER",
+                ["SampleCount"] = "INTEGER",
+                ["WarmLatencyP50Milliseconds"] = "REAL",
+                ["WarmLatencyP90Milliseconds"] = "REAL",
+                ["WarmLatencyP95Milliseconds"] = "REAL",
+                ["WarmLatencyP99Milliseconds"] = "REAL",
+                ["MeasuredWallTimeMilliseconds"] = "REAL",
+                ["PassesPerSecond"] = "REAL",
+                ["ThroughputUnitsPerSecond"] = "REAL",
+                ["AudioDurationSeconds"] = "REAL",
+                ["RealTimeFactorAverage"] = "REAL",
+                ["ThroughputUnit"] = "TEXT",
+                ["TimingMode"] = "TEXT",
+                ["InputProfileId"] = "TEXT",
+                ["ComparisonKey"] = "TEXT",
+                ["MetadataJson"] = "TEXT"
+            }
+        };
 
     private readonly SemaphoreSlim initializationGate = new(1, 1);
 
@@ -154,15 +183,10 @@ public sealed class SqliteUserBenchmarkDatabase
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static readonly Regex SqlIdentifierPattern = new(@"^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.CultureInvariant);
-
-    private static void RequireSqlIdentifier(string value)
-    {
-        if (!SqlIdentifierPattern.IsMatch(value))
-        {
-            throw new ArgumentException($"'{value}' is not a valid SQL identifier.", nameof(value));
-        }
-    }
+    internal static bool IsAllowedColumnDefinition(string tableName, string name, string type) =>
+        AllowedColumnDefinitions.TryGetValue(tableName, out IReadOnlyDictionary<string, string>? columns)
+        && columns.TryGetValue(name, out string? allowedType)
+        && string.Equals(type, allowedType, StringComparison.Ordinal);
 
     private static async Task EnsureColumnsAsync(
         SqliteConnection connection,
@@ -171,18 +195,31 @@ public sealed class SqliteUserBenchmarkDatabase
         (string Name, string Type)[] columns,
         CancellationToken cancellationToken)
     {
-        RequireSqlIdentifier(tableName);
-        foreach ((string name, string type) in columns)
+        if (!AllowedColumnDefinitions.TryGetValue(tableName, out IReadOnlyDictionary<string, string>? allowedColumns))
         {
-            RequireSqlIdentifier(name);
-            RequireSqlIdentifier(type);
+            throw new ArgumentException("SQLite table is not in the schema migration allowlist.", nameof(tableName));
+        }
+
+        var safeColumns = new (string Name, string Type)[columns.Length];
+        for (int i = 0; i < columns.Length; i++)
+        {
+            (string name, string type) = columns[i];
+            if (!allowedColumns.TryGetValue(name, out string? allowedType)
+                || !string.Equals(type, allowedType, StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    "SQLite column definition is not in the schema migration allowlist.",
+                    nameof(columns));
+            }
+
+            safeColumns[i] = (name, allowedType);
         }
 
         var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         await using (SqliteCommand pragma = connection.CreateCommand())
         {
             pragma.Transaction = transaction;
-            pragma.CommandText = $"PRAGMA table_info({tableName});";
+            pragma.CommandText = $"PRAGMA table_info(\"{tableName}\");";
             await using var reader = await pragma.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
@@ -190,7 +227,7 @@ public sealed class SqliteUserBenchmarkDatabase
             }
         }
 
-        foreach ((string name, string type) in columns)
+        foreach ((string name, string type) in safeColumns)
         {
             if (existing.Contains(name))
             {
@@ -198,7 +235,7 @@ public sealed class SqliteUserBenchmarkDatabase
             }
 
             await ExecuteAsync(connection, transaction,
-                $"ALTER TABLE {tableName} ADD COLUMN {name} {type} NULL;", cancellationToken).ConfigureAwait(false);
+                $"ALTER TABLE \"{tableName}\" ADD COLUMN \"{name}\" {type} NULL;", cancellationToken).ConfigureAwait(false);
         }
     }
 

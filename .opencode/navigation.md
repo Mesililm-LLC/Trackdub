@@ -116,7 +116,7 @@ Two further workflows are planned (`feature-change`, `release-and-pin`) but are 
 | "Bump the core pin" | `pipeline-inference` (via `/pin`) | `context/processes/submodule-pin-bump.md` (in gated) |
 | Architecture governance, ADRs, layering policy | **orchestrator** (kept in-house) | `context/standards/` |
 | Release notes, ops docs, CI policy, PR descriptions, commits | **orchestrator** (kept in-house) | `context/standards/`, `context/processes/` |
-| External issue tracker | **not used**: Linear is not used | n/a |
+| External issue tracker | **opt-in**: use only when the user explicitly asks | n/a |
 | Avalonia desktop shell, UI, playback UX, mpv, subtitle pipeline | *out of scope* — use the gated repo system | `../Trackdub-gated/.opencode/` |
 | Third-party library docs (non-Trackdub) | **orchestrator** | Context7; verify retrieved docs against live code |
 | Trackdub implementation facts / pin policy / provider wiring | **orchestrator** | `trackdub-docs-rag` MCP; spec `tools/docs-rag/SPEC.md` |
@@ -133,7 +133,7 @@ Details and the reasoning: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Known gaps
 
-- **Linear is not used.** The team does not use Linear; `AGENTS.md` forbids Linear searches, status updates, and `TS-*` requirements. Do not use Linear or require issue searches/status/TS IDs; track requested work locally in plans/Git unless the user explicitly asks for an external issue tracker.
+- **External issue trackers are opt-in.** Do not use Linear or require issue searches/status/TS IDs by default. Track work in Git; create a persisted plan only when the user requests one. Update an external tracker only when the user explicitly asks.
 - **The desktop repo has its own system.** Core and gated are deliberately separate `.opencode` trees. Cross-repo work — chiefly `/pin` — is the only seam, and it is documented on both sides.
 - **Two planned workflows are unwritten.** `feature-change` and `release-and-pin` are named in the routing table but do not exist. The three shipped workflows are `new-inference-stage`, `pr-ready-loop`, and `benchmark-regression-triage`.
 - **`/pin` mutates git from the writer agent.** It is the one command that edits state, so it runs on `pipeline-inference` rather than a read-only judge. A failure mid-procedure can leave the gated submodule checked out but uncommitted — recover with `git -C external/Trackdub checkout <previous-sha>`.

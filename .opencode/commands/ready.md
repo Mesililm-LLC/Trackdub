@@ -14,8 +14,8 @@ Read-only readiness audit. **Modify nothing.** This runs on `core-diagnostics`, 
 
 Grounding sources, in conflict order (source/tests > task instructions > documentation):
 - `src/Trackdub.Inference/Runtime/ModelManifest/bundled-models.manifest.json` — the bundled inventory.
-- `AGENTS.md` "Model Governance".
 - `tools/ci/audit-bundled-model-manifest.py`, `tools/ci/validate-manifest-schema.py`, `tools/ci/verify-manifest-hashes.py`.
+- `AGENTS.md` "Model Governance".
 - `trackdub-docs-rag` MCP (`search_trackdub_docs`, `ask_trackdub_docs`, `get_trackdub_doc`) for provider wiring and pin policy. Spec: `tools/docs-rag/SPEC.md`.
 
 ## The readiness ladder

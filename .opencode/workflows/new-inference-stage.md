@@ -49,7 +49,7 @@ Do NOT use for:
   2. Decide `needs new provider`. If yes, enumerate the provider type and the execution providers it may bind to.
   3. Confirm model license is commercial. Unknown license ⇒ **abort**, do not speculate.
   4. Confirm the model belongs in `bundled-models.manifest.json` and state its checksum source.
-  5. Do not use Linear or require issue searches/status/TS IDs; track requested work locally in plans/Git unless the user explicitly asks for an external issue tracker.
+  5. Do not use Linear or require issue searches/status/TS IDs by default. Track work in Git, create persisted plans only when requested, and update an external tracker only on explicit user request.
 - **Exit criteria**: A written stage contract exists; provider decision is binary; license is confirmed commercial.
 - **Failure handling**: Ambiguous contract, missing model, or unknown license ⇒ stop and hand to human. Do not proceed to implementation.
 
@@ -257,4 +257,4 @@ Record under `.opencode/context/templates/evidence-report.md`:
 - [ ] CLI lists the stage: `dotnet run --project src/Trackdub.Cli --framework net10.0 -- --help`.
 - [ ] Execution proof captured with real artifact, `actualProvider`, `actualModel`.
 - [ ] `validateRuntime` semantics respected — no Ready presented as Verified; Release build passes `-warnaserror` with the full Release test suite green.
-- [ ] No new `Path.Combine` in changed lines; docs updated; no external issue tracker touched, no Done claim without proof.
+- [ ] No new `Path.Combine` in changed lines; docs updated; no external issue tracker touched unless explicitly requested by the user; no Done claim without proof.

@@ -53,7 +53,7 @@ public static class BenchmarkLatencyCalculator
         double position = fraction * (sorted.Length - 1);
         int left = (int)Math.Floor(position);
         int right = (int)Math.Ceiling(position);
-        return sorted[left] + (sorted[right] - sorted[left]) * (position - left);
+        return sorted[left] + ((sorted[right] - sorted[left]) * (position - left));
     }
 
     private static void ValidateSample(double sample)

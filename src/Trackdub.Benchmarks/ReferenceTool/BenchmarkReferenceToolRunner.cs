@@ -68,18 +68,22 @@ internal static class BenchmarkReferenceToolRunner
         }
 
         FileVersionInfo? executableVersion = null;
+        string? executableVersionFailure = null;
         try
         {
             executableVersion = FileVersionInfo.GetVersionInfo(executablePath);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
         {
+            executableVersionFailure = $"{ex.GetType().Name}: {ex.Message}";
         }
 
         ProcessOutcome help = await RunProcessAsync(
             executablePath, ["--help"], null, null, HelpTimeout, cancellationToken).ConfigureAwait(false);
         string helpIdentity = $"sha256:{HashText(help.Stdout)}";
-        string executableIdentity = DescribeExecutable(executableVersion);
+        string executableIdentity = executableVersion is null
+            ? executableVersionFailure is null ? "unavailable" : $"unavailable ({executableVersionFailure})"
+            : DescribeExecutable(executableVersion);
         if (!help.Stdout.Contains(recipe.HelpIdentitySubstring, StringComparison.OrdinalIgnoreCase))
         {
             return new BenchmarkReferenceToolResult
@@ -101,7 +105,7 @@ internal static class BenchmarkReferenceToolRunner
 
         // Argument gate: every flag the recipe intends to pass must be visible in --help.
         string[] missingFlags = recipe.RequiredFlags(request)
-            .Where(flag => !help.Stdout.Contains(flag, StringComparison.Ordinal))
+            .Where(flag => !HelpAdvertisesFlag(help.Stdout, flag))
             .ToArray();
         if (missingFlags.Length > 0)
         {
@@ -197,15 +201,21 @@ internal static class BenchmarkReferenceToolRunner
     private static string ModelPathDigest(string modelPath) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(modelPath)))[..12].ToLowerInvariant();
 
+    internal static bool HelpAdvertisesFlag(string helpText, string flag) =>
+        Regex.IsMatch(
+            helpText,
+            $"(?m)^[ \\t]*{Regex.Escape(flag)}(?=[ \\t,:=\\[]|$)",
+            RegexOptions.CultureInvariant);
+
     internal static ToolRecipe RecipeFor(BenchmarkReferenceToolKind kind) => kind switch
     {
-        // Flags grounded in the captured onnxruntime_perf_test --help on this machine.
+        // perf_test advertises single-dash option tokens; match complete help entries, not prefixes.
         BenchmarkReferenceToolKind.OrtPerfTest => new ToolRecipe(
             ExecutableName: "onnxruntime_perf_test",
             HelpIdentitySubstring: "onnxruntime_perf_test",
             RequiredFlags: static request => request.DeviceBoundIo
-                ? ["--e", "--m", "--r", "--s", "--I", "--S", "--g"]
-                : ["--e", "--m", "--r", "--s", "--I", "--S"],
+                ? ["-e", "-m", "-r", "-s", "-I", "-S", "-g"]
+                : ["-e", "-m", "-r", "-s", "-I", "-S"],
             BuildArguments: static (request, _) =>
             {
                 var args = new List<string>

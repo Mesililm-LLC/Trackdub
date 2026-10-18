@@ -137,9 +137,7 @@ public sealed class BenchmarkRunnerService : IBenchmarkRunnerService
 
         try
         {
-            string modelId = Path.GetFileNameWithoutExtension(report.ModelPath) is { Length: > 0 } name
-                ? name
-                : report.ModelPath;
+            string modelId = $"onnx-model:file:{Path.GetFullPath(report.ModelPath)}";
             BenchmarkRunRecord record = BenchmarkRunRecord.FromReport(
                 report.RunId ?? Guid.NewGuid(), modelId, report);
             await _onnxHistory.AddAsync(record, ct).ConfigureAwait(false);

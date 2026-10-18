@@ -142,7 +142,7 @@ Do NOT use for:
 - **Actions**:
   1. Open or update with `gh pr create` / `gh pr edit`.
   2. Body states: what changed, why, the exact commands run with results, and what was deliberately not changed.
-  3. Reference an issue id only if the user provided one. Do **not** touch Linear or any other external tracker from this loop.
+  3. Reference an issue ID only if the user provided one. Use an external tracker only when the user explicitly asks; otherwise track work in Git and create persisted plans only when requested.
   4. Keep the PR scope to one logical change.
 - **Exit criteria**: PR open against the correct base; body carries the gate evidence.
 - **Failure handling**: Wrong base ⇒ recreate against the intended base.
@@ -184,7 +184,7 @@ Do NOT use for:
   1. Confirm: gate green, CI green, threads resolved, branch up to date with its base.
   2. Merge. Re-run Stage 3 locally if the base moved during review.
   3. Confirm the change landed on `main` and post-merge CI is green.
-  4. **No external issue tracker.** The agent does not use Linear. Never claim Done without proof: the proof is the green post-merge run, recorded in the handoff.
+  4. **External issue trackers are opt-in.** Update one only on explicit user request. Never claim Done without proof: the proof is the green post-merge run, recorded in the handoff.
 - **Exit criteria**: Change on `main`; post-merge CI green.
 - **Failure handling**: Post-merge red ⇒ revert promptly and diagnose.
 
@@ -236,7 +236,7 @@ Per `.opencode/context/templates/evidence-report.md`:
 - PR URL, base branch, commit sha.
 - `gh pr checks` terminal output with each check name and state.
 - Every review thread with its triage decision and the code change that resolved it.
-- Confirmation that no external issue tracker was touched by the agent.
+- Confirmation that no external issue tracker was touched, or the explicit user request that authorized an update.
 
 ## Completion Checklist
 

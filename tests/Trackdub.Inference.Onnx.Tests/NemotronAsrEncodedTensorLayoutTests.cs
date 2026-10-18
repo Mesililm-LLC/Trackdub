@@ -1,4 +1,7 @@
+using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Trackdub.Domain;
+using Trackdub.Inference.Onnx;
 using Trackdub.Inference.Onnx.NemotronAsr;
 
 namespace Trackdub.Inference.Onnx.Tests;
@@ -6,6 +9,44 @@ namespace Trackdub.Inference.Onnx.Tests;
 public sealed class NemotronAsrEncodedTensorLayoutTests
 {
     private const int HiddenDim = 1024;
+
+    [Theory]
+    [InlineData(ExecutionProviderKind.Cpu, true, true, false)]
+    [InlineData(ExecutionProviderKind.DirectMl, true, true, false)]
+    [InlineData(ExecutionProviderKind.TensorRTRtx, false, true, false)]
+    [InlineData(ExecutionProviderKind.TensorRTRtx, true, false, false)]
+    [InlineData(ExecutionProviderKind.TensorRTRtx, true, true, true)]
+    public void Device_bound_runs_require_trt_rtx_and_both_shared_allocators(
+        ExecutionProviderKind provider,
+        bool encoderHasDeviceAllocator,
+        bool decoderHasDeviceAllocator,
+        bool expected) =>
+        Assert.Equal(expected, NemotronAsrGreedyDecoder.ShouldUseDeviceBoundRuns(
+            provider, encoderHasDeviceAllocator, decoderHasDeviceAllocator));
+
+    [Fact]
+    public void Decode_uses_managed_sessions_on_cpu()
+    {
+        string fixtureDirectory = Path.Join(AppContext.BaseDirectory, "Fixtures", "NemotronAsr");
+        var lease = new OnnxExecutionSessionFactory.NemotronAsrSessionLease(
+            new InferenceSession(Path.Join(fixtureDirectory, "managed-encoder.onnx")),
+            new InferenceSession(Path.Join(fixtureDirectory, "managed-decoder.onnx")),
+            "cpu",
+            OnnxExecutionSessionFactory.FormatProviderLabel(ExecutionProviderKind.Cpu),
+            null);
+        using (lease)
+        {
+            var vocab = new NemotronAsrSentencePieceVocab(["piece"]);
+            var exportConfig = new NemotronAsrExportConfig(1, 1, "NA", HasPromptInput: false);
+            var decoder = new NemotronAsrGreedyDecoder(lease, vocab, exportConfig);
+
+            IReadOnlyList<int> tokens = decoder.Decode(
+                new float[128, 1], promptIndex: 0, TestContext.Current.CancellationToken);
+
+            Assert.Empty(tokens);
+            Assert.Equal(1, decoder.LastEncodedLength);
+        }
+    }
 
     [Theory]
     [InlineData(1, 7, 1024, true)]

@@ -193,17 +193,33 @@ public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimeP
         string encoderModelPath = ResolvePlannedModelPath(plan);
         string decoderModelPath = ResolveWhisperDecoderPath(encoderModelPath);
         string modelRootPath = ResolveModelRootPath(encoderModelPath);
+        ExecutionProviderKind provider = plan.ExecutionProvider!.Value;
+        IReadOnlyDictionary<string, string>? encoderOptions = null;
+        IReadOnlyDictionary<string, string>? decoderOptions = null;
+        if (provider is ExecutionProviderKind.TensorRTRtx)
+        {
+            IReadOnlyDictionary<string, string> encoderProfile = BuildTrtEncoderOptions(ReadMelBins(modelRootPath));
+            IReadOnlyDictionary<string, string> decoderProfile = BuildTrtDecoderOptions(decoderModelPath);
+            bool enableCudaGraphs = ShouldEnableTrtRtxCudaGraphs(
+                provider,
+                GetDecoderTrtConfiguration(decoderModelPath).InputNames);
+            encoderOptions = enableCudaGraphs
+                ? OnnxExecutionSessionFactory.WithCudaGraphsEnabled(encoderProfile)
+                : encoderProfile;
+            decoderOptions = enableCudaGraphs
+                ? OnnxExecutionSessionFactory.WithCudaGraphsEnabled(decoderProfile)
+                : decoderProfile;
+        }
+
         OnnxExecutionSessionFactory.WhisperSessionLease lease = await OnnxExecutionSessionFactory
             .CreatePooledWhisperAsync(
                 "whisper-onnx",
                 encoderModelPath,
                 decoderModelPath,
-                plan.ExecutionProvider!.Value,
+                provider,
                 cancellationToken,
-                additionalTrtEncoderOptions: OnnxExecutionSessionFactory.WithCudaGraphsEnabled(
-                    BuildTrtEncoderOptions(ReadMelBins(modelRootPath))),
-                additionalTrtDecoderOptions: OnnxExecutionSessionFactory.WithCudaGraphsEnabled(
-                    BuildTrtDecoderOptions(decoderModelPath)))
+                additionalTrtEncoderOptions: encoderOptions,
+                additionalTrtDecoderOptions: decoderOptions)
             .ConfigureAwait(false);
         return new WhisperSessionBundle(lease, encoderModelPath, decoderModelPath, modelRootPath);
     }
@@ -830,15 +846,40 @@ public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimeP
     // causal self-attention and only their logits are ignored), and encoder_hidden_states rides
     // the encoder's 1500-frame output. Hidden width is read from the model's declared dims, so a
     // single builder covers tiny/base/small/medium/large.
-    private static readonly ConcurrentDictionary<string, Dictionary<string, string>> DecoderOptionsCache =
+    private static readonly ConcurrentDictionary<string, DecoderTrtConfiguration> DecoderOptionsCache =
         new(StringComparer.OrdinalIgnoreCase);
 
     internal static Dictionary<string, string> BuildTrtDecoderOptions(string decoderModelPath) =>
+        new(GetDecoderTrtConfiguration(decoderModelPath).Options, StringComparer.Ordinal);
+
+    internal static bool ShouldEnableTrtRtxCudaGraphs(
+        ExecutionProviderKind provider,
+        IEnumerable<string> decoderInputNames) =>
+        provider is ExecutionProviderKind.TensorRTRtx
+        && !TrtRtxBoundRunDisabled
+        && HasFixedAddressDecoderInputs(decoderInputNames);
+
+    internal static bool HasFixedAddressDecoderInputs(IEnumerable<string> decoderInputNames)
+    {
+        ArgumentNullException.ThrowIfNull(decoderInputNames);
+        HashSet<string> inputNames = decoderInputNames.ToHashSet(StringComparer.Ordinal);
+        return inputNames.Count == 2
+            && inputNames.Contains("input_ids")
+            && inputNames.Contains("encoder_hidden_states");
+    }
+
+    private static DecoderTrtConfiguration GetDecoderTrtConfiguration(string decoderModelPath) =>
         DecoderOptionsCache.GetOrAdd(decoderModelPath, static path =>
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(path);
             // Metadata only: a CPU session never touches the TRT plugin.
             using InferenceSession session = new(path);
+            HashSet<string> inputNames = session.InputMetadata.Keys.ToHashSet(StringComparer.Ordinal);
+            if (!HasFixedAddressDecoderInputs(inputNames))
+            {
+                return new DecoderTrtConfiguration(new Dictionary<string, string>(), inputNames);
+            }
+
             int hiddenDim = session.InputMetadata.TryGetValue("encoder_hidden_states", out NodeMetadata? hidden)
                 && hidden.Dimensions.Length == 3
                 && hidden.Dimensions[2] > 0
@@ -850,13 +891,18 @@ public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimeP
             string minShapes = $"input_ids:1x1,encoder_hidden_states:1x1x{hiddenDim}";
             string fullShapes =
                 $"input_ids:1x{MaxDecoderContextTokens},encoder_hidden_states:1x{EncoderSequenceLength}x{hiddenDim}";
-            return new Dictionary<string, string>
+            var options = new Dictionary<string, string>
             {
                 ["trt_profile_min_shapes"] = minShapes,
                 ["trt_profile_max_shapes"] = fullShapes,
                 ["trt_profile_opt_shapes"] = fullShapes,
             };
+            return new DecoderTrtConfiguration(options, inputNames);
         });
+
+    private sealed record DecoderTrtConfiguration(
+        Dictionary<string, string> Options,
+        HashSet<string> InputNames);
 
     // large-v3 uses 128 mel bins; earlier sizes use 80.
     internal static int ReadMelBins(string modelRootPath)
@@ -1033,9 +1079,7 @@ public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimeP
             // satisfy the fixed-shape precondition.
             IReadOnlyDictionary<string, NodeMetadata> decoderInputs = lease.DecoderSession.InputMetadata;
             if (!lease.EncoderSession.InputMetadata.ContainsKey("input_features")
-                || decoderInputs.Count != 2
-                || !decoderInputs.ContainsKey("input_ids")
-                || !decoderInputs.ContainsKey("encoder_hidden_states"))
+                || !HasFixedAddressDecoderInputs(decoderInputs.Keys))
             {
                 return null;
             }
@@ -1178,8 +1222,8 @@ public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimeP
                     "Session reports host-resident inputs only; the persistent bound path requires a device-resident provider.");
             }
 
-            OrtAllocator allocator = OrtEnv.Instance().GetSharedAllocator(deviceMemInfo);
-            if (allocator.IsInvalid)
+            OrtAllocator? allocator = OrtEnv.Instance().GetSharedAllocator(deviceMemInfo);
+            if (allocator is null || allocator.IsInvalid)
             {
                 throw new NotSupportedException(
                     $"No shared allocator registered for '{deviceMemInfo.Name}'.");
