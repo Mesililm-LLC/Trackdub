@@ -158,9 +158,10 @@ public sealed class RuntimePlannerTests
     }
 
     [Fact]
-    public async Task PlanAsync_WhenTensorRtAndCudaAvailableForVad_UsesTensorRtBeforeCuda()
+    public async Task PlanAsync_WhenTensorRtAndCudaAvailableForVad_UsesCudaBecauseTensorRtExcluded()
     {
-        // Global probe order lists TensorRT before Cuda; VAD allows both (non-RTX TensorRT).
+        // Both TensorRT providers are excluded for VAD (Silero's If subgraph fails engine
+        // building on both; 2026-10-18 retest), so an available CUDA provider wins instead.
         using var workspace = new RuntimePlannerTestWorkspace();
         BundledModelManifestRegistry registry = workspace.WriteManifest(
             CreateVadSpec("silero-vad", commercialAllowed: true, license: "MIT"));
@@ -172,15 +173,15 @@ public sealed class RuntimePlannerTests
             registry,
             [new("onnx-community/silero-vad", cacheRoot, "main", ValidSha256, DateTimeOffset.UtcNow)],
             [
-                new(ExecutionProviderKind.Cuda, true),
-                new(ExecutionProviderKind.TensorRt, true)
+                new(ExecutionProviderKind.TensorRt, true),
+                new(ExecutionProviderKind.Cuda, true)
             ],
             _ => new ExecutionProviderSmokeTestResult(true));
 
         StageRuntimePlan plan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad));
 
         Assert.True(plan.IsRunnable(), $"Expected runnable plan but got {plan.Status}");
-        Assert.Equal(ExecutionProviderKind.TensorRt, plan.ExecutionProvider);
+        Assert.Equal(ExecutionProviderKind.Cuda, plan.ExecutionProvider);
         Assert.Equal("int8", plan.Variant);
     }
 
@@ -623,8 +624,11 @@ public sealed class RuntimePlannerTests
     }
 
     [Fact]
-    public async Task PlanAsync_RequiredTensorRTRtxNotAllowedForWhisperOnnx_PlansDirectMlWithoutTrtSmoke()
+    public async Task PlanAsync_RequiredTensorRTRtxForWhisperOnnx_UsesTensorRTRtx()
     {
+        // Whisper ONNX qualified on both TensorRT providers in the 2026-10-18 isolated
+        // retest (Xenova whisper-medium passed both smokes), so a required TensorRT-RTX
+        // preference is honored for whisper-onnx again.
         using var workspace = new RuntimePlannerTestWorkspace();
         BundledModelManifestRegistry registry = workspace.WriteManifest(
             new ManifestSpec(
@@ -653,15 +657,7 @@ public sealed class RuntimePlannerTests
                 new(ExecutionProviderKind.DirectMl, true),
                 new(ExecutionProviderKind.TensorRTRtx, true)
             ],
-            request =>
-            {
-                if (request.ExecutionProvider is ExecutionProviderKind.TensorRTRtx or ExecutionProviderKind.TensorRt)
-                {
-                    throw new InvalidOperationException("TensorRT families must not be smoked for whisper-onnx.");
-                }
-
-                return new ExecutionProviderSmokeTestResult(true);
-            });
+            request => new ExecutionProviderSmokeTestResult(true));
 
         StageRuntimePlan plan = await planner.PlanAsync(new StageRuntimePlanningRequest(
             RuntimeStage.Asr,
@@ -672,13 +668,7 @@ public sealed class RuntimePlannerTests
 
         Assert.True(plan.IsRunnable(), $"Expected runnable plan but got {plan.Status}");
         Assert.Equal("whisper-onnx", plan.EngineFamily);
-        Assert.Equal(ExecutionProviderKind.DirectMl, plan.ExecutionProvider);
-        Assert.Contains(
-            plan.Warnings,
-            warning =>
-                warning.Code == RuntimePlanWarningCode.PreferredExecutionProviderNotAllowedForEngine
-                && warning.Detail is not null
-                && warning.Detail.Contains("TensorRTRtx", StringComparison.Ordinal));
+        Assert.Equal(ExecutionProviderKind.TensorRTRtx, plan.ExecutionProvider);
     }
 
     [Fact]

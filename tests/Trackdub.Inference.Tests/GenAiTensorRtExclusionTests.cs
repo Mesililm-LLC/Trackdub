@@ -96,19 +96,71 @@ public sealed class GenAiTensorRtExclusionTests
         Assert.Contains("terminates the host process", result.Detail, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Theory]
-    [InlineData(RuntimeStage.Translation, "opus-mt")]
-    public void FatalEncoderDecoderFamily_StageOverride_ExcludesTensorRtProviders(
-        RuntimeStage stage,
-        string engineFamily)
+    [Fact]
+    public void OpusMtStageOverride_ExcludesTensorRtRtxButKeepsClassicTensorRt()
     {
-        StageRuntimeRequirements requirements = StageRuntimeRequirementsCatalog.All[stage];
+        // Isolated retest 2026-10-18 (ORT 1.31, TensorRT 10.13, RTX 5070): the merged-decoder
+        // OPUS-MT export passed classic TensorRT smoke, but session construction on
+        // TensorRT-RTX aborted the host process (exit 134). Classic stays, RTX stays out.
+        StageRuntimeRequirements requirements = StageRuntimeRequirementsCatalog.All[RuntimeStage.Translation];
 
         Assert.True(
             requirements.AllowedProvidersByEngineFamily!.TryGetValue(
-                engineFamily, out IReadOnlyList<ExecutionProviderKind>? allowed));
+                "opus-mt", out IReadOnlyList<ExecutionProviderKind>? allowed));
         Assert.DoesNotContain(ExecutionProviderKind.TensorRTRtx, allowed);
+        Assert.Contains(ExecutionProviderKind.TensorRt, allowed);
+    }
+
+    [Theory]
+    [InlineData(ExecutionProviderKind.TensorRt, false)]
+    [InlineData(ExecutionProviderKind.TensorRTRtx, true)]
+    [InlineData(ExecutionProviderKind.Cuda, false)]
+    public void OpusMt_smoke_guard_refuses_only_tensorrt_rtx(ExecutionProviderKind provider, bool rejected)
+    {
+        if (rejected)
+        {
+            Assert.Throws<NotSupportedException>(() => OnnxExecutionProviderSmokeTester.ThrowIfFatalTensorRtFamily(
+                "opus-mt", provider, "merged-decoder", "onnx/model.onnx"));
+        }
+        else
+        {
+            OnnxExecutionProviderSmokeTester.ThrowIfFatalTensorRtFamily(
+                "opus-mt", provider, "merged-decoder", "onnx/model.onnx");
+        }
+    }
+
+    [Fact]
+    public void Qwen3AsrStageOverride_ExcludesClassicTensorRtButKeepsTensorRtRtx()
+    {
+        // Qwen3-ASR's bundled export is not qualified on classic TensorRT: the 2026-10-18
+        // isolated retest terminated the host process during import (plugin ops the
+        // importer cannot resolve), and the planner smokes in-process, so classic TensorRT
+        // must not be attempted until a qualified export exists. TensorRT-RTX stays
+        // reachable: its Qwen smoke historically fell back catchably after a long compile,
+        // and explicit provider pins rely on that path. DirectML leads, CUDA follows.
+        StageRuntimeRequirements requirements = StageRuntimeRequirementsCatalog.All[RuntimeStage.Asr];
+
+        Assert.True(
+            requirements.AllowedProvidersByEngineFamily!.TryGetValue(
+                "qwen3-asr", out IReadOnlyList<ExecutionProviderKind>? allowed));
+        Assert.Equal(ExecutionProviderKind.DirectMl, allowed![0]);
         Assert.DoesNotContain(ExecutionProviderKind.TensorRt, allowed);
+        Assert.Contains(ExecutionProviderKind.TensorRTRtx, allowed);
+    }
+
+    [Fact]
+    public void WhisperOnnxStageOverride_AllowsBothTensorRtProviders()
+    {
+        // Isolated retest 2026-10-18: Xenova/whisper-medium passed smoke on both classic
+        // TensorRT and TensorRT-RTX, disproving the old fused-contrib-op exclusion. The
+        // planner smoke-gates each variant, so unqualified Whisper exports still fall back.
+        StageRuntimeRequirements requirements = StageRuntimeRequirementsCatalog.All[RuntimeStage.Asr];
+
+        Assert.True(
+            requirements.AllowedProvidersByEngineFamily!.TryGetValue(
+                "whisper-onnx", out IReadOnlyList<ExecutionProviderKind>? allowed));
+        Assert.Contains(ExecutionProviderKind.TensorRt, allowed);
+        Assert.Contains(ExecutionProviderKind.TensorRTRtx, allowed);
     }
 
     [Fact]
@@ -151,15 +203,17 @@ public sealed class GenAiTensorRtExclusionTests
     }
 
     [Fact]
-    public void VadStage_ExcludesTensorRtRtxButKeepsClassicTensorRt()
+    public void VadStage_ExcludesBothTensorRtProviders()
     {
-        // #329: silero-vad fails the TensorRT RTX build on every attempt (squeeze shape error in its
-        // If/else-branch subgraph), so VAD never plans TensorRT RTX. Classic TensorRT is a separate
-        // provider and is not implicated, so it stays allowed.
+        // #329: silero-vad fails the TensorRT RTX build (squeeze shape error in its If/else-branch
+        // subgraph). The 2026-10-18 isolated retest showed classic TensorRT fails the same
+        // export too, with a catchable shape-inference rejection of the If subgraph ("TensorRT
+        // input ... has no shape specified"), so both TensorRT providers stay excluded until a
+        // shape-inferred export ships. The model is tiny; CPU/DirectML cost nothing meaningful.
         IReadOnlyList<ExecutionProviderKind> allowed =
             StageRuntimeRequirementsCatalog.All[RuntimeStage.Vad].AllowedProvidersThisMilestone;
         Assert.DoesNotContain(ExecutionProviderKind.TensorRTRtx, allowed);
-        Assert.Contains(ExecutionProviderKind.TensorRt, allowed);
+        Assert.DoesNotContain(ExecutionProviderKind.TensorRt, allowed);
     }
 
     [Fact]

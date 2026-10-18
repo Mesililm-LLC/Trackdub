@@ -67,6 +67,7 @@ public static class TrtRtxSmokeCatalog
         new("tonythethompson/Qwen3-TTS-12Hz-1.7B-Base-ONNX", null, "tts-qwen-1.7b-base"),
         new("csukuangfj/sherpa-onnx-spleeter-2stems", null, "separation-spleeter"),
         new("Rikorose/DeepFilterNet3", null, "enhancement-deepfilternet3"),
+        new("onnx-community/silero-vad", null, "vad-silero"),
         new("tonythethompson/sepformer-whamr16k-onnx", null, "overlap-sepformer"),
         new("wav2vec2-lv60-espeak-cv-ft-onnx", null, "align-wav2vec2"),
         new("qwen3-forced-aligner-0.6b-q4-onnx", null, "align-qwen"),
@@ -88,6 +89,7 @@ public static class TrtRtxSmokeCatalog
             .. StarterPackTurboGpu,
             new Target("onnx-community/Kokoro-82M-v1.0-ONNX", null, "tts-kokoro"),
             new Target("tonythethompson/CosyVoice-300M-ONNX", "int8", "tts-cosyvoice-int8"),
+            new Target("google/madlad400-3b-mt", "int4-kv", "translation-madlad-int4-kv"),
         ]),
         ExecutionProviderKind.TensorRt => DeduplicateByLabel(
         [

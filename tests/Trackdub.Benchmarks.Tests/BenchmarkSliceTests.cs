@@ -215,7 +215,10 @@ public sealed class BenchmarkOptionsTests
         Assert.Contains(
             TrtRtxSmokeCatalog.RemainingOnnxGpu,
             target => target.ModelReference.Contains("LatentSync", StringComparison.OrdinalIgnoreCase));
-        Assert.DoesNotContain(
+        // Silero VAD joined the catalog for the 2026-10-18 TensorRT qualification retest;
+        // it stays smokeable here even though the planner excludes both TensorRT providers
+        // for it, so a future shape-inferred export can be re-qualified with the same target.
+        Assert.Contains(
             TrtRtxSmokeCatalog.RemainingOnnxGpu,
             target => target.ModelReference.Contains("silero", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(
