@@ -53,7 +53,7 @@ RUN GPU_CORE="$HOME/.nuget/packages/microsoft.ml.onnxruntime.gpu.linux/1.31.0/ru
 # libonnxruntime-genai.so and every GenAI model fails to load in the container.
 # Copy the base library from the Microsoft.ML.OnnxRuntimeGenAI package (version
 # in Directory.Packages.props), same pattern as the GPU core overwrite above.
-RUN GENAI_LIB="$HOME/.nuget/packages/microsoft.ml.onnxruntimegenai/0.17.1/runtimes/linux-x64/native/libonnxruntime-genai.so" \
+RUN GENAI_LIB="$HOME/.nuget/packages/microsoft.ml.onnxruntimegenai/0.18.0/runtimes/linux-x64/native/libonnxruntime-genai.so" \
     && test -f "$GENAI_LIB" \
     && cp "$GENAI_LIB" /app/publish/libonnxruntime-genai.so
 
