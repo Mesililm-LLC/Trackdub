@@ -821,6 +821,36 @@ public sealed class OnnxExecutionSessionFactoryTests
         Assert.NotEqual(first["trt_engine_cache_path"], otherTrt["trt_engine_cache_path"]);
     }
 
+    [RequiresClassicTensorRtFact]
+    public void BuildTensorRtProviderOptions_carries_engine_cache_options_and_creates_cache_directory()
+    {
+        string? previousEngineCacheRoot = Environment.GetEnvironmentVariable("TRACKDUB_ENGINE_CACHE_ROOT");
+        string? previousCacheRoot = Environment.GetEnvironmentVariable("TRACKDUB_CACHE_ROOT");
+        string engineCacheRoot = Path.Join(
+            Path.GetTempPath(), "Trackdub.Inference.Tests", Guid.NewGuid().ToString("N"), "engine");
+
+        try
+        {
+            Environment.SetEnvironmentVariable("TRACKDUB_ENGINE_CACHE_ROOT", engineCacheRoot);
+            Environment.SetEnvironmentVariable("TRACKDUB_CACHE_ROOT", null);
+
+            using OrtTensorRTProviderOptions providerOptions = OnnxExecutionSessionFactory.BuildTensorRtProviderOptions(
+                null, "Ampere|535.104.05|trt-10.13.3|ort-1.31.0");
+
+            string ortOptions = providerOptions.GetOptions();
+            string expectedCachePath = Path.Join(
+                Path.GetFullPath(engineCacheRoot), "classic-trt", "Ampere-535.104.05-trt-10.13.3-ort-1.31.0");
+            Assert.Contains("trt_engine_cache_enable=1", ortOptions);
+            Assert.Contains($"trt_engine_cache_path={expectedCachePath}", ortOptions);
+            Assert.True(Directory.Exists(expectedCachePath));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("TRACKDUB_ENGINE_CACHE_ROOT", previousEngineCacheRoot);
+            Environment.SetEnvironmentVariable("TRACKDUB_CACHE_ROOT", previousCacheRoot);
+        }
+    }
+
     [Fact]
     public void BuildSessionOptionsFingerprint_distinguishes_classic_tensorrt_option_overrides()
     {

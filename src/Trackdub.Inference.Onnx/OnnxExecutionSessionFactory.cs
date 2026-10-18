@@ -2115,11 +2115,16 @@ internal static class OnnxExecutionSessionFactory
 
     /// <summary>
     /// Appends the classic TensorRT EP with the persistent engine-cache options from
-    /// <see cref="BuildTensorRtOptions"/>. Prefers the generic EP-device append (the only
-    /// path that accepts provider options); when no classic TRT device is enumerated,
-    /// falls back to the legacy <c>AppendExecutionProvider_Tensorrt(deviceId: 0)</c>
-    /// append, which cannot carry the cache options. When neither works, falls back to
-    /// DirectML/CPU like the TensorRT-RTX path so callers can report the fallback.
+    /// <see cref="BuildTensorRtOptions"/>. Prefers the generic EP-device append when the
+    /// classic TRT device is enumerated by <c>OrtEnv.GetEpDevices()</c>; otherwise uses the
+    /// built-in provider-options append (<see cref="OrtTensorRTProviderOptions"/>), because
+    /// the built-in EP is reported by <c>GetAvailableProviders()</c> but is NOT enumerated
+    /// as an EP device (verified live on ORT 1.31 in the GPU container: only the CPU device
+    /// is enumerated), so the generic branch is normally unreachable for classic TRT. The
+    /// legacy <c>AppendExecutionProvider_Tensorrt(deviceId: 0)</c> append is kept only as a
+    /// last TensorRT attempt — it cannot carry the cache options. When no TensorRT append
+    /// works, falls back to DirectML/CPU like the TensorRT-RTX path so callers can report
+    /// the fallback.
     /// </summary>
     internal static ExecutionProviderKind AppendTensorRtOrFallbackProvider(
         SessionOptions options,
@@ -2133,9 +2138,23 @@ internal static class OnnxExecutionSessionFactory
         if (trtDevice != null)
         {
             IReadOnlyDictionary<string, string> trtOptions = BuildTensorRtOptions(additionalTrtOptions);
+            EnsureClassicTensorRtCacheDirectory(trtOptions);
             options.AppendExecutionProvider(OrtEnv.Instance(), new[] { trtDevice }, trtOptions);
             AppendedTensorRtOptions.AddOrUpdate(options, trtOptions);
             return ExecutionProviderKind.TensorRt;
+        }
+
+        try
+        {
+            IReadOnlyDictionary<string, string> trtOptions = BuildTensorRtOptions(additionalTrtOptions);
+            using OrtTensorRTProviderOptions providerOptions = BuildTensorRtProviderOptions(trtOptions);
+            options.AppendExecutionProvider_Tensorrt(providerOptions);
+            AppendedTensorRtOptions.AddOrUpdate(options, trtOptions);
+            return ExecutionProviderKind.TensorRt;
+        }
+        catch (Exception ex) when (ex is OnnxRuntimeException or InvalidOperationException or DllNotFoundException or EntryPointNotFoundException)
+        {
+            // Built-in TensorRT EP provider-options append is not usable; try the legacy append.
         }
 
         try
@@ -2151,6 +2170,29 @@ internal static class OnnxExecutionSessionFactory
         return TryAppendDirectMlProvider(options, out _)
             ? ExecutionProviderKind.DirectMl
             : ExecutionProviderKind.Cpu;
+    }
+
+    internal static OrtTensorRTProviderOptions BuildTensorRtProviderOptions(
+        IReadOnlyDictionary<string, string>? additionalTrtOptions,
+        string environmentFingerprint) =>
+        BuildTensorRtProviderOptions(BuildTensorRtOptions(additionalTrtOptions, environmentFingerprint));
+
+    internal static OrtTensorRTProviderOptions BuildTensorRtProviderOptions(
+        IReadOnlyDictionary<string, string> trtOptions)
+    {
+        EnsureClassicTensorRtCacheDirectory(trtOptions);
+        var providerOptions = new OrtTensorRTProviderOptions();
+        providerOptions.UpdateOptions(new Dictionary<string, string>(trtOptions, StringComparer.Ordinal));
+        return providerOptions;
+    }
+
+    private static void EnsureClassicTensorRtCacheDirectory(IReadOnlyDictionary<string, string> trtOptions)
+    {
+        if (trtOptions.TryGetValue("trt_engine_cache_path", out string? cachePath) &&
+            !string.IsNullOrWhiteSpace(cachePath))
+        {
+            Directory.CreateDirectory(cachePath);
+        }
     }
 
     internal static void AppendDirectMlProvider(SessionOptions options)
