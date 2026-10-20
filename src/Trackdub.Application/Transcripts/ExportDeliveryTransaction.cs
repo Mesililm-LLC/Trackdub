@@ -37,6 +37,7 @@ internal sealed class ExportDeliveryTransaction : IDisposable
             RecoverUnderLock(outputPath);
             journal = journal with
             {
+                PreviousAcceptedDelivery = GetAcceptedDelivery(ReadJournal(outputPath)),
                 Entries = journal.Entries.Select(entry => entry with
                 { HadExistingFile = File.Exists(entry.DestinationPath) }).ToArray()
             };
@@ -81,7 +82,7 @@ internal sealed class ExportDeliveryTransaction : IDisposable
     public void Accept()
     {
         EnsureLockHeld();
-        journal = journal with { Accepted = true };
+        journal = journal with { Accepted = true, PreviousAcceptedDelivery = null };
         WriteJournal(journal);
         Cleanup(journal);
         Dispose();
@@ -155,13 +156,27 @@ internal sealed class ExportDeliveryTransaction : IDisposable
     internal static bool IsAcceptedDelivery(string outputPath, Guid producerStageRunId)
     {
         string fullOutputPath = Path.GetFullPath(outputPath);
-        if (!File.Exists(fullOutputPath) && !File.Exists(JournalPath(fullOutputPath))) return true;
+        string journalPath = JournalPath(fullOutputPath);
+        if (!File.Exists(journalPath))
+        {
+            string lockPath = journalPath + ".lock";
+            if (!File.Exists(lockPath)) return true;
+            // Legacy acceptance needs no writable metadata. An existing writer lock still
+            // has to be honored, including while it is staging before its journal exists.
+            using var legacyLock = new FileStream(lockPath, FileMode.Open, FileAccess.Read, FileShare.None);
+            if (!File.Exists(journalPath)) return true;
+        }
         using FileStream recoveryLock = AcquireLock(fullOutputPath);
         RecoverUnderLock(fullOutputPath);
         Journal? journal = ReadJournal(fullOutputPath);
-        return journal is null || (journal.Accepted && journal.ProducerStageRunId == producerStageRunId &&
-            FilePathComparison.AreSame(journal.OutputPath, fullOutputPath));
+        AcceptedDelivery? accepted = GetAcceptedDelivery(journal);
+        return journal is null || (accepted is not null && accepted.ProducerStageRunId == producerStageRunId &&
+            FilePathComparison.AreSame(accepted.OutputPath, fullOutputPath));
     }
+
+    private static AcceptedDelivery? GetAcceptedDelivery(Journal? journal) =>
+        journal?.Accepted == true ? new AcceptedDelivery(journal.OutputPath, journal.ProducerStageRunId)
+            : journal?.RolledBack == true ? journal.PreviousAcceptedDelivery : null;
 
     private static Journal? ReadJournal(string outputPath)
     {
@@ -171,6 +186,30 @@ internal sealed class ExportDeliveryTransaction : IDisposable
             ?? throw new InvalidDataException("Export delivery recovery journal is empty.");
         try
         {
+            // Validate the original record before considering relocation. A pending or
+            // malformed foreign journal must never authorize changes at either location.
+            Validate(journal, journal.OutputPath);
+            if (!FilePathComparison.AreSame(JournalPath(journal.OutputPath), path))
+            {
+                if ((!journal.Accepted && !journal.RolledBack) ||
+                    !string.Equals(Path.GetFileName(JournalPath(journal.OutputPath)), Path.GetFileName(path),
+                        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                    throw new InvalidDataException("Pending export delivery recovery journal belongs to another output directory.");
+                string directory = Path.GetDirectoryName(Path.GetFullPath(outputPath))!;
+                string Relocate(string previousPath) => Path.Join(directory, Path.GetFileName(previousPath));
+                journal = journal with
+                {
+                    OutputPath = Relocate(journal.OutputPath),
+                    Entries = journal.Entries.Select(entry => entry with
+                    {
+                        DestinationPath = Relocate(entry.DestinationPath),
+                        TemporaryPath = Relocate(entry.TemporaryPath),
+                        BackupPath = Relocate(entry.BackupPath)
+                    }).ToArray(),
+                    PreviousAcceptedDelivery = journal.PreviousAcceptedDelivery is AcceptedDelivery previous
+                        ? previous with { OutputPath = Relocate(previous.OutputPath) } : null
+                };
+            }
             Validate(journal, outputPath);
         }
         catch (Exception exception) when (exception is ArgumentException or NotSupportedException)
@@ -206,6 +245,13 @@ internal sealed class ExportDeliveryTransaction : IDisposable
         if (!string.Equals(extension, ".mp4", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(extension, ".mkv", StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Export delivery recovery journal contains an unsupported output container.");
+        if (journal.PreviousAcceptedDelivery is AcceptedDelivery previous &&
+            (previous.ProducerStageRunId == Guid.Empty || string.IsNullOrWhiteSpace(previous.OutputPath) ||
+             !Path.IsPathFullyQualified(previous.OutputPath) ||
+             !FilePathComparison.AreSame(JournalPath(previous.OutputPath), JournalPath(ownerOutputPath)) ||
+             (!string.Equals(Path.GetExtension(previous.OutputPath), ".mp4", StringComparison.OrdinalIgnoreCase) &&
+              !string.Equals(Path.GetExtension(previous.OutputPath), ".mkv", StringComparison.OrdinalIgnoreCase))))
+            throw new InvalidDataException("Export delivery recovery journal contains an invalid previous acceptance identity.");
         string[] family = [ownerOutputPath, Path.ChangeExtension(ownerOutputPath, ".srt"), Path.ChangeExtension(ownerOutputPath, ".vtt"),
             Path.ChangeExtension(ownerOutputPath, ".ass"), Path.ChangeExtension(ownerOutputPath, ".export-manifest.json")];
         var destinations = new HashSet<string>(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
@@ -256,7 +302,9 @@ internal sealed class ExportDeliveryTransaction : IDisposable
     }
 
     private sealed record Journal(int Version, string OutputPath, Guid ProducerStageRunId,
-        bool Accepted, bool RolledBack, Entry[] Entries);
+        bool Accepted, bool RolledBack, Entry[] Entries, AcceptedDelivery? PreviousAcceptedDelivery = null);
+
+    private sealed record AcceptedDelivery(string OutputPath, Guid ProducerStageRunId);
 
     private sealed record Entry(string DestinationPath, string TemporaryPath, string BackupPath, bool HadExistingFile);
 }
