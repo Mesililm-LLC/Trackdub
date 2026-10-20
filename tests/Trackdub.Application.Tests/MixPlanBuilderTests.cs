@@ -422,7 +422,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             [],
-            [take]));
+            [take], StageRuns: null));
 
         // Take starts at 8.0s and runs 3.0s, ending at 11.0s — 1.0s past the 10.0s source audio.
         MixPlanWarning warning = Assert.Single(plan.Warnings);
@@ -462,7 +462,7 @@ public sealed class MixPlanBuilderTests
             [segment],
             [],
             [take],
-            MediaDurationSeconds: 6.0d));
+            MediaDurationSeconds: 6.0d, StageRuns: null));
 
         // Take runs 5.0s–7.0s: inside the 10.0s source audio but 1.0s past the 6.0s media end.
         MixPlanWarning warning = Assert.Single(plan.Warnings);
@@ -496,7 +496,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             [],
-            [take]));
+            [take], StageRuns: null));
 
         Assert.Empty(plan.Warnings);
     }
@@ -527,7 +527,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             [],
-            [take]));
+            [take], StageRuns: null));
 
         Assert.Empty(plan.Warnings);
     }
@@ -558,7 +558,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             [],
-            [take]));
+            [take], StageRuns: null));
 
         Assert.Empty(plan.Warnings);
     }
@@ -580,7 +580,7 @@ public sealed class MixPlanBuilderTests
 
         MixPlan plan = new MixPlanBuilder().Build(new MixPlanBuildRequest(
             context.ProjectId, context.MediaAssetId, [source, artifact], [segment], [], [take],
-            MediaDurationSeconds: mediaDuration));
+            MediaDurationSeconds: mediaDuration, StageRuns: null));
 
         Assert.Equal(warns, plan.Warnings.Any(warning => warning.Code == MixPlanWarningCode.TakeExceedsSourceAudio));
     }
@@ -683,7 +683,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             [],
-            [take]));
+            [take], StageRuns: null));
 
         Assert.Equal(ArtifactKind.NormalizedAudio, plan.SourceAudioKind);
         Assert.Equal(-13d, plan.DuckingGainDb);
@@ -712,7 +712,7 @@ public sealed class MixPlanBuilderTests
             [normalized, legacyAmbiance, takeArtifact],
             [segment],
             [],
-            [take]));
+            [take], StageRuns: null));
 
         Assert.Equal(ArtifactKind.NormalizedAudio, plan.SourceAudioKind);
         Assert.Equal(ProjectArtifactPaths.NormalizedAudioRelativePath, plan.SourceAudioRelativePath);
@@ -761,7 +761,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             [],
-            [staleTake]));
+            [staleTake], StageRuns: null));
 
         MixSpeechClip clip = Assert.Single(plan.SpeechClips);
         Assert.True(clip.IsSilentGap);
@@ -802,7 +802,7 @@ public sealed class MixPlanBuilderTests
             [normalized, freshArtifact, staleArtifact],
             [segment],
             [translatedSegment],
-            [freshTake, staleTake]));
+            [freshTake, staleTake], StageRuns: null));
 
         MixSpeechClip clip = Assert.Single(plan.SpeechClips);
         Assert.False(clip.IsSilentGap);
@@ -832,7 +832,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             TranslatedSegments: [],
-            [orphanedTake]));
+            [orphanedTake], StageRuns: null));
 
         MixSpeechClip clip = Assert.Single(plan.SpeechClips);
         Assert.True(clip.IsSilentGap);
@@ -860,7 +860,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             TranslatedSegments: [],
-            [orphanedTake]));
+            [orphanedTake], StageRuns: null));
 
         MixSpeechClip clip = Assert.Single(plan.SpeechClips);
         Assert.True(clip.IsSilentGap);
@@ -890,7 +890,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             [translatedSegment],
-            [take]));
+            [take], StageRuns: null));
 
         MixSpeechClip clip = Assert.Single(plan.SpeechClips);
         Assert.False(clip.IsSilentGap);
@@ -918,7 +918,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             [translatedSegment],
-            [take]));
+            [take], StageRuns: null));
 
         MixSpeechClip clip = Assert.Single(plan.SpeechClips);
         Assert.False(clip.IsSilentGap);
@@ -942,7 +942,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             [translatedSegment],
-            [take]));
+            [take], StageRuns: null));
 
         MixSpeechClip clip = Assert.Single(plan.SpeechClips);
         Assert.False(clip.IsSilentGap);
@@ -1367,7 +1367,7 @@ public sealed class MixPlanBuilderTests
                 [normalized, ttsArtifact, lipSyncArtifact],
                 [segment],
                 [],
-                [take]));
+                [take], StageRuns: null));
 
             // Assert — speech clip should use the LipSync path.
             Assert.Single(plan.SpeechClips);
@@ -1421,7 +1421,7 @@ public sealed class MixPlanBuilderTests
                 [normalized, ttsArtifact, lipSyncArtifact],
                 [segment],
                 [],
-                [take]));
+                [take], StageRuns: null));
 
             // Assert — should fall back to TTS take and emit a warning.
             Assert.Single(plan.SpeechClips);
@@ -1469,7 +1469,7 @@ public sealed class MixPlanBuilderTests
             [normalized, ttsArtifact, lipSyncArtifact],
             [segment],
             [],
-            [take]));
+            [take], StageRuns: null));
 
         // Assert — falls through to TTS take because store is null (no file check, no warning).
         Assert.Single(plan.SpeechClips);

@@ -150,12 +150,12 @@ public static class TranscriptWorkflowUtilities
 
     public static ProjectArtifact? GetLatestAcceptedVocalStem(
         IReadOnlyList<ProjectArtifact> artifacts,
-        IReadOnlyList<StageRunRecord>? stageRuns = null) =>
+        IReadOnlyList<StageRunRecord>? stageRuns) =>
         GetAcceptedStemArtifacts(artifacts, stageRuns).FirstOrDefault(static artifact => artifact.Kind == ArtifactKind.Vocals);
 
     public static ProjectArtifact? GetLatestAcceptedAmbianceStem(
         IReadOnlyList<ProjectArtifact> artifacts,
-        IReadOnlyList<StageRunRecord>? stageRuns = null) =>
+        IReadOnlyList<StageRunRecord>? stageRuns) =>
         GetAcceptedStemArtifacts(artifacts, stageRuns).FirstOrDefault(static artifact => artifact.Kind == ArtifactKind.Ambiance);
 
     public static ProjectArtifact? ResolveStageProcessedAudioArtifact(
@@ -172,7 +172,7 @@ public static class TranscriptWorkflowUtilities
 
     public static StemAudioRoute BuildStemAudioRoute(
         IReadOnlyList<ProjectArtifact> artifacts,
-        IReadOnlyList<StageRunRecord>? stageRuns = null)
+        IReadOnlyList<StageRunRecord>? stageRuns)
     {
         ProjectArtifact? asrArtifact = ResolveAsrAudioArtifact(artifacts, stageRuns);
         ProjectArtifact? vocalsArtifact = GetLatestAcceptedVocalStem(artifacts, stageRuns);

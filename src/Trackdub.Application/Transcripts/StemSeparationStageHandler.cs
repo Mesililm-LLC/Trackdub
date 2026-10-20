@@ -40,6 +40,7 @@ public sealed class StemSeparationStageHandler(
             .ConfigureAwait(false);
 
         string tempDirectory = StemSeparationTempDirectories.GetRunDirectory(stageRun.Id);
+        var registeredStemArtifactIds = new List<Guid>();
         string tempVocalsPath = Path.Join(tempDirectory, "vocals.wav");
         string tempAmbiancePath = Path.Join(tempDirectory, "ambiance.wav");
         string tempMusicPath = Path.Join(tempDirectory, "music.wav");
@@ -185,15 +186,19 @@ public sealed class StemSeparationStageHandler(
                     ResolveBaseProvenance(result, "sfx"));
 
             await mediaAssetRepository.SaveArtifactAsync(vocalsArtifact, cancellationToken).ConfigureAwait(false);
+            registeredStemArtifactIds.Add(vocalsArtifact.Id);
             await mediaAssetRepository.SaveArtifactAsync(ambianceArtifact, cancellationToken).ConfigureAwait(false);
+            registeredStemArtifactIds.Add(ambianceArtifact.Id);
             if (musicArtifact is not null)
             {
                 await mediaAssetRepository.SaveArtifactAsync(musicArtifact, cancellationToken).ConfigureAwait(false);
+                registeredStemArtifactIds.Add(musicArtifact.Id);
             }
 
             if (soundEffectsArtifact is not null)
             {
                 await mediaAssetRepository.SaveArtifactAsync(soundEffectsArtifact, cancellationToken).ConfigureAwait(false);
+                registeredStemArtifactIds.Add(soundEffectsArtifact.Id);
             }
 
             // The completed producer row accepts the entire persisted set. An interrupted
@@ -207,6 +212,7 @@ public sealed class StemSeparationStageHandler(
         }
         catch (OperationCanceledException)
         {
+            await CleanupRegisteredStemArtifactsAsync(registeredStemArtifactIds).ConfigureAwait(false);
             await StageRunHelper
                 .CancelAsync(stageRunStore, stageRun, stemSeparationEngine, "Stem separation canceled.", CancellationToken.None, runtimePlanningPreferences, logger)
                 .ConfigureAwait(false);
@@ -214,6 +220,7 @@ public sealed class StemSeparationStageHandler(
         }
         catch (Exception ex)
         {
+            await CleanupRegisteredStemArtifactsAsync(registeredStemArtifactIds).ConfigureAwait(false);
             await StageRunHelper
                 .FailAsync(stageRunStore, stageRun, stemSeparationEngine, ex.Message, cancellationToken, runtimePlanningPreferences, logger)
                 .ConfigureAwait(false);
@@ -222,6 +229,21 @@ public sealed class StemSeparationStageHandler(
         finally
         {
             StemSeparationTempDirectories.DeleteIfExists(tempDirectory);
+        }
+    }
+
+    private async Task CleanupRegisteredStemArtifactsAsync(IEnumerable<Guid> registeredStemArtifactIds)
+    {
+        foreach (Guid artifactId in registeredStemArtifactIds)
+        {
+            try
+            {
+                await mediaAssetRepository.DeleteArtifactAsync(artifactId, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Preserve the original cancellation/failure; cleanup errors should not replace it.
+            }
         }
     }
 

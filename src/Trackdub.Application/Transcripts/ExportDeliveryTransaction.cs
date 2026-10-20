@@ -159,12 +159,14 @@ internal sealed class ExportDeliveryTransaction : IDisposable
         string journalPath = JournalPath(fullOutputPath);
         if (!File.Exists(journalPath))
         {
+            // No journal and no writer: legacy acceptance is purely whether the output
+            // exists. Probe without creating any metadata so read-only locations work.
             string lockPath = journalPath + ".lock";
-            if (!File.Exists(lockPath)) return true;
+            if (!File.Exists(lockPath)) return File.Exists(fullOutputPath);
             // Legacy acceptance needs no writable metadata. An existing writer lock still
             // has to be honored, including while it is staging before its journal exists.
             using var legacyLock = new FileStream(lockPath, FileMode.Open, FileAccess.Read, FileShare.None);
-            if (!File.Exists(journalPath)) return true;
+            if (!File.Exists(journalPath)) return File.Exists(fullOutputPath);
         }
         using FileStream recoveryLock = AcquireLock(fullOutputPath);
         RecoverUnderLock(fullOutputPath);
@@ -191,10 +193,14 @@ internal sealed class ExportDeliveryTransaction : IDisposable
             Validate(journal, journal.OutputPath);
             if (!FilePathComparison.AreSame(JournalPath(journal.OutputPath), path))
             {
-                if ((!journal.Accepted && !journal.RolledBack) ||
-                    !string.Equals(Path.GetFileName(JournalPath(journal.OutputPath)), Path.GetFileName(path),
-                        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                // A pending journal must never authorize changes at a foreign location.
+                if (!journal.Accepted && !journal.RolledBack)
                     throw new InvalidDataException("Pending export delivery recovery journal belongs to another output directory.");
+                // A terminal journal records no pending work: a file-name mismatch means the
+                // delivery family moved on, so there is no journal here. Leave its files alone.
+                if (!string.Equals(Path.GetFileName(JournalPath(journal.OutputPath)), Path.GetFileName(path),
+                        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                    return null;
                 string directory = Path.GetDirectoryName(Path.GetFullPath(outputPath))!;
                 string Relocate(string previousPath) => Path.Join(directory, Path.GetFileName(previousPath));
                 journal = journal with
@@ -293,7 +299,11 @@ internal sealed class ExportDeliveryTransaction : IDisposable
     private static void TryDelete(string path)
     {
         try { DeleteIfPresent(path); }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            System.Diagnostics.Trace.WriteLine(
+                $"Skipping best-effort export delivery cleanup for '{path}': {exception.GetType().Name}: {exception.Message}");
+        }
     }
 
     private static void DeleteIfPresent(string path)

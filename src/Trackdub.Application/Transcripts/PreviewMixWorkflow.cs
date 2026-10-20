@@ -62,6 +62,7 @@ public sealed class PreviewMixWorkflow(
                 currentState.TranscriptSegments,
                 currentState.TranslatedSegments,
                 currentState.TtsTakes,
+                currentState.StageRuns,
                 request.SourceGainDb,
                 request.DubbedSpeechGainDb,
                 request.DuckingGainDb,
@@ -69,7 +70,6 @@ public sealed class PreviewMixWorkflow(
                 ApplyTimbrePolish: request.ApplyTimbrePolish,
                 CandidateGroups: candidateGroups,
                 MediaDurationSeconds: mediaAsset.DurationSeconds,
-                StageRuns: currentState.StageRuns,
                 MediaClips: await TimelineMediaMixPreparer.PrepareAsync(
                     timelineMediaMixPreparer, currentState, cancellationToken).ConfigureAwait(false)));
             await mixPlanStore.SaveAsync(mixPlan, cancellationToken).ConfigureAwait(false);
