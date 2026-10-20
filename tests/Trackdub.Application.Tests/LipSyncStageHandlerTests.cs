@@ -49,6 +49,7 @@ public sealed class LipSyncStageHandlerTests
             phonemeStretchService: stretchService ?? new FakePhonemeStretchService(),
             artifactStore: artifactStore,
             stageRunStore: stageRunStore,
+            segmentRepository: new FakeLipSyncSegmentRepository(),
             audioClipExtractor: clipExtractor,
             mediaAssetRepository: mediaAssetRepository);
     }
@@ -472,8 +473,9 @@ public sealed class LipSyncStageHandlerTests
                     File.WriteAllBytes(call.ArgAt<string>(1), [7, 8, 9]);
                     return result;
                 });
+            var segmentRepository = new FakeLipSyncSegmentRepository();
             var handler = new LipSyncStageHandler(aligner, new FakePhonemeTimingPlanner(),
-                stretchService, artifactStore, stageRunStore,
+                stretchService, artifactStore, stageRunStore, segmentRepository,
                 mediaAssetRepository: mediaRepo, audioClipExtractor: clipExtractor);
             var request = new LipSyncStageRequest(
                 mediaAsset.ProjectId, mediaAsset, takes, artifacts,
@@ -487,6 +489,10 @@ public sealed class LipSyncStageHandlerTests
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => runTask);
             Assert.False(runTask.IsCompletedSuccessfully);
             Assert.Equal(StageRunStatus.Canceled, Assert.Single(stageRunStore.All).Status);
+            var persistedSegment = Assert.Single(await segmentRepository.GetByStageRunAsync(
+                Assert.Single(stageRunStore.All).Id, TestContext.Current.CancellationToken));
+            Assert.Equal(takes[0].TranslatedSegmentId, persistedSegment.SegmentId);
+            Assert.Equal(LipSyncSegmentStatus.Aligned, persistedSegment.Status);
             Assert.Equal(2, extractionCalls);
             Assert.Equal(duringExtraction ? 1 : 2, stretchCalls);
             var accepted = Assert.Single(mediaRepo.Artifacts);

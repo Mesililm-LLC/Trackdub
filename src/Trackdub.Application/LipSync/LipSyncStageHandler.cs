@@ -3,6 +3,7 @@ using Trackdub.Application.Artifacts;
 using Trackdub.Application.Logging;
 using Trackdub.Contracts;
 using Trackdub.Contracts.ApplicationContracts;
+using Trackdub.Contracts.LipSync;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Contracts.Projects;
 using Trackdub.Domain;
@@ -65,6 +66,7 @@ public sealed class LipSyncStageHandler(
     IPhonemeStretchService phonemeStretchService,
     IArtifactStore artifactStore,
     IProjectStageRunStore stageRunStore,
+    ILipSyncSegmentRepository segmentRepository,
     PipelineDegradationWriter? degradationWriter = null,
     IRuntimePlanningPreferences? runtimePlanningPreferences = null,
     IApplicationLogger? logger = null,
@@ -72,6 +74,7 @@ public sealed class LipSyncStageHandler(
     IMediaAssetRepository? mediaAssetRepository = null,
     IAudioClipExtractor? audioClipExtractor = null)
 {
+    private readonly ILipSyncSegmentRepository _segmentRepository = segmentRepository ?? throw new ArgumentNullException(nameof(segmentRepository));
     private readonly IPhonemeTimingPlanner _phonemeTimingPlanner = phonemeTimingPlanner;
     private readonly IPhonemeStretchService _phonemeStretchService = phonemeStretchService;
     private readonly IFileFingerprintService? _fileFingerprintService = fileFingerprintService;
@@ -163,6 +166,9 @@ public sealed class LipSyncStageHandler(
         {
             cancellationToken.ThrowIfCancellationRequested();
             var segment = await ProcessTakeAsync(take, bounds, stageRunId, request, cancellationToken)
+                .ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            await _segmentRepository.SaveAllAsync(request.ProjectId, stageRunId, [segment], cancellationToken)
                 .ConfigureAwait(false);
             segments.Add(segment);
         }

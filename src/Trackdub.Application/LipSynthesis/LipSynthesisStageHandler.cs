@@ -3,6 +3,7 @@ using Trackdub.Application.Logging;
 using Trackdub.Contracts;
 using Trackdub.Application.Transcripts;
 using Trackdub.Contracts.ApplicationContracts;
+using Trackdub.Contracts.LipSynthesis;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Contracts.Projects;
 using Trackdub.Domain;
@@ -59,12 +60,14 @@ public sealed class LipSynthesisStageHandler(
     IFacePoseEstimator facePoseEstimator,
     IArtifactStore artifactStore,
     IProjectStageRunStore stageRunStore,
+    ILipSynthesisSegmentRepository segmentRepository,
     PipelineDegradationWriter? degradationWriter = null,
     IRuntimePlanningPreferences? runtimePlanningPreferences = null,
     IApplicationLogger? logger = null,
     IFileFingerprintService? fileFingerprintService = null,
     IMediaAssetRepository? mediaAssetRepository = null)
 {
+    private readonly ILipSynthesisSegmentRepository _segmentRepository = segmentRepository ?? throw new ArgumentNullException(nameof(segmentRepository));
     private static readonly LipSynthesisOptions DefaultOptions = new();
 
     public async Task<LipSynthesisStageResult> HandleAsync(
@@ -107,6 +110,9 @@ public sealed class LipSynthesisStageHandler(
             {
                 var gated = BuildUniformSkip(request, LipSynthesisSegmentStatus.SkippedLicenseGate,
                     "Synthesis provider is not license-approved for the active commercial mode.");
+                await _segmentRepository.SaveAllAsync(request.ProjectId, stageRun.Id, gated, cancellationToken)
+                    .ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
                 stageRun = await SkipStageAsync(stageRun, "Lip-synthesis blocked by license gate.",
                     "LipSynthesisLicenseGate", request).ConfigureAwait(false);
                 return new LipSynthesisStageResult(stageRun, gated);
@@ -118,6 +124,9 @@ public sealed class LipSynthesisStageHandler(
             {
                 var gated = BuildUniformSkip(request, LipSynthesisSegmentStatus.SkippedExperimentalGate,
                     "Synthesis engine is marked experimental. Run again after downloading models and confirming experimental execution in stage options.");
+                await _segmentRepository.SaveAllAsync(request.ProjectId, stageRun.Id, gated, cancellationToken)
+                    .ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
                 stageRun = await SkipStageAsync(stageRun,
                     "Lip-synthesis blocked: engine is experimental.",
                     "LipSynthesisExperimentalGate", request).ConfigureAwait(false);
@@ -129,6 +138,9 @@ public sealed class LipSynthesisStageHandler(
             {
                 var gated = BuildUniformSkip(request, LipSynthesisSegmentStatus.SkippedRuntimeUnavailable,
                     "Synthesis engine or a face-analysis provider is not installed/available.");
+                await _segmentRepository.SaveAllAsync(request.ProjectId, stageRun.Id, gated, cancellationToken)
+                    .ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
                 stageRun = await SkipStageAsync(stageRun, "Lip-synthesis runtime unavailable.",
                     "LipSynthesisRuntimeUnavailable", request).ConfigureAwait(false);
                 return new LipSynthesisStageResult(stageRun, gated);
@@ -139,10 +151,15 @@ public sealed class LipSynthesisStageHandler(
             foreach (LipSynthesisTurn turn in request.SpeakerTurns)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                segments.Add(await ProcessTurnAsync(turn, options, stageRun.Id, request, cancellationToken)
-                    .ConfigureAwait(false));
+                LipSynthesisSegment segment = await ProcessTurnAsync(turn, options, stageRun.Id, request, cancellationToken)
+                    .ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                await _segmentRepository.SaveAllAsync(request.ProjectId, stageRun.Id, [segment], cancellationToken)
+                    .ConfigureAwait(false);
+                segments.Add(segment);
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             stageRun = await FinalizeStageAsync(stageRun, segments).ConfigureAwait(false);
             return new LipSynthesisStageResult(stageRun, segments);
         }

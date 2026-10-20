@@ -83,6 +83,7 @@ public sealed class LipSyncRealAlignerIntegrationTests
                 phonemeStretchService: new WsolaPhonemeStretchService(),
                 artifactStore: artifactStore,
                 stageRunStore: stageRunStore,
+                segmentRepository: new FakeLipSyncSegmentRepository(),
                 mediaAssetRepository: mediaRepo,
                 audioClipExtractor: new CopyingAudioClipExtractor());
 

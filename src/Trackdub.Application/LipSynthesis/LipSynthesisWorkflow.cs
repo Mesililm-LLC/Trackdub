@@ -1,6 +1,5 @@
 using Trackdub.Application.Artifacts;
 using Trackdub.Application.Transcripts;
-using Trackdub.Contracts.LipSynthesis;
 using Trackdub.Domain.Artifacts;
 
 namespace Trackdub.Application.LipSynthesis;
@@ -13,14 +12,13 @@ public sealed record LipSynthesisRunRequest(
 
 /// <summary>
 /// Orchestrates the M23 video lip-synthesis stage over the current project state. Builds per-speaker
-/// turns from diarization, runs the gated experimental LatentSync engine, and persists
+/// turns from diarization, runs the gated experimental LatentSync engine, and reloads
 /// the per-turn results. User-triggered — never auto-runs on media load. Mirrors LipSyncWorkflow.
 /// </summary>
 public sealed class LipSynthesisWorkflow(
     TranscriptProjectStateService stateService,
     LipSynthesisStageHandler lipSynthesisStageHandler,
-    IArtifactStore artifactStore,
-    ILipSynthesisSegmentRepository? lipSynthesisSegmentRepository = null)
+    IArtifactStore artifactStore)
     : IDisposable
 {
     private const string ConcurrentOperationMessage = "A lip-synthesis operation is already running for this project.";
@@ -66,15 +64,8 @@ public sealed class LipSynthesisWorkflow(
                     AllowExperimentalExecution: request.AllowExperimentalExecution,
                     PreferredModelAlias: request.PreferredModelAlias);
 
-                LipSynthesisStageResult emptyResult = await lipSynthesisStageHandler
+                await lipSynthesisStageHandler
                     .HandleAsync(emptyRequest, cancellationToken).ConfigureAwait(false);
-
-                if (lipSynthesisSegmentRepository is not null && emptyResult.Segments.Count > 0)
-                {
-                    await lipSynthesisSegmentRepository
-                        .SaveAllAsync(emptyRequest.ProjectId, emptyResult.StageRun.Id, emptyResult.Segments, cancellationToken)
-                        .ConfigureAwait(false);
-                }
 
                 return await stateService
                     .OpenAsync(currentState.SelectedTranslationTargetLanguage, cancellationToken)
@@ -108,15 +99,8 @@ public sealed class LipSynthesisWorkflow(
                 AllowExperimentalExecution: request.AllowExperimentalExecution,
                 PreferredModelAlias: request.PreferredModelAlias);
 
-            LipSynthesisStageResult result = await lipSynthesisStageHandler
+            await lipSynthesisStageHandler
                 .HandleAsync(stageRequest, cancellationToken).ConfigureAwait(false);
-
-            if (lipSynthesisSegmentRepository is not null && result.Segments.Count > 0)
-            {
-                await lipSynthesisSegmentRepository
-                    .SaveAllAsync(stageRequest.ProjectId, result.StageRun.Id, result.Segments, cancellationToken)
-                    .ConfigureAwait(false);
-            }
 
             return await stateService
                 .OpenAsync(currentState.SelectedTranslationTargetLanguage, cancellationToken)

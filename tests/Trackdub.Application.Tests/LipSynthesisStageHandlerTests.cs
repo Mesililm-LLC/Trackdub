@@ -53,6 +53,7 @@ public sealed class LipSynthesisStageHandlerTests
             facePoseEstimator: pose ?? new FakeFacePoseEstimator(),
             artifactStore: artifactStore,
             stageRunStore: stageRunStore,
+            segmentRepository: new FakeLipSynthesisSegmentRepository(),
             mediaAssetRepository: mediaAssetRepository);
 
     private static string EnsureDubbedAudioFile(string directory)
@@ -529,7 +530,7 @@ public sealed class LipSynthesisStageHandlerTests
             var faceDetector = new SequencedFaceDetector([true, false]);
             var handler = new LipSynthesisStageHandler(
                 engine, faceDetector, new FakeFaceLandmarkProvider(), new FakeFacePoseEstimator(),
-                artifactStore, stageRunStore, mediaAssetRepository: mediaRepo);
+                artifactStore, stageRunStore, new FakeLipSynthesisSegmentRepository(), mediaAssetRepository: mediaRepo);
 
             var turns = new[] { MakeTurn(1.0, 3.0), MakeTurn(4.0, 6.0) };
             var result = await handler.HandleAsync(
