@@ -241,6 +241,11 @@ internal static class TrtRtxProvidersHandler
             return Program.ExitPipelineFailure;
         }
 
+        finally
+        {
+            await EvictIdleSessionsAsync(factory).ConfigureAwait(false);
+        }
+
         var payload = new TrtRtxSmokeOutput
         {
             Ready = true,
@@ -338,6 +343,11 @@ internal static class TrtRtxProvidersHandler
             return Program.ExitPipelineFailure;
         }
 
+        finally
+        {
+            await EvictIdleSessionsAsync(factory).ConfigureAwait(false);
+        }
+
         bool passed = result.Status == TrtRtxStarterPackSmokeTargetStatus.Passed;
         var payload = new TrtRtxVerifyOutput
         {
@@ -351,6 +361,9 @@ internal static class TrtRtxProvidersHandler
 
         return passed ? Program.ExitSuccess : Program.ExitPipelineFailure;
     }
+
+    private static Task EvictIdleSessionsAsync(TrackdubSessionFactory factory) =>
+        factory.GetRequiredService<IInferenceSessionPoolEvictor>().EvictAllIdleAsync(CancellationToken.None);
 
     private static IReadOnlyList<TrtRtxSmokeCatalog.Target> FilterTargets(
         IReadOnlyList<TrtRtxSmokeCatalog.Target> targets,
