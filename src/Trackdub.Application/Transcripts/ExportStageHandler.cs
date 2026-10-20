@@ -36,6 +36,7 @@ public sealed class ExportStageHandler(
 {
     private const double DurationToleranceSeconds = 0.5d;
     private const double MaxMatchOriginalUpwardBoostDb = 9d;
+    private const string RecoveryFailureDataKey = "Trackdub.ExportDeliveryRecoveryFailure";
     private static readonly Encoding SubtitleEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
     private readonly MixPlanBuilder mixPlanBuilder =
@@ -96,8 +97,6 @@ public sealed class ExportStageHandler(
 
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 
-        ExportDeliveryTransaction.Recover(outputPath);
-
         StageRunRecord stageRun = await StageRunHelper
             .StartAsync(stageRunStore, request.ProjectId, StageNames.Export, cancellationToken)
             .ConfigureAwait(false);
@@ -112,8 +111,11 @@ public sealed class ExportStageHandler(
         // returns without throwing.  Centralising cleanup in finally ensures it always runs on any failure
         // path — including future catch arms that might be added without remembering to duplicate the calls.
         bool exportSucceeded = false;
+        bool recoveringDelivery = true;
         try
         {
+            ExportDeliveryTransaction.Recover(outputPath);
+            recoveringDelivery = false;
             ProjectArtifact manifestArtifact = await InitializeExportAsync(
                 currentState, mediaAsset, request, stageRun, manifestRelativePath,
                 rollbackArtifactPaths, registeredExportArtifactIds, cancellationToken).ConfigureAwait(false);
@@ -152,30 +154,35 @@ public sealed class ExportStageHandler(
         {
             throw;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex)
         {
+            Exception? recoveryFailure = ex.Data[RecoveryFailureDataKey] as Exception;
+            if (recoveryFailure is not null)
+            {
+                ExportFailureReport report = new(request.ProjectId, stageRun.Id, DateTimeOffset.UtcNow,
+                    [new ExportFailureCause("export-canceled", ex.Message),
+                     new ExportFailureCause("export-recovery-error", recoveryFailure.Message)]);
+                await TryWriteFailureReportAsync(failureRelativePath, outputPath, report).ConfigureAwait(false);
+            }
             await StageRunHelper
-                .CancelAsync(stageRunStore, stageRun, runtimeReporter: null, "Export canceled.", CancellationToken.None, runtimePlanningPreferences, logger)
+                .CancelAsync(stageRunStore, stageRun, runtimeReporter: null,
+                    recoveryFailure is null ? "Export canceled." : $"Export canceled. Delivery recovery failed: {recoveryFailure.Message}",
+                    CancellationToken.None, runtimePlanningPreferences, logger)
                 .ConfigureAwait(false);
             throw;
         }
         catch (Exception ex)
         {
+            List<ExportFailureCause> causes = [new(recoveringDelivery ? "export-recovery-error" : "export-error", ex.Message)];
+            if (ex.Data[RecoveryFailureDataKey] is Exception recoveryFailure)
+                causes.Add(new ExportFailureCause("export-recovery-error", recoveryFailure.Message));
             ExportFailureReport report = new(
                 request.ProjectId,
                 stageRun.Id,
                 DateTimeOffset.UtcNow,
-                [new ExportFailureCause("export-error", ex.Message)]);
+                causes);
             // Preserve the diagnostic report even when the caller's token is already canceled.
-            try
-            {
-                await WriteFailureReportAsync(failureRelativePath, outputPath, report, CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (Exception reportWriteException)
-            {
-                logger?.LogWarning(
-                    $"Failed to write export failure report. {reportWriteException.GetType().Name}: {reportWriteException.Message}");
-            }
+            await TryWriteFailureReportAsync(failureRelativePath, outputPath, report).ConfigureAwait(false);
 
             await StageRunHelper
                 .FailAsync(stageRunStore, stageRun, runtimeReporter: null, ex.Message, CancellationToken.None, runtimePlanningPreferences, logger)
@@ -592,9 +599,19 @@ public sealed class ExportStageHandler(
                 .ConfigureAwait(false);
             delivery.Accept();
         }
-        catch
+        catch (Exception originalFailure)
         {
-            delivery.Rollback();
+            try
+            {
+                delivery.Rollback();
+            }
+            catch (Exception recoveryFailure)
+            {
+                // Keep cancellation/root cause intact. The outer lifecycle handler records
+                // both failures, while the unaccepted journal retains recovery evidence.
+                originalFailure.Data[RecoveryFailureDataKey] = recoveryFailure;
+                logger?.LogWarning($"Failed to recover export delivery '{outputPath}'. Recovery journal retained.", recoveryFailure);
+            }
             throw;
         }
         TryDelete(GetSidecarFailureReportPath(outputPath));
@@ -875,6 +892,19 @@ public sealed class ExportStageHandler(
             .FailAsync(stageRunStore, stageRun, runtimeReporter: null, reason, CancellationToken.None, runtimePlanningPreferences)
             .ConfigureAwait(false);
         throw new ExportStageException(reason, report, GetSidecarFailureReportPath(outputPath), reportWriteException);
+    }
+
+    private async Task TryWriteFailureReportAsync(string relativePath, string outputPath, ExportFailureReport report)
+    {
+        try
+        {
+            await WriteFailureReportAsync(relativePath, outputPath, report, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception reportWriteException)
+        {
+            logger?.LogWarning(
+                $"Failed to write export failure report. {reportWriteException.GetType().Name}: {reportWriteException.Message}");
+        }
     }
 
     private async Task WriteFailureReportAsync(
