@@ -51,6 +51,8 @@ public sealed class StemSeparationStageHandlerTests
             Assert.True(store.Exists(prior.AmbianceArtifact.RelativePath));
             Assert.Equal(StageRunStatus.Canceled, runs.All.Last().Status);
             Assert.All(publicationStatuses, status => Assert.Equal(StageRunStatus.Running, status));
+            // Interrupted registrations must not accumulate orphan rows on the canceled run.
+            Assert.DoesNotContain(repository.Artifacts, artifact => artifact.StageRunId == runs.All.Last().Id);
         }
         finally
         {

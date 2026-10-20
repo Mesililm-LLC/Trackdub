@@ -16,6 +16,7 @@ public sealed record MixPlanBuildRequest(
     IReadOnlyList<TranscriptSegment> TranscriptSegments,
     IReadOnlyList<TranslatedSegment> TranslatedSegments,
     IReadOnlyList<TtsTake> TtsTakes,
+    IReadOnlyList<StageRunRecord>? StageRuns,
     double SourceGainDb = 0d,
     double DubbedSpeechGainDb = 0d,
     double? DuckingGainDb = null,
@@ -25,8 +26,7 @@ public sealed record MixPlanBuildRequest(
     bool ApplyTimbrePolish = true,
     IReadOnlyList<TtsCandidateGroup>? CandidateGroups = null,
     double? MediaDurationSeconds = null,
-    IReadOnlyList<MixMediaClip>? MediaClips = null,
-    IReadOnlyList<StageRunRecord>? StageRuns = null);
+    IReadOnlyList<MixMediaClip>? MediaClips = null);
 
 public sealed class MixPlanBuilder(IArtifactStore? artifactStore = null)
 {
