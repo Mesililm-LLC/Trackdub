@@ -320,7 +320,7 @@ public sealed class AtomicRevisionCommitBoundaryTests
         await f.Store.CommitNewAsync(sourceAudio.Handle, sourceAudio.Receipt, f.Ct);
         await f.Media.SaveArtifactAsync(sourceAudio.Artifact, f.Ct);
         var plan = new MixPlanBuilder(f.Store).Build(new(f.Project.Id, f.Asset.Id,
-            await f.Media.GetArtifactsAsync(f.Project.Id, f.Ct), f.SourceSegments, next, await f.Takes.GetByProjectAsync(f.Project.Id, f.Ct)));
+            await f.Media.GetArtifactsAsync(f.Project.Id, f.Ct), f.SourceSegments, next, await f.Takes.GetByProjectAsync(f.Project.Id, f.Ct), StageRuns: null));
         var clip = Assert.Single(plan.SpeechClips, c => c.SegmentIndex == 0);
         Assert.Equal(prior.Id, clip.TakeId);
         Assert.Equal(prior.ArtifactId, clip.ArtifactId);

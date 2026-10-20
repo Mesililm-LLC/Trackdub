@@ -179,7 +179,7 @@ public sealed class TranscriptWorkflowUtilitiesTests
             now,
             Provenance: "generated-demucs-v4-vocals;engine_family=demucs-v4");
 
-        StemAudioRoute route = TranscriptWorkflowUtilities.BuildStemAudioRoute([vocals]);
+        StemAudioRoute route = TranscriptWorkflowUtilities.BuildStemAudioRoute([vocals], stageRuns: null);
 
         Assert.Equal(ProjectArtifactPaths.NormalizedAudioRelativePath, route.AsrAudioRelativePath);
         Assert.Equal(ProjectArtifactPaths.NormalizedAudioRelativePath, route.MixSourceAudioRelativePath);

@@ -83,7 +83,7 @@ public sealed class MixPlanBuilderCandidateTests
             [segment],
             [translatedSegment],
             [primaryTake, candidateATake, candidateBTake],
-            CandidateGroups: [group]));
+            CandidateGroups: [group], StageRuns: null));
 
         Assert.Single(plan.SpeechClips);
         Assert.Equal(candidateAArtifact.RelativePath, plan.SpeechClips[0].TakeRelativePath);
@@ -126,7 +126,7 @@ public sealed class MixPlanBuilderCandidateTests
             [normalized, primaryArtifact],
             [segment],
             [translatedSegment],
-            [primaryTake]));
+            [primaryTake], StageRuns: null));
 
         Assert.Single(plan.SpeechClips);
         Assert.Equal(primaryArtifact.RelativePath, plan.SpeechClips[0].TakeRelativePath);
@@ -194,7 +194,7 @@ public sealed class MixPlanBuilderCandidateTests
             [segment],
             [translatedSegment],
             [candidateATake, candidateBTake],
-            CandidateGroups: [group]));
+            CandidateGroups: [group], StageRuns: null));
 
         Assert.Single(plan.SpeechClips);
         Assert.Equal(candidateBArtifact.RelativePath, plan.SpeechClips[0].TakeRelativePath);
