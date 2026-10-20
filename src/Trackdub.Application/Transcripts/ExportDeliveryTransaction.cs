@@ -35,8 +35,11 @@ internal sealed class ExportDeliveryTransaction : IDisposable
         try
         {
             RecoverUnderLock(outputPath);
-            journal = journal with { Entries = journal.Entries.Select(entry => entry with
-                { HadExistingFile = File.Exists(entry.DestinationPath) }).ToArray() };
+            journal = journal with
+            {
+                Entries = journal.Entries.Select(entry => entry with
+                { HadExistingFile = File.Exists(entry.DestinationPath) }).ToArray()
+            };
             for (int index = 0; index < replacements.Length; index++)
             {
                 Entry entry = journal.Entries[index];
@@ -196,7 +199,7 @@ internal sealed class ExportDeliveryTransaction : IDisposable
             string.IsNullOrWhiteSpace(journal.OutputPath) || !Path.IsPathFullyQualified(journal.OutputPath) ||
             !FilePathComparison.AreSame(JournalPath(journal.OutputPath), JournalPath(outputPath)) ||
             journal.Entries is not { Length: > 0 } ||
-            journal.Accepted && journal.RolledBack)
+            (journal.Accepted && journal.RolledBack))
             throw new InvalidDataException("Invalid export delivery recovery journal.");
         string ownerOutputPath = journal.OutputPath;
         string extension = Path.GetExtension(ownerOutputPath);
