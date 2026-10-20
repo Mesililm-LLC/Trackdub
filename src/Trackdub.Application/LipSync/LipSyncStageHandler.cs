@@ -503,6 +503,7 @@ public sealed class LipSyncStageHandler(
         CancellationToken cancellationToken)
     {
         string tempSourceSegmentPath = Path.Join(Path.GetTempPath(), $"trackdub-src-seg-{segmentId:N}.wav");
+        bool extracted = false;
         try
         {
             await _audioClipExtractor!
@@ -513,6 +514,7 @@ public sealed class LipSyncStageHandler(
                     tempSourceSegmentPath,
                     cancellationToken)
                 .ConfigureAwait(false);
+            extracted = true;
             return new SourceClipExtract(true, tempSourceSegmentPath, null);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -522,6 +524,13 @@ public sealed class LipSyncStageHandler(
                 planConfidence: alignmentResult.Confidence.Overall,
                 skipReason: $"Source audio segment extraction failed: {ex.Message}",
                 providerId: alignmentResult.ProviderId, modelId: alignmentResult.ModelId));
+        }
+        finally
+        {
+            if (!extracted)
+            {
+                try { File.Delete(tempSourceSegmentPath); } catch { /* best-effort cleanup */ }
+            }
         }
     }
 
