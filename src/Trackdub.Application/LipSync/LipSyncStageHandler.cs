@@ -103,6 +103,8 @@ public sealed class LipSyncStageHandler(
             List<LipSyncSegment> segments = await ProcessAllTakesAsync(request, stageRun.Id, bounds, cancellationToken)
                 .ConfigureAwait(false);
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (segments.Count == 0)
             {
                 stageRun = await SkipEmptyAsync(stageRun).ConfigureAwait(false);
@@ -513,7 +515,7 @@ public sealed class LipSyncStageHandler(
                 .ConfigureAwait(false);
             return new SourceClipExtract(true, tempSourceSegmentPath, null);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             return new SourceClipExtract(false, null, BuildSegment(segmentId, LipSyncSegmentStatus.Partial,
                 ttsAlignmentId: alignmentResult.SegmentId,
@@ -658,7 +660,7 @@ public sealed class LipSyncStageHandler(
                 .StretchAsync(ttsTakeAudioPath, stretchedOutputPath, stretchPlan, cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             var failed = BuildSegment(segmentId, LipSyncSegmentStatus.Failed,
                 sourceAlignmentId: sourceAlignmentResult.SegmentId,
