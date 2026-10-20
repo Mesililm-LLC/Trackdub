@@ -116,7 +116,8 @@ public sealed class ProjectWorkflow(
             mediaAsset,
             normalizedAudio,
             artifacts,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            stageRuns: currentState.StageRuns).ConfigureAwait(false);
 
         await transcriptGenerationService.GenerateTranscriptAsync(
             currentState.ProjectState.Project,
@@ -156,7 +157,8 @@ public sealed class ProjectWorkflow(
             mediaAsset,
             normalizedAudio,
             artifacts,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            stageRuns: currentState.StageRuns).ConfigureAwait(false);
 
         await transcriptGenerationService.GenerateTranscriptStageAsync(
             currentState.ProjectState.Project,
@@ -288,7 +290,8 @@ public sealed class ProjectWorkflow(
             normalizedAudio,
             artifacts,
             cancellationToken,
-            allowExistingReuse: false).ConfigureAwait(false);
+            allowExistingReuse: false,
+            stageRuns: currentState.StageRuns).ConfigureAwait(false);
 
         TranscriptProjectState refreshed = await stateService
             .RefreshArtifactsAndStageRunsAsync(currentState, cancellationToken)
@@ -464,7 +467,8 @@ public sealed class ProjectWorkflow(
         ProjectArtifact normalizedAudioArtifact,
         IReadOnlyList<ProjectArtifact> existingArtifacts,
         CancellationToken cancellationToken,
-        bool allowExistingReuse = true)
+        bool allowExistingReuse = true,
+        IReadOnlyList<StageRunRecord>? stageRuns = null)
     {
         // Transcript stages always route from the full mix: ASR, VAD and diarization all scored
         // as well or better on the mix (DeepFilterNet-cleaned for VAD/diarization) than on a
@@ -472,13 +476,12 @@ public sealed class ProjectWorkflow(
         ProjectArtifact selectedSource = normalizedAudioArtifact;
         const SpeechAudioSourceKind sourceKind = SpeechAudioSourceKind.FullMix;
 
-        // If speech processed audio already exists, skip both enhancement and preparation.
+        // If speech processed audio from a completed preparation run already exists, skip
+        // both enhancement and preparation. Artifacts registered by a canceled or failed
+        // producer are never reused, even when they are the newest rows.
         // Reuse is suppressed when the caller requires fresh evidence of the stage's work.
         ProjectArtifact? existingProcessed = allowExistingReuse
-            ? existingArtifacts
-                .Where(a => a.Kind == ArtifactKind.SpeechProcessedAudio)
-                .OrderByDescending(a => a.CreatedAtUtc)
-                .FirstOrDefault()
+            ? TranscriptWorkflowUtilities.GetAcceptedSpeechProcessedAudio(existingArtifacts, stageRuns)
             : null;
         if (existingProcessed is not null)
         {
@@ -488,13 +491,11 @@ public sealed class ProjectWorkflow(
 
         SpeechAudioEnhancementStageResult? enhancementResult = null;
 
-        // A SpeechEnhancedAudio artifact from an earlier run stays eligible as the
-        // preparation input either way; when reuse is suppressed it must not also
+        // A SpeechEnhancedAudio artifact from a completed enhancement run stays eligible
+        // as the preparation input either way; when reuse is suppressed it must not also
         // suppress a fresh enhancement pass.
-        ProjectArtifact? existingEnhanced = existingArtifacts
-            .Where(a => a.Kind == ArtifactKind.SpeechEnhancedAudio)
-            .OrderByDescending(a => a.CreatedAtUtc)
-            .FirstOrDefault();
+        ProjectArtifact? existingEnhanced =
+            TranscriptWorkflowUtilities.GetAcceptedSpeechEnhancedAudio(existingArtifacts, stageRuns);
         if (speechAudioEnhancementStageHandler is not null && (existingEnhanced is null || !allowExistingReuse))
         {
             try

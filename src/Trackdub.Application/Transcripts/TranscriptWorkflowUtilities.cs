@@ -158,6 +158,46 @@ public static class TranscriptWorkflowUtilities
         IReadOnlyList<StageRunRecord>? stageRuns) =>
         GetAcceptedStemArtifacts(artifacts, stageRuns).FirstOrDefault(static artifact => artifact.Kind == ArtifactKind.Ambiance);
 
+    // A processed artifact is accepted only when the preparation run that produced it
+    // completed. Selecting by timestamp alone would reuse output registered by a
+    // canceled or failed re-run, mixing producers the same way stem selection once did.
+    public static ProjectArtifact? GetAcceptedSpeechProcessedAudio(
+        IReadOnlyList<ProjectArtifact> artifacts,
+        IReadOnlyList<StageRunRecord>? stageRuns) =>
+        GetAcceptedStageAudio(artifacts, stageRuns, StageNames.AudioPreparation, ArtifactKind.SpeechProcessedAudio);
+
+    public static ProjectArtifact? GetAcceptedSpeechEnhancedAudio(
+        IReadOnlyList<ProjectArtifact> artifacts,
+        IReadOnlyList<StageRunRecord>? stageRuns) =>
+        GetAcceptedStageAudio(artifacts, stageRuns, StageNames.SpeechEnhancement, ArtifactKind.SpeechEnhancedAudio);
+
+    private static ProjectArtifact? GetAcceptedStageAudio(
+        IReadOnlyList<ProjectArtifact> artifacts,
+        IReadOnlyList<StageRunRecord>? stageRuns,
+        string stageName,
+        ArtifactKind kind)
+    {
+        if (stageRuns is null)
+        {
+            return null;
+        }
+
+        var completedRunIds = stageRuns
+            .Where(run =>
+                string.Equals(run.StageName, stageName, StringComparison.OrdinalIgnoreCase) &&
+                run.Status == StageRunStatus.Completed)
+            .Select(static run => run.Id)
+            .ToHashSet();
+
+        return artifacts
+            .Where(artifact =>
+                artifact.Kind == kind &&
+                artifact.StageRunId is Guid stageRunId &&
+                completedRunIds.Contains(stageRunId))
+            .OrderByDescending(static artifact => artifact.CreatedAtUtc)
+            .FirstOrDefault();
+    }
+
     public static ProjectArtifact? ResolveStageProcessedAudioArtifact(
         IReadOnlyList<ProjectArtifact> artifacts,
         string stageName,
@@ -315,7 +355,8 @@ public static class TranscriptWorkflowUtilities
     private static StageRunRecord? GetLatestAudioPreparationRun(IReadOnlyList<StageRunRecord>? stageRuns) =>
         stageRuns?
             .Where(static stageRun =>
-                string.Equals(stageRun.StageName, StageNames.AudioPreparation, StringComparison.OrdinalIgnoreCase))
+                string.Equals(stageRun.StageName, StageNames.AudioPreparation, StringComparison.OrdinalIgnoreCase) &&
+                stageRun.Status == StageRunStatus.Completed)
             .OrderByDescending(static stageRun => stageRun.CompletedAtUtc ?? stageRun.StartedAtUtc)
             .FirstOrDefault();
 
