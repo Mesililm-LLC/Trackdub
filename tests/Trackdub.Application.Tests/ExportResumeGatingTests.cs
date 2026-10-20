@@ -24,6 +24,78 @@ namespace Trackdub.Application.Tests;
 /// </summary>
 public sealed class ExportResumeGatingTests
 {
+    [Fact]
+    public async Task Legacy_resume_rejects_active_writer_before_journal_publication()
+    {
+        using var temp = new TempDir();
+        ExportResumeFixture fixture = await ExportResumeFixture.CreateAsync(temp.Path, BaselineGating());
+        string outputPath = Path.Join(temp.Path, fixture.ExportRelativePath);
+        string lockPath = Path.Join(Path.GetDirectoryName(outputPath), ".dubbed.export-delivery.json.lock");
+        byte[] videoBytes = File.ReadAllBytes(outputPath);
+        using var activeWriterLock = new FileStream(lockPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+
+        Assert.False(StageArtifactResumeEvaluator.CanResumeStage(fixture.State, fixture.ArtifactStore,
+            StageNames.Export, BaselineSnapshot(), temp.Path, exportPath: fixture.ExportRelativePath));
+        Assert.False(await StageArtifactResumeEvaluator.CanResumeStageAsync(fixture.State, fixture.ArtifactStore,
+            StageNames.Export, BaselineSnapshot(), temp.Path, exportPath: fixture.ExportRelativePath,
+            cancellationToken: TestContext.Current.CancellationToken));
+        Assert.Equal(videoBytes, File.ReadAllBytes(outputPath));
+        Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(outputPath)!, "*.export-delivery.json"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Legacy_resume_does_not_require_writable_delivery_metadata(bool readOnlyExistingLock)
+    {
+        using var temp = new TempDir();
+        ExportResumeFixture fixture = await ExportResumeFixture.CreateAsync(temp.Path, BaselineGating());
+        string outputPath = Path.Join(temp.Path, fixture.ExportRelativePath);
+        string lockPath = Path.Join(Path.GetDirectoryName(outputPath), ".dubbed.export-delivery.json.lock");
+        if (readOnlyExistingLock)
+        {
+            File.WriteAllBytes(lockPath, []);
+            File.SetAttributes(lockPath, FileAttributes.ReadOnly);
+        }
+        try
+        {
+            Assert.True(StageArtifactResumeEvaluator.CanResumeStage(fixture.State, fixture.ArtifactStore,
+                StageNames.Export, BaselineSnapshot(), temp.Path, exportPath: fixture.ExportRelativePath));
+            Assert.True(await StageArtifactResumeEvaluator.CanResumeStageAsync(fixture.State, fixture.ArtifactStore,
+                StageNames.Export, BaselineSnapshot(), temp.Path, exportPath: fixture.ExportRelativePath,
+                cancellationToken: TestContext.Current.CancellationToken));
+            Assert.Equal(readOnlyExistingLock, File.Exists(lockPath));
+        }
+        finally
+        {
+            if (File.Exists(lockPath)) File.SetAttributes(lockPath, FileAttributes.Normal);
+        }
+    }
+
+    [Fact]
+    public async Task Failed_successor_restores_resume_of_prior_completed_producer()
+    {
+        using var temp = new TempDir();
+        ExportResumeFixture fixture = await ExportResumeFixture.CreateAsync(temp.Path, BaselineGating());
+        string outputPath = Path.Join(temp.Path, fixture.ExportRelativePath);
+        string source = Path.Join(temp.Path, "replacement.mp4");
+        File.WriteAllBytes(source, [9, 8, 7]);
+        using var accepted = new ExportDeliveryTransaction([(outputPath, source)], Assert.Single(fixture.State.StageRuns).Id);
+        await accepted.PrepareAsync(TestContext.Current.CancellationToken);
+        accepted.Apply();
+        accepted.Accept();
+        using var failed = new ExportDeliveryTransaction([(outputPath, source)], Guid.NewGuid());
+        await failed.PrepareAsync(TestContext.Current.CancellationToken);
+        failed.Apply();
+        failed.Rollback();
+
+        Assert.True(StageArtifactResumeEvaluator.CanResumeStage(fixture.State, fixture.ArtifactStore,
+            StageNames.Export, BaselineSnapshot(), temp.Path, exportPath: fixture.ExportRelativePath));
+        Assert.True(await StageArtifactResumeEvaluator.CanResumeStageAsync(fixture.State, fixture.ArtifactStore,
+            StageNames.Export, BaselineSnapshot(), temp.Path, exportPath: fixture.ExportRelativePath,
+            cancellationToken: TestContext.Current.CancellationToken));
+    }
+
     [Theory]
     [InlineData("Version")]
     [InlineData("DestinationPath")]
