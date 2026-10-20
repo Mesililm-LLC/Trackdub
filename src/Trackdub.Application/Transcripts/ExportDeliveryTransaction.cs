@@ -156,7 +156,8 @@ internal sealed class ExportDeliveryTransaction : IDisposable
         using FileStream recoveryLock = AcquireLock(fullOutputPath);
         RecoverUnderLock(fullOutputPath);
         Journal? journal = ReadJournal(fullOutputPath);
-        return journal is null || (journal.Accepted && journal.ProducerStageRunId == producerStageRunId);
+        return journal is null || (journal.Accepted && journal.ProducerStageRunId == producerStageRunId &&
+            FilePathComparison.AreSame(journal.OutputPath, fullOutputPath));
     }
 
     private static Journal? ReadJournal(string outputPath)
@@ -165,7 +166,14 @@ internal sealed class ExportDeliveryTransaction : IDisposable
         if (!File.Exists(path)) return null;
         Journal journal = JsonSerializer.Deserialize<Journal>(File.ReadAllText(path))
             ?? throw new InvalidDataException("Export delivery recovery journal is empty.");
-        Validate(journal, outputPath);
+        try
+        {
+            Validate(journal, outputPath);
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException)
+        {
+            throw new InvalidDataException("Export delivery recovery journal contains an invalid path.", exception);
+        }
         return journal;
     }
 
@@ -186,11 +194,17 @@ internal sealed class ExportDeliveryTransaction : IDisposable
     {
         if (journal.Version != JournalVersion || journal.ProducerStageRunId == Guid.Empty ||
             string.IsNullOrWhiteSpace(journal.OutputPath) || !Path.IsPathFullyQualified(journal.OutputPath) ||
-            !FilePathComparison.AreSame(journal.OutputPath, outputPath) || journal.Entries is not { Length: > 0 } ||
+            !FilePathComparison.AreSame(JournalPath(journal.OutputPath), JournalPath(outputPath)) ||
+            journal.Entries is not { Length: > 0 } ||
             journal.Accepted && journal.RolledBack)
             throw new InvalidDataException("Invalid export delivery recovery journal.");
-        string[] family = [outputPath, Path.ChangeExtension(outputPath, ".srt"), Path.ChangeExtension(outputPath, ".vtt"),
-            Path.ChangeExtension(outputPath, ".ass"), Path.ChangeExtension(outputPath, ".export-manifest.json")];
+        string ownerOutputPath = journal.OutputPath;
+        string extension = Path.GetExtension(ownerOutputPath);
+        if (!string.Equals(extension, ".mp4", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(extension, ".mkv", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Export delivery recovery journal contains an unsupported output container.");
+        string[] family = [ownerOutputPath, Path.ChangeExtension(ownerOutputPath, ".srt"), Path.ChangeExtension(ownerOutputPath, ".vtt"),
+            Path.ChangeExtension(ownerOutputPath, ".ass"), Path.ChangeExtension(ownerOutputPath, ".export-manifest.json")];
         var destinations = new HashSet<string>(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
         foreach (Entry entry in journal.Entries)
         {
@@ -204,12 +218,14 @@ internal sealed class ExportDeliveryTransaction : IDisposable
                 !FilePathComparison.AreSame(entry.BackupPath, AdjacentPath(entry.DestinationPath, journal.ProducerStageRunId, ".bak")))
                 throw new InvalidDataException("Export delivery recovery paths are outside the output family.");
         }
-        if (!FilePathComparison.AreSame(journal.Entries[0].DestinationPath, outputPath))
+        if (!FilePathComparison.AreSame(journal.Entries[0].DestinationPath, ownerOutputPath))
             throw new InvalidDataException("Export delivery recovery journal does not own the requested output.");
     }
 
     private static string JournalPath(string outputPath) =>
-        Path.Join(Path.GetDirectoryName(outputPath), $".{Path.GetFileName(outputPath)}.export-delivery.json");
+        // MP4 and MKV with the same stem own identical manifest/subtitle paths. They must
+        // recover and replace a single durable owner under the same lock.
+        Path.Join(Path.GetDirectoryName(outputPath), $".{Path.GetFileNameWithoutExtension(outputPath)}.export-delivery.json");
 
     private static string AdjacentPath(string destination, Guid producer, string suffix) =>
         Path.Join(Path.GetDirectoryName(destination), $".{Path.GetFileName(destination)}.{producer:N}{suffix}");

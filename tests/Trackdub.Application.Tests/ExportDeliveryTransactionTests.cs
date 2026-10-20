@@ -6,13 +6,66 @@ namespace Trackdub.Application.Tests;
 public sealed class ExportDeliveryTransactionTests
 {
     [Fact]
+    public async Task Accepted_other_container_survives_stale_predecessor_recovery()
+    {
+        using var fixture = new DeliveryFixture();
+        using var pendingMp4 = fixture.CreateTransaction();
+        await pendingMp4.PrepareAsync(TestContext.Current.CancellationToken);
+        pendingMp4.Apply();
+        pendingMp4.Dispose();
+        string mkvPath = System.IO.Path.ChangeExtension(fixture.OutputPath, ".mkv");
+        string replacementPath = System.IO.Path.Join(fixture.Path, "mkv-replacement");
+        byte[] mkvBytes = [10, 11, 12];
+        File.WriteAllBytes(replacementPath, mkvBytes);
+        Guid mkvProducer = Guid.NewGuid();
+        var mkvReplacements = fixture.Replacements.Select((pair, index) =>
+            (DestinationPath: index == 0 ? mkvPath : pair.DestinationPath, ReplacementPath: replacementPath));
+        using var acceptedMkv = new ExportDeliveryTransaction(mkvReplacements, mkvProducer);
+        await acceptedMkv.PrepareAsync(TestContext.Current.CancellationToken);
+        acceptedMkv.Apply();
+        acceptedMkv.Accept();
+
+        ExportDeliveryTransaction.Recover(fixture.OutputPath);
+        Assert.False(ExportDeliveryTransaction.IsAcceptedDelivery(fixture.OutputPath, fixture.Producer));
+        Assert.True(ExportDeliveryTransaction.IsAcceptedDelivery(mkvPath, mkvProducer));
+        Assert.Equal(mkvBytes, File.ReadAllBytes(mkvPath));
+        foreach ((string destination, _) in fixture.Replacements.Skip(1))
+            Assert.Equal(mkvBytes, File.ReadAllBytes(destination));
+        Assert.Equal(fixture.OldBytes, File.ReadAllBytes(fixture.OutputPath));
+    }
+
+    [Fact]
+    public async Task Active_other_container_blocks_overlapping_sidecar_writer()
+    {
+        using var fixture = new DeliveryFixture();
+        using var mp4 = fixture.CreateTransaction();
+        await mp4.PrepareAsync(TestContext.Current.CancellationToken);
+        mp4.Apply();
+        string mkvPath = System.IO.Path.ChangeExtension(fixture.OutputPath, ".mkv");
+        using var mkv = new ExportDeliveryTransaction(fixture.Replacements.Select((pair, index) =>
+            (index == 0 ? mkvPath : pair.DestinationPath, pair.ReplacementPath)), Guid.NewGuid());
+        try
+        {
+            Assert.Throws<IOException>(() => ExportDeliveryTransaction.Recover(mkvPath));
+            await Assert.ThrowsAsync<IOException>(() => mkv.PrepareAsync(TestContext.Current.CancellationToken));
+            foreach ((string destination, _) in fixture.Replacements)
+                Assert.Equal(fixture.NewBytes, File.ReadAllBytes(destination));
+        }
+        finally
+        {
+            mkv.Rollback();
+            mp4.Rollback();
+        }
+    }
+
+    [Fact]
     public async Task Recovery_cannot_mutate_an_active_delivery_transaction()
     {
         using var fixture = new DeliveryFixture();
         using var transaction = fixture.CreateTransaction();
         await transaction.PrepareAsync(TestContext.Current.CancellationToken);
         transaction.Apply();
-        string journalPath = System.IO.Path.Join(fixture.Path, ".lesson.mp4.export-delivery.json");
+        string journalPath = System.IO.Path.Join(fixture.Path, ".lesson.export-delivery.json");
         byte[] journalBytes = File.ReadAllBytes(journalPath);
         try
         {
@@ -133,7 +186,7 @@ public sealed class ExportDeliveryTransactionTests
         transaction.Apply();
         string unrelated = System.IO.Path.Join(fixture.Path, "lesson-other.mp4");
         File.WriteAllBytes(unrelated, fixture.OldBytes);
-        string journalPath = System.IO.Path.Join(fixture.Path, ".lesson.mp4.export-delivery.json");
+        string journalPath = System.IO.Path.Join(fixture.Path, ".lesson.export-delivery.json");
         JsonNode journal = JsonNode.Parse(File.ReadAllText(journalPath))!;
         journal["Entries"]![0]![field] = unrelated;
         File.WriteAllText(journalPath, journal.ToJsonString());

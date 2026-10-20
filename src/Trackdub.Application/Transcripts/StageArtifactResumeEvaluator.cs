@@ -352,7 +352,7 @@ public static class StageArtifactResumeEvaluator
             return producer is not null && ExportDeliveryTransaction.IsAcceptedDelivery(resolvedPath, producer.Id) &&
                 File.Exists(resolvedPath);
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException)
         {
             // An unreadable or unrecoverable journal cannot establish delivery acceptance.
             return false;

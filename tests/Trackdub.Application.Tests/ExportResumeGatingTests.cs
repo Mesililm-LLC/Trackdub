@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Trackdub.Application.Transcripts;
 using Trackdub.Application.Projects;
 using Trackdub.Contracts;
@@ -23,6 +24,43 @@ namespace Trackdub.Application.Tests;
 /// </summary>
 public sealed class ExportResumeGatingTests
 {
+    [Theory]
+    [InlineData("Version")]
+    [InlineData("DestinationPath")]
+    [InlineData("InvalidPath")]
+    public async Task Invalid_delivery_journal_rejects_sync_and_async_resume_without_mutation(string invalidField)
+    {
+        using var temp = new TempDir();
+        ExportResumeFixture fixture = await ExportResumeFixture.CreateAsync(temp.Path, BaselineGating());
+        string outputPath = Path.Join(temp.Path, fixture.ExportRelativePath);
+        byte[] priorVideoBytes = File.ReadAllBytes(outputPath);
+        string replacementPath = Path.Join(temp.Path, "replacement.mp4");
+        File.WriteAllBytes(replacementPath, [9, 8, 7]);
+        using var transaction = new ExportDeliveryTransaction([(outputPath, replacementPath)], Assert.Single(fixture.State.StageRuns).Id);
+        await transaction.PrepareAsync(TestContext.Current.CancellationToken);
+        transaction.Apply();
+        transaction.Dispose();
+        string journalPath = Assert.Single(Directory.EnumerateFiles(Path.GetDirectoryName(outputPath)!, "*.export-delivery.json"));
+        JsonNode journal = JsonNode.Parse(File.ReadAllText(journalPath))!;
+        if (invalidField == "Version") journal["Version"] = 2;
+        else journal["Entries"]![0]!["DestinationPath"] = invalidField == "InvalidPath"
+            ? outputPath + '\0' : Path.Join(temp.Path, "unrelated.mp4");
+        File.WriteAllText(journalPath, journal.ToJsonString());
+        byte[] journalBytes = File.ReadAllBytes(journalPath);
+        byte[] currentVideoBytes = File.ReadAllBytes(outputPath);
+
+        Assert.False(StageArtifactResumeEvaluator.CanResumeStage(
+            fixture.State, fixture.ArtifactStore, StageNames.Export, BaselineSnapshot(), temp.Path,
+            exportPath: fixture.ExportRelativePath));
+        Assert.False(await StageArtifactResumeEvaluator.CanResumeStageAsync(
+            fixture.State, fixture.ArtifactStore, StageNames.Export, BaselineSnapshot(), temp.Path,
+            exportPath: fixture.ExportRelativePath, cancellationToken: TestContext.Current.CancellationToken));
+        Assert.Equal(currentVideoBytes, File.ReadAllBytes(outputPath));
+        Assert.Equal(journalBytes, File.ReadAllBytes(journalPath));
+        string backupPath = Assert.Single(Directory.EnumerateFiles(Path.GetDirectoryName(outputPath)!, "*.bak"));
+        Assert.Equal(priorVideoBytes, File.ReadAllBytes(backupPath));
+    }
+
     [Fact]
     public async Task Resume_probe_rejects_active_delivery_without_recovering_it()
     {
