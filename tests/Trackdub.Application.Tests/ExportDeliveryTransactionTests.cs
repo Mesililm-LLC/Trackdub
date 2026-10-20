@@ -95,6 +95,44 @@ public sealed class ExportDeliveryTransactionTests
         Assert.Equal(3, Directory.EnumerateFiles(fixture.Path, "*.bak").Count());
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Foreign_terminal_journal_is_ignored_without_touching_its_family(bool accepted)
+    {
+        using var fixture = new DeliveryFixture();
+        using var transaction = fixture.CreateTransaction();
+        await transaction.PrepareAsync(TestContext.Current.CancellationToken);
+        transaction.Apply();
+        if (accepted) transaction.Accept();
+        else transaction.Rollback();
+        byte[] originalJournalBytes = File.ReadAllBytes(
+            System.IO.Path.Join(fixture.Path, ".lesson.export-delivery.json"));
+        // A terminal journal from another family at this location records no pending
+        // work here: exporting must proceed and leave the foreign files alone.
+        string otherOutput = System.IO.Path.Join(fixture.Path, "other.mp4");
+        File.Copy(
+            System.IO.Path.Join(fixture.Path, ".lesson.export-delivery.json"),
+            System.IO.Path.Join(fixture.Path, ".other.export-delivery.json"));
+        string otherSource = System.IO.Path.Join(fixture.Path, "other-replacement");
+        byte[] otherBytes = [9, 10, 11, 12];
+        File.WriteAllBytes(otherSource, otherBytes);
+        using var other = new ExportDeliveryTransaction([(otherOutput, otherSource)], Guid.NewGuid());
+
+        await other.PrepareAsync(TestContext.Current.CancellationToken);
+        other.Apply();
+        other.Accept();
+        ExportDeliveryTransaction.Recover(otherOutput);
+
+        Assert.Equal(otherBytes, File.ReadAllBytes(otherOutput));
+        Assert.Equal(
+            originalJournalBytes,
+            File.ReadAllBytes(System.IO.Path.Join(fixture.Path, ".lesson.export-delivery.json")));
+        byte[] expectedOriginal = accepted ? fixture.NewBytes : fixture.OldBytes;
+        foreach ((string destination, _) in fixture.Replacements)
+            Assert.Equal(expectedOriginal, File.ReadAllBytes(destination));
+    }
+
     [Fact]
     public async Task Accepted_other_container_survives_stale_predecessor_recovery()
     {
