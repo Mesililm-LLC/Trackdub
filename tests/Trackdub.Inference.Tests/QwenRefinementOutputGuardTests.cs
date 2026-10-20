@@ -5,6 +5,34 @@ namespace Trackdub.Inference.Tests;
 
 public sealed class QwenRefinementOutputGuardTests
 {
+    [Theory]
+    [InlineData("hello world", "Hello world.")]
+    [InlineData("hello world. this is a test", "Hello world. This is a test.")]
+    [InlineData("directora del programa.", "Directora del programa.")]
+    [InlineData("Directora del programa.", "directora del programa.")]
+    [InlineData("él vino con María", "Él vino con María.")]
+    [InlineData("i met john at 5", "I met John at 5.")]
+    public void Evaluate_accepts_capitalization_without_treating_it_as_a_name_change(string original, string polished)
+    {
+        QwenRefinementGuardResult result = QwenRefinementOutputGuard.Evaluate(original, polished);
+
+        Assert.True(result.Accepted);
+        Assert.Equal(polished, result.DisplayedText);
+    }
+
+    [Theory]
+    [InlineData("I met John at the office yesterday.", "I met James at the office yesterday.")]
+    [InlineData("I met María at the office yesterday.", "I met Marta at the office yesterday.")]
+    [InlineData("I met John at the office yesterday.", "I met John John at the office yesterday.")]
+    public void Evaluate_rejects_changed_or_duplicated_names(string original, string polished)
+    {
+        QwenRefinementGuardResult result = QwenRefinementOutputGuard.Evaluate(original, polished);
+
+        Assert.False(result.Accepted);
+        Assert.Equal(original, result.DisplayedText);
+        Assert.Contains(TextRefinementCorrectionCodes.NameNumberGuardTriggered, result.AppliedCorrections);
+    }
+
     [Fact]
     public void Evaluate_accepts_clean_polish_that_differs_from_input()
     {

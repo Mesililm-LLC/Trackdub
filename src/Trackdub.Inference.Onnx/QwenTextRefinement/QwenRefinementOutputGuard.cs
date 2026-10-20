@@ -191,16 +191,19 @@ public static partial class QwenRefinementOutputGuard
             return true;
         }
 
-        IReadOnlyList<string> originalNames = ExtractNameLikeTokens(originalText);
-        IReadOnlyList<string> cleanedNames = ExtractNameLikeTokens(cleaned);
-        if (originalNames.Count != cleanedNames.Count)
+        // Capitalization is a requested correction, not evidence of a new name.
+        // Protect name-like words from either text by comparing their occurrences
+        // against all words in the other text, independent of capitalization.
+        IEnumerable<string> protectedNames = ExtractNameLikeTokens(originalText)
+            .Concat(ExtractNameLikeTokens(cleaned))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        string[] originalWords = WordTokenRegex().Matches(originalText).Select(match => match.Value).ToArray();
+        string[] cleanedWords = WordTokenRegex().Matches(cleaned).Select(match => match.Value).ToArray();
+        foreach (string name in protectedNames)
         {
-            return true;
-        }
-
-        for (int index = 0; index < originalNames.Count; index++)
-        {
-            if (!string.Equals(originalNames[index], cleanedNames[index], StringComparison.Ordinal))
+            int originalCount = originalWords.Count(word => string.Equals(word, name, StringComparison.OrdinalIgnoreCase));
+            int cleanedCount = cleanedWords.Count(word => string.Equals(word, name, StringComparison.OrdinalIgnoreCase));
+            if (originalCount != cleanedCount)
             {
                 return true;
             }
@@ -315,8 +318,11 @@ public static partial class QwenRefinementOutputGuard
     [GeneratedRegex(@"\b\d+(?:[.,]\d+)*\b", RegexOptions.CultureInvariant)]
     private static partial Regex NumericTokenRegex();
 
-    [GeneratedRegex(@"\b[A-Z][a-z]+(?:['’][A-Za-z]+)?\b", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\b\p{Lu}[\p{Ll}\p{M}]+(?:['’][\p{L}\p{M}]+)?\b", RegexOptions.CultureInvariant)]
     private static partial Regex NameLikeTokenRegex();
+
+    [GeneratedRegex(@"\b\p{L}[\p{L}\p{M}]*(?:['’][\p{L}\p{M}]+)?\b", RegexOptions.CultureInvariant)]
+    private static partial Regex WordTokenRegex();
 
     [GeneratedRegex(@"\s+", RegexOptions.CultureInvariant)]
     private static partial Regex WhitespaceRegex();

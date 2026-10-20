@@ -5,6 +5,18 @@ namespace Trackdub.Inference.Tests;
 
 public sealed class QwenInstructPromptBuilderTests
 {
+    [Theory]
+    [InlineData(TextRefinementScope.Asr)]
+    [InlineData(TextRefinementScope.Translation)]
+    public void BuildPrompt_terminates_system_and_user_messages(TextRefinementScope scope)
+    {
+        string prompt = QwenInstructPromptBuilder.BuildPrompt(scope, "hello world", "en", "fr");
+
+        Assert.Equal(2, prompt.Split("<|im_end|>", StringSplitOptions.None).Length - 1);
+        Assert.Contains("<|im_end|>\n<|im_start|>user\n", prompt, StringComparison.Ordinal);
+        Assert.Contains("hello world<|im_end|>\n<|im_start|>assistant\n", prompt, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void BuildAsrPolishPrompt_uses_conservative_system_prompt_and_segment_text()
     {

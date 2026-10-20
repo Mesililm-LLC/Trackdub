@@ -24,8 +24,8 @@ public static class QwenInstructPromptBuilder
             : $"The transcript language is {sourceLanguage.Trim()}.\n";
 
         return
-            $"<|im_start|>system\n{AsrPolishSystemPrompt}\n" +
-            $"<|im_start|>user\n{languagePrefix}{segmentText}\n" +
+            $"<|im_start|>system\n{AsrPolishSystemPrompt}<|im_end|>\n" +
+            $"<|im_start|>user\n{languagePrefix}{segmentText}<|im_end|>\n" +
             "<|im_start|>assistant\n";
     }
 
@@ -47,8 +47,8 @@ public static class QwenInstructPromptBuilder
             """;
 
         return
-            $"<|im_start|>system\n{systemPrompt}{languageSuffix}\n" +
-            $"<|im_start|>user\n{segmentText}\n" +
+            $"<|im_start|>system\n{systemPrompt}{languageSuffix}<|im_end|>\n" +
+            $"<|im_start|>user\n{segmentText}<|im_end|>\n" +
             "<|im_start|>assistant\n";
     }
 

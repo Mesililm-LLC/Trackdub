@@ -45,6 +45,8 @@ public sealed class QwenTextRefinementEngineTests
         Assert.Equal("hello world this is a short asr segment", segment.OriginalText);
         Assert.False(string.IsNullOrWhiteSpace(segment.RefinedText));
         Assert.False(string.IsNullOrWhiteSpace(segment.DisplayedText));
+        Assert.True(segment.Accepted, $"Polish was rejected: {string.Join(", ", segment.AppliedCorrections)}; output: {segment.RefinedText}");
+        Assert.NotEqual(segment.OriginalText, segment.DisplayedText);
         Assert.NotNull(engine.LastExecutionSummary);
         Assert.Equal("cpu", engine.LastExecutionSummary!.SelectedProvider);
         Assert.Equal("qwen-polisher", engine.LastExecutionSummary.ModelAlias);
