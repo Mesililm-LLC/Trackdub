@@ -23,6 +23,59 @@ namespace Trackdub.Application.Tests;
 /// </summary>
 public sealed class ExportResumeGatingTests
 {
+    [Fact]
+    public async Task Resume_probe_rejects_active_delivery_without_recovering_it()
+    {
+        using var temp = new TempDir();
+        ExportResumeFixture fixture = await ExportResumeFixture.CreateAsync(temp.Path, BaselineGating());
+        string outputPath = Path.Join(temp.Path, fixture.ExportRelativePath);
+        string replacementPath = Path.Join(temp.Path, "replacement.mp4");
+        byte[] replacementBytes = [9, 8, 7];
+        File.WriteAllBytes(replacementPath, replacementBytes);
+        using var transaction = new ExportDeliveryTransaction([(outputPath, replacementPath)], Assert.Single(fixture.State.StageRuns).Id);
+        await transaction.PrepareAsync(TestContext.Current.CancellationToken);
+        transaction.Apply();
+        try
+        {
+            bool canResume = await StageArtifactResumeEvaluator.CanResumeStageAsync(
+                fixture.State, fixture.ArtifactStore, StageNames.Export, BaselineSnapshot(), temp.Path,
+                exportPath: fixture.ExportRelativePath, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.False(canResume);
+            Assert.Equal(replacementBytes, File.ReadAllBytes(outputPath));
+        }
+        finally
+        {
+            transaction.Rollback();
+        }
+    }
+
+    [Fact]
+    public async Task Recovery_after_database_completion_rejects_restored_delivery_for_newer_producer()
+    {
+        using var temp = new TempDir();
+        ExportResumeFixture fixture = await ExportResumeFixture.CreateAsync(temp.Path, BaselineGating());
+        string outputPath = Path.Join(temp.Path, fixture.ExportRelativePath);
+        byte[] priorVideoBytes = File.ReadAllBytes(outputPath);
+        string replacementPath = Path.Join(temp.Path, "replacement.mp4");
+        File.WriteAllBytes(replacementPath, [9, 8, 7]);
+        Guid completedProducer = Assert.Single(fixture.State.StageRuns).Id;
+        using var transaction = new ExportDeliveryTransaction([(outputPath, replacementPath)], completedProducer);
+        await transaction.PrepareAsync(TestContext.Current.CancellationToken);
+        transaction.Apply();
+        transaction.Dispose(); // Restart releases the live writer lock before resume recovery.
+
+        // The completed row exists, but journal acceptance did not happen before restart.
+        bool canResume = await StageArtifactResumeEvaluator.CanResumeStageAsync(
+            fixture.State, fixture.ArtifactStore, StageNames.Export, BaselineSnapshot(), temp.Path,
+            exportPath: fixture.ExportRelativePath, cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.False(canResume);
+        Assert.Equal(priorVideoBytes, File.ReadAllBytes(outputPath));
+        Assert.False(await StageArtifactResumeEvaluator.CanResumeStageAsync(
+            fixture.State, fixture.ArtifactStore, StageNames.Export, BaselineSnapshot(), temp.Path,
+            exportPath: fixture.ExportRelativePath, cancellationToken: TestContext.Current.CancellationToken));
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

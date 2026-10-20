@@ -19,6 +19,87 @@ namespace Trackdub.Application.Tests;
 public sealed class ExportStageHandlerTests
 {
     [Fact]
+    public async Task Completion_failure_restores_prior_delivery_and_sidecars()
+    {
+        await AssertPriorDeliverySurvivesCompletionFailureAsync(cancel: false);
+    }
+
+    [Fact]
+    public async Task Cancellation_after_swap_restores_prior_delivery()
+    {
+        await AssertPriorDeliverySurvivesCompletionFailureAsync(cancel: true);
+    }
+
+    private static async Task AssertPriorDeliverySurvivesCompletionFailureAsync(bool cancel)
+    {
+        using var temp = new TempDirectory();
+        TestExportContext context = CreateContext(temp.Path, includeCompletedTake: true);
+        string outputPath = Path.Join(temp.Path, "delivery", "lesson-dub.mp4");
+        string manifestPath = Path.ChangeExtension(outputPath, ".export-manifest.json");
+        string subtitlePath = Path.ChangeExtension(outputPath, ".srt");
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+        byte[] priorVideoBytes = [9, 8, 7, 6];
+        byte[] priorManifestBytes = [5, 4, 3, 2];
+        byte[] priorSubtitleBytes = [1, 8, 1];
+        File.WriteAllBytes(outputPath, priorVideoBytes);
+        File.WriteAllBytes(manifestPath, priorManifestBytes);
+        File.WriteAllBytes(subtitlePath, priorSubtitleBytes);
+        bool failCompletion = true;
+        var store = new CompletionFailureStageRunStore(() =>
+        {
+            if (!failCompletion) return;
+            Assert.NotEqual(priorVideoBytes, File.ReadAllBytes(outputPath));
+            Assert.NotEqual(priorManifestBytes, File.ReadAllBytes(manifestPath));
+            Assert.NotEqual(priorSubtitleBytes, File.ReadAllBytes(subtitlePath));
+            if (cancel) throw new OperationCanceledException("Canceled after delivery swap.");
+            throw new IOException("Completion database write failed.");
+        });
+        ExportStageHandler handler = CreateHandler(new FakeArtifactStore(temp.Path), new FakeMixRenderer(),
+            new FakeLoudnessNormalizer(), new FakeExportRenderer(),
+            new FakeMediaProbe { Snapshot = CreateProbeSnapshot(context.MediaAsset.DurationSeconds) },
+            new FakeMediaAssetRepository(), store);
+        var request = new ExportStageRequest(context.Project.Id, outputPath, [ExportSubtitleFormat.Srt]);
+
+        // Retry must preserve the prior accepted bytes on every unsuccessful attempt.
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            if (cancel)
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => handler.ExportAsync(context.State, request, TestContext.Current.CancellationToken));
+            else
+                await Assert.ThrowsAsync<ExportStageException>(() => handler.ExportAsync(context.State, request, TestContext.Current.CancellationToken));
+            Assert.Equal(priorVideoBytes, File.ReadAllBytes(outputPath));
+            Assert.Equal(priorManifestBytes, File.ReadAllBytes(manifestPath));
+            Assert.Equal(priorSubtitleBytes, File.ReadAllBytes(subtitlePath));
+            Assert.DoesNotContain(store.Inner.All, run => run.Status == StageRunStatus.Completed);
+        }
+        failCompletion = false;
+        ExportStageResult accepted = await handler.ExportAsync(context.State, request, TestContext.Current.CancellationToken);
+        byte[] acceptedVideo = File.ReadAllBytes(outputPath);
+        byte[] acceptedManifest = File.ReadAllBytes(manifestPath);
+        byte[] acceptedSubtitles = File.ReadAllBytes(subtitlePath);
+        ExportDeliveryTransaction.Recover(outputPath);
+        Assert.NotEqual(priorVideoBytes, acceptedVideo);
+        Assert.NotEqual(priorManifestBytes, acceptedManifest);
+        Assert.NotEqual(priorSubtitleBytes, acceptedSubtitles);
+        Assert.Equal(acceptedVideo, File.ReadAllBytes(outputPath));
+        Assert.Equal(acceptedManifest, File.ReadAllBytes(manifestPath));
+        Assert.Equal(acceptedSubtitles, File.ReadAllBytes(subtitlePath));
+        Assert.Equal(accepted.StageRun.Id, Assert.Single(store.Inner.All, run => run.Status == StageRunStatus.Completed).Id);
+    }
+
+    private sealed class CompletionFailureStageRunStore(Action onCompletion) : IProjectStageRunStore
+    {
+        public FakeProjectStageRunStore Inner { get; } = new();
+        public Task CreateAsync(StageRunRecord stageRun, CancellationToken cancellationToken) => Inner.CreateAsync(stageRun, cancellationToken);
+        public Task<IReadOnlyList<StageRunRecord>> ListByProjectAsync(Guid projectId, CancellationToken cancellationToken) => Inner.ListByProjectAsync(projectId, cancellationToken);
+        public Task UpdateAsync(StageRunRecord stageRun, CancellationToken cancellationToken)
+        {
+            if (stageRun.Status == StageRunStatus.Completed) onCompletion();
+            return Inner.UpdateAsync(stageRun, cancellationToken);
+        }
+    }
+
+    [Fact]
     public void ExportStageRequest_can_carry_match_original_loudness_and_pan_restoration()
     {
         var request = new ExportStageRequest(
