@@ -509,6 +509,90 @@ public sealed class LipSyncStageHandlerTests
         finally { Directory.Delete(directory, recursive: true); }
     }
 
+    [Fact]
+    public async Task Segment_save_ignores_cancellation_after_artifact_published()
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            var mediaAsset = MakeMediaAsset() with { SourceFilePath = Path.Join(directory, "original.mp4") };
+            File.WriteAllBytes(mediaAsset.SourceFilePath, [10, 11, 12]);
+            string sourcePath = Path.Join(directory, "source.wav");
+            File.WriteAllBytes(sourcePath, [3, 4, 5]);
+            var artifactStore = new FakeArtifactStore(directory);
+            var stageRunStore = new FakeProjectStageRunStore();
+            var mediaRepo = new FakeMediaAssetRepository();
+            var aligner = new FakeForcedAligner
+            {
+                PhonesToReturn = [new PhonemeTiming("AH", "arpabet", TimeSpan.Zero, TimeSpan.FromMilliseconds(100), 0.9)]
+            };
+            var takes = Enumerable.Range(0, 1).Select(_ =>
+                TtsTake.CreateStock(mediaAsset.ProjectId, Guid.NewGuid(), Guid.NewGuid()) with
+                { ArtifactId = Guid.NewGuid() }).ToArray();
+            var artifacts = takes.Select(take => new ProjectArtifact(
+                Id: take.ArtifactId!.Value, ProjectId: mediaAsset.ProjectId, MediaAssetId: mediaAsset.Id,
+                Kind: ArtifactKind.TtsTake, RelativePath: $"tts/{take.Id:N}.wav",
+                Sha256: "abc", SizeBytes: 3, DurationSeconds: null,
+                SampleRate: null, ChannelCount: null, CreatedAtUtc: DateTimeOffset.UtcNow)).ToArray();
+            foreach (var artifact in artifacts)
+            {
+                artifactStore.Seed(artifact.RelativePath, [1, 2, 3]);
+            }
+            var clipExtractor = Substitute.For<IAudioClipExtractor>();
+            clipExtractor.ExtractAsync(Arg.Any<string>(), Arg.Any<double>(), Arg.Any<double>(),
+                Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns<Task>(call =>
+                {
+                    File.WriteAllBytes(call.ArgAt<string>(3), [7]);
+                    return Task.CompletedTask;
+                });
+            var persisted = new FakeLipSyncSegmentRepository();
+            var segmentRepository = new CancelOnSaveSegmentRepository(persisted, cts);
+            var handler = new LipSyncStageHandler(aligner, new FakePhonemeTimingPlanner(),
+                new FakePhonemeStretchService(), artifactStore, stageRunStore, segmentRepository,
+                mediaAssetRepository: mediaRepo, audioClipExtractor: clipExtractor);
+            var request = new LipSyncStageRequest(
+                mediaAsset.ProjectId, mediaAsset, takes, artifacts,
+                SegmentSourceTimingMap: takes.ToDictionary(take => take.TranslatedSegmentId!.Value,
+                    _ => new SegmentSourceTiming(0, 1)),
+                SourceSegmentTranscriptMap: takes.ToDictionary(take => take.TranslatedSegmentId!.Value, _ => "hello"),
+                SourceAudioPath: sourcePath);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => handler.HandleAsync(request, cts.Token));
+
+            // The published artifact's row is recorded despite the cancel; the run still cancels.
+            Assert.Equal(StageRunStatus.Canceled, Assert.Single(stageRunStore.All).Status);
+            var persistedSegment = Assert.Single(await persisted.GetByStageRunAsync(
+                Assert.Single(stageRunStore.All).Id, TestContext.Current.CancellationToken));
+            Assert.Equal(takes[0].TranslatedSegmentId, persistedSegment.SegmentId);
+            Assert.Equal(LipSyncSegmentStatus.Partial, persistedSegment.Status);
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
+    /// <summary>
+    /// Simulates a user cancel racing a published artifact: cancels the operation
+    /// as the segment save begins, then honors the token actually passed through,
+    /// like a real repository would.
+    /// </summary>
+    private sealed class CancelOnSaveSegmentRepository(
+        FakeLipSyncSegmentRepository inner,
+        CancellationTokenSource operationCts) : ILipSyncSegmentRepository
+    {
+        public Task<IReadOnlyList<LipSyncSegment>> GetByProjectAsync(Guid projectId, CancellationToken cancellationToken) =>
+            inner.GetByProjectAsync(projectId, cancellationToken);
+
+        public Task<IReadOnlyList<LipSyncSegment>> GetByStageRunAsync(Guid stageRunId, CancellationToken cancellationToken) =>
+            inner.GetByStageRunAsync(stageRunId, cancellationToken);
+
+        public Task SaveAllAsync(Guid projectId, Guid stageRunId, IReadOnlyList<LipSyncSegment> segments, CancellationToken cancellationToken)
+        {
+            operationCts.Cancel();
+            cancellationToken.ThrowIfCancellationRequested();
+            return inner.SaveAllAsync(projectId, stageRunId, segments, cancellationToken);
+        }
+    }
+
     // ---------------------------------------------------------------------------
     // Artifact preservation: original TTS artifact not modified on skip
     // ---------------------------------------------------------------------------

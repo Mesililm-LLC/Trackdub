@@ -154,7 +154,8 @@ public sealed class LipSynthesisStageHandler(
                 LipSynthesisSegment segment = await ProcessTurnAsync(turn, options, stageRun.Id, request, cancellationToken)
                     .ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
-                await _segmentRepository.SaveAllAsync(request.ProjectId, stageRun.Id, [segment], cancellationToken)
+                // Artifact is already published; record its row even if cancellation just arrived.
+                await _segmentRepository.SaveAllAsync(request.ProjectId, stageRun.Id, [segment], CancellationToken.None)
                     .ConfigureAwait(false);
                 segments.Add(segment);
             }
