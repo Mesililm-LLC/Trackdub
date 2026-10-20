@@ -2,6 +2,8 @@ using Trackdub.Contracts;
 using Trackdub.Application.Projects;
 using Trackdub.Application.Transcripts;
 using Trackdub.Contracts.Pipeline;
+using Trackdub.Domain;
+using Trackdub.Domain.StageRuns;
 using Trackdub.Domain.Artifacts;
 using Trackdub.Domain.Media;
 using Trackdub.TestDoubles;
@@ -10,6 +12,107 @@ namespace Trackdub.Application.Tests;
 
 public sealed class StemSeparationStageHandlerTests
 {
+    [Fact]
+    public async Task Cancelled_second_stem_save_preserves_prior_pair()
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            var store = new FakeArtifactStore(directory);
+            (MediaAsset media, ProjectArtifact source) = SeedSource(store, directory);
+            var repository = new FakeMediaAssetRepository();
+            var runs = new FakeProjectStageRunStore();
+            var engine = new RecordingStemSeparationEngine("spleeter", "spleeter", true, true, []);
+            var handler = new StemSeparationStageHandler(engine, store, new FakeFileFingerprintService(), repository, runs);
+            StemSeparationStageResult prior = await handler.HandleAsync(
+                new(media.ProjectId, media, source, []), null, TestContext.Current.CancellationToken);
+            var publicationStatuses = new List<StageRunStatus>();
+            var interruptedRepository = new InterruptingMediaRepository(repository, artifact =>
+            {
+                publicationStatuses.Add(runs.All.Last().Status);
+                if (artifact.Kind == ArtifactKind.Ambiance)
+                {
+                    throw new OperationCanceledException();
+                }
+            });
+            handler = new StemSeparationStageHandler(engine, store, new FakeFileFingerprintService(), interruptedRepository, runs);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => handler.HandleAsync(
+                new(media.ProjectId, media, source, prior.Artifacts), null, TestContext.Current.CancellationToken));
+
+            StemAudioRoute route = TranscriptWorkflowUtilities.BuildStemAudioRoute(repository.Artifacts, runs.All);
+            ProjectArtifact selectedVocals = Assert.Single(repository.Artifacts, a => a.RelativePath == route.AsrAudioRelativePath);
+            ProjectArtifact selectedAmbiance = Assert.Single(repository.Artifacts, a => a.RelativePath == route.MixSourceAudioRelativePath);
+            Assert.Equal(selectedVocals.StageRunId, selectedAmbiance.StageRunId);
+            Assert.Equal(prior.StageRun.Id, selectedVocals.StageRunId);
+            Assert.Contains(prior.VocalsArtifact, repository.Artifacts);
+            Assert.Contains(prior.AmbianceArtifact, repository.Artifacts);
+            Assert.True(store.Exists(prior.VocalsArtifact.RelativePath));
+            Assert.True(store.Exists(prior.AmbianceArtifact.RelativePath));
+            Assert.Equal(StageRunStatus.Canceled, runs.All.Last().Status);
+            Assert.All(publicationStatuses, status => Assert.Equal(StageRunStatus.Running, status));
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(directory);
+        }
+    }
+
+    [Fact]
+    public async Task Cancellation_after_run_creation_records_cancelled()
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            var store = new FakeArtifactStore(directory);
+            (MediaAsset media, ProjectArtifact source) = SeedSource(store, directory);
+            using var cancellation = new CancellationTokenSource();
+            var runs = new CancellingStartRunStore(cancellation);
+            var handler = new StemSeparationStageHandler(
+                new RecordingStemSeparationEngine("spleeter", "spleeter", false, false, []),
+                store, new FakeFileFingerprintService(), new FakeMediaAssetRepository(), runs);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => handler.HandleAsync(
+                new(media.ProjectId, media, source, []), null, cancellation.Token));
+
+            Assert.Equal(StageRunStatus.Canceled, Assert.Single(runs.Inner.All).Status);
+            Assert.False(Directory.Exists(StemSeparationTempDirectories.GetRunDirectory(runs.Inner.All[0].Id)));
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(directory);
+        }
+    }
+
+    private sealed class CancellingStartRunStore(CancellationTokenSource cancellation) : IProjectStageRunStore
+    {
+        public FakeProjectStageRunStore Inner { get; } = new();
+        public async Task CreateAsync(StageRunRecord run, CancellationToken token)
+        {
+            await Inner.CreateAsync(run, token);
+            cancellation.Cancel();
+        }
+        public Task UpdateAsync(StageRunRecord run, CancellationToken token) => Inner.UpdateAsync(run, token);
+        public Task<IReadOnlyList<StageRunRecord>> ListByProjectAsync(Guid projectId, CancellationToken token) => Inner.ListByProjectAsync(projectId, token);
+    }
+
+    private sealed class InterruptingMediaRepository(FakeMediaAssetRepository inner, Action<ProjectArtifact> beforeSave) : IMediaAssetRepository
+    {
+        public Task SaveAsync(MediaAsset asset, CancellationToken token) => inner.SaveAsync(asset, token);
+        public Task UpdateSourcePathAsync(Guid id, string path, string name, CancellationToken token) => inner.UpdateSourcePathAsync(id, path, name, token);
+        [Obsolete("Single-asset compatibility member.")]
+        public Task<MediaAsset?> GetPrimaryAsync(Guid projectId, CancellationToken token) => Task.FromResult(inner.Assets.FirstOrDefault(a => a.ProjectId == projectId));
+        public Task<IReadOnlyList<MediaAsset>> GetAllAsync(Guid projectId, CancellationToken token) => inner.GetAllAsync(projectId, token);
+        public Task SaveArtifactAsync(ProjectArtifact artifact, CancellationToken token)
+        {
+            beforeSave(artifact);
+            return inner.SaveArtifactAsync(artifact, token);
+        }
+        public Task DeleteArtifactAsync(Guid id, CancellationToken token) => inner.DeleteArtifactAsync(id, token);
+        public Task<IReadOnlyList<ProjectArtifact>> GetArtifactsAsync(Guid projectId, CancellationToken token) => inner.GetArtifactsAsync(projectId, token);
+        public Task<ProjectArtifact?> GetArtifactByIdAsync(Guid id, CancellationToken token) => inner.GetArtifactByIdAsync(id, token);
+    }
+
     [Fact]
     public async Task HandleAsync_CommitsDemucsOutputsUnderEngineFamilyFolderAndRawSidecarsWithoutLatentFolders()
     {

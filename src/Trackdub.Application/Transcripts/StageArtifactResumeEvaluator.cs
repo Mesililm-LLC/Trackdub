@@ -120,7 +120,7 @@ public static class StageArtifactResumeEvaluator
                 SpeakerAssignmentOutputsPresent(state, artifactStore, artifacts),
 
             _ when string.Equals(stageName, StageNames.Separation, StringComparison.OrdinalIgnoreCase) =>
-                ArtifactExists(artifactStore, TranscriptWorkflowUtilities.GetLatestAcceptedVocalStem(artifacts)),
+                ArtifactExists(artifactStore, TranscriptWorkflowUtilities.GetLatestAcceptedVocalStem(artifacts, state.StageRuns)),
 
             _ when string.Equals(stageName, StageNames.Translation, StringComparison.OrdinalIgnoreCase) =>
                 state.CurrentTranslationRevision is not null &&

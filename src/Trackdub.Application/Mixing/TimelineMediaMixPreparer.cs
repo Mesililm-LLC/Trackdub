@@ -126,7 +126,7 @@ public sealed class TimelineMediaMixPreparer(
     private static double ResolveMixBedEndSeconds(TranscriptProjectState state, MediaAsset media)
     {
         double? sourceAudioEndSeconds = null;
-        ProjectArtifact? sourceArtifact = TranscriptWorkflowUtilities.GetLatestAcceptedAmbianceStem(state.ProjectState.Artifacts)
+        ProjectArtifact? sourceArtifact = TranscriptWorkflowUtilities.GetLatestAcceptedAmbianceStem(state.ProjectState.Artifacts, state.StageRuns)
             ?? state.ProjectState.Artifacts
                 .Where(static artifact => artifact.Kind == ArtifactKind.NormalizedAudio)
                 .OrderByDescending(static artifact => artifact.CreatedAtUtc)

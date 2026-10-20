@@ -3,6 +3,8 @@ using Trackdub.Application.Transcripts;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Contracts.Projects;
 using Trackdub.Domain.Artifacts;
+using Trackdub.Domain;
+using Trackdub.Domain.StageRuns;
 using Trackdub.Domain.Media;
 using Trackdub.Domain.Projects;
 using Trackdub.Domain.Tts;
@@ -11,6 +13,64 @@ namespace Trackdub.Application.Tests;
 
 public sealed class TranscriptWorkflowUtilitiesTests
 {
+    [Theory]
+    [InlineData(StageRunStatus.Completed, true, true, true, true)]
+    [InlineData(StageRunStatus.Failed, true, true, true, false)]
+    [InlineData(StageRunStatus.Canceled, true, true, true, false)]
+    [InlineData(StageRunStatus.Running, true, true, true, false)]
+    [InlineData(StageRunStatus.Completed, false, true, true, false)]
+    [InlineData(StageRunStatus.Completed, true, false, true, false)]
+    [InlineData(StageRunStatus.Completed, true, true, false, false)]
+    public void Stem_selection_requires_producer_evidence_and_both_required_outputs(
+        StageRunStatus status, bool includeProducer, bool includeAmbiance, bool sameMedia, bool accepted)
+    {
+        MediaAsset media = CreateMediaAsset();
+        StageRunRecord run = StageRunRecord.Start(media.ProjectId, StageNames.Separation, DateTimeOffset.UtcNow) with { Status = status };
+        ProjectArtifact vocals = new(Guid.NewGuid(), media.ProjectId, media.Id, ArtifactKind.Vocals,
+            "stems/vocals.wav", "vocals", 100, 1d, 44100, 1, DateTimeOffset.UtcNow,
+            StageRunId: run.Id, Provenance: "generated-spleeter-vocals");
+        ProjectArtifact ambiance = vocals with
+        {
+            Id = Guid.NewGuid(),
+            Kind = ArtifactKind.Ambiance,
+            RelativePath = "stems/ambiance.wav",
+            MediaAssetId = sameMedia ? media.Id : Guid.NewGuid()
+        };
+        ProjectArtifact[] artifacts = includeAmbiance ? [vocals, ambiance] : [vocals];
+        StageRunRecord[]? runs = includeProducer ? [run] : null;
+
+        Assert.Equal(accepted ? vocals : null, TranscriptWorkflowUtilities.GetLatestAcceptedVocalStem(artifacts, runs));
+        Assert.Equal(accepted ? ambiance : null, TranscriptWorkflowUtilities.GetLatestAcceptedAmbianceStem(artifacts, runs));
+    }
+
+    [Fact]
+    public void Optional_stems_are_selected_only_from_the_accepted_required_stem_run()
+    {
+        MediaAsset media = CreateMediaAsset();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        StageRunRecord oldRun = StageRunRecord.Start(media.ProjectId, StageNames.Separation, now.AddMinutes(-2)).Complete(now.AddMinutes(-1));
+        StageRunRecord newRun = StageRunRecord.Start(media.ProjectId, StageNames.Separation, now).Complete(now.AddSeconds(1));
+        ProjectArtifact vocals = new(Guid.NewGuid(), media.ProjectId, media.Id, ArtifactKind.Vocals,
+            "old/vocals.wav", "vocals", 100, 1d, 44100, 1, now.AddMinutes(-1),
+            StageRunId: oldRun.Id, Provenance: "generated-spleeter-vocals");
+        ProjectArtifact ambiance = vocals with { Id = Guid.NewGuid(), Kind = ArtifactKind.Ambiance, RelativePath = "old/ambiance.wav" };
+        ProjectArtifact oldMusic = vocals with { Id = Guid.NewGuid(), Kind = ArtifactKind.Music, RelativePath = "old/music.wav" };
+        ProjectArtifact oldSfx = vocals with { Id = Guid.NewGuid(), Kind = ArtifactKind.SoundEffects, RelativePath = "old/sfx.wav" };
+        ProjectArtifact newVocals = vocals with { Id = Guid.NewGuid(), StageRunId = newRun.Id, RelativePath = "new/vocals.wav" };
+        ProjectArtifact newAmbiance = ambiance with { Id = Guid.NewGuid(), StageRunId = newRun.Id, RelativePath = "new/ambiance.wav" };
+        ProjectArtifact newMusic = oldMusic with { Id = Guid.NewGuid(), StageRunId = newRun.Id, RelativePath = "new/music.wav" };
+        ProjectArtifact[] artifacts = [vocals, ambiance, oldMusic, oldSfx, newVocals, newAmbiance];
+
+        IReadOnlyList<ProjectArtifact> selected = TranscriptWorkflowUtilities.GetAcceptedStemArtifacts(artifacts, [oldRun, newRun]);
+
+        Assert.Equal(2, selected.Count);
+        Assert.All(selected, artifact => Assert.Equal(newRun.Id, artifact.StageRunId));
+        selected = TranscriptWorkflowUtilities.GetAcceptedStemArtifacts([.. artifacts, newMusic], [oldRun, newRun]);
+        Assert.Contains(newMusic, selected);
+        Assert.DoesNotContain(oldMusic, selected);
+        Assert.DoesNotContain(oldSfx, selected);
+    }
+
     [Fact]
     public void ResolveDetectedTranscriptLanguage_ignores_punctuation_only_detection()
     {
@@ -88,8 +148,12 @@ public sealed class TranscriptWorkflowUtilitiesTests
             now.AddSeconds(2),
             Provenance: "generated-spleeter-ambiance;engine_family=spleeter;model=spleeter");
 
+        StageRunRecord run = StageRunRecord.Start(mediaAsset.ProjectId, StageNames.Separation, now)
+            .Complete(now.AddSeconds(3));
+        vocals = vocals with { StageRunId = run.Id };
+        ambiance = ambiance with { StageRunId = run.Id };
         StemAudioRoute route = TranscriptWorkflowUtilities.BuildStemAudioRoute(
-            [normalized, vocals, ambiance]);
+            [normalized, vocals, ambiance], [run]);
 
         Assert.Equal(vocals.RelativePath, route.AsrAudioRelativePath);
         Assert.Equal(ambiance.RelativePath, route.MixSourceAudioRelativePath);

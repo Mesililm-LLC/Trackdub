@@ -276,6 +276,7 @@ public sealed class ExportStageHandler(
             ApplyTimbrePolish: request.ApplyTimbrePolish,
             CandidateGroups: candidateGroups,
             MediaDurationSeconds: mediaAsset.DurationSeconds,
+            StageRuns: currentState.StageRuns,
             MediaClips: await TimelineMediaMixPreparer.PrepareAsync(
                 timelineMediaMixPreparer, currentState, cancellationToken).ConfigureAwait(false));
         MixPlan mixPlan = mixPlanBuilder.Build(buildRequest);
