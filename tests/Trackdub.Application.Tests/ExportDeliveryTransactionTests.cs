@@ -5,6 +5,96 @@ namespace Trackdub.Application.Tests;
 
 public sealed class ExportDeliveryTransactionTests
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Failed_successor_preserves_prior_accepted_producer_identity(bool siblingContainer, bool restart)
+    {
+        using var fixture = new DeliveryFixture();
+        using var accepted = fixture.CreateTransaction();
+        await accepted.PrepareAsync(TestContext.Current.CancellationToken);
+        accepted.Apply();
+        accepted.Accept();
+        string failedSource = System.IO.Path.Join(fixture.Path, "failed-replacement");
+        File.WriteAllBytes(failedSource, [44, 45, 46]);
+        string successorOutput = siblingContainer ? System.IO.Path.ChangeExtension(fixture.OutputPath, ".mkv") : fixture.OutputPath;
+        using var failed = new ExportDeliveryTransaction(fixture.Replacements.Select((pair, index) =>
+            (index == 0 ? successorOutput : pair.DestinationPath, failedSource)), Guid.NewGuid());
+        await failed.PrepareAsync(TestContext.Current.CancellationToken);
+        failed.Apply();
+        if (restart)
+        {
+            failed.Dispose();
+            ExportDeliveryTransaction.Recover(successorOutput);
+        }
+        else failed.Rollback();
+
+        Assert.True(ExportDeliveryTransaction.IsAcceptedDelivery(fixture.OutputPath, fixture.Producer));
+        foreach ((string destination, _) in fixture.Replacements)
+            Assert.Equal(fixture.NewBytes, File.ReadAllBytes(destination));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Relocated_terminal_journal_allows_export_without_touching_original_paths(bool accepted)
+    {
+        using var fixture = new DeliveryFixture();
+        using var transaction = fixture.CreateTransaction();
+        await transaction.PrepareAsync(TestContext.Current.CancellationToken);
+        transaction.Apply();
+        if (accepted) transaction.Accept();
+        else transaction.Rollback();
+        byte[] originalBytes = File.ReadAllBytes(fixture.OutputPath);
+        string originalBackup = System.IO.Path.Join(fixture.Path, $".lesson.mp4.{fixture.Producer:N}.bak");
+        File.WriteAllBytes(originalBackup, [42]);
+        string movedDirectory = System.IO.Path.Join(fixture.Path, "relocated");
+        Directory.CreateDirectory(movedDirectory);
+        foreach (string file in Directory.EnumerateFiles(fixture.Path))
+            File.Copy(file, System.IO.Path.Join(movedDirectory, System.IO.Path.GetFileName(file)));
+        string movedOutput = System.IO.Path.Join(movedDirectory, "lesson.mp4");
+        using var next = new ExportDeliveryTransaction(fixture.Replacements.Select(pair =>
+            (System.IO.Path.Join(movedDirectory, System.IO.Path.GetFileName(pair.DestinationPath)), pair.ReplacementPath)), Guid.NewGuid());
+
+        await next.PrepareAsync(TestContext.Current.CancellationToken);
+        next.Apply();
+        next.Accept();
+        ExportDeliveryTransaction.Recover(movedOutput);
+
+        Assert.Equal(originalBytes, File.ReadAllBytes(fixture.OutputPath));
+        Assert.Equal(new byte[] { 42 }, File.ReadAllBytes(originalBackup));
+        Assert.Equal(fixture.NewBytes, File.ReadAllBytes(movedOutput));
+    }
+
+    [Fact]
+    public async Task Relocated_pending_journal_rejects_recovery_without_touching_either_family()
+    {
+        using var fixture = new DeliveryFixture();
+        using var transaction = fixture.CreateTransaction();
+        await transaction.PrepareAsync(TestContext.Current.CancellationToken);
+        transaction.Apply();
+        transaction.Dispose();
+        string relocated = System.IO.Path.Join(fixture.Path, "relocated");
+        Directory.CreateDirectory(relocated);
+        foreach (string file in Directory.EnumerateFiles(fixture.Path))
+            File.Copy(file, System.IO.Path.Join(relocated, System.IO.Path.GetFileName(file)));
+        string movedOutput = System.IO.Path.Join(relocated, "lesson.mp4");
+        string movedJournal = System.IO.Path.Join(relocated, ".lesson.export-delivery.json");
+        byte[] journalBytes = File.ReadAllBytes(movedJournal);
+
+        Assert.Throws<InvalidDataException>(() => ExportDeliveryTransaction.Recover(movedOutput));
+
+        Assert.Equal(journalBytes, File.ReadAllBytes(movedJournal));
+        foreach ((string destination, _) in fixture.Replacements)
+        {
+            Assert.Equal(fixture.NewBytes, File.ReadAllBytes(destination));
+            Assert.Equal(fixture.NewBytes, File.ReadAllBytes(System.IO.Path.Join(relocated, System.IO.Path.GetFileName(destination))));
+        }
+        Assert.Equal(3, Directory.EnumerateFiles(fixture.Path, "*.bak").Count());
+    }
+
     [Fact]
     public async Task Accepted_other_container_survives_stale_predecessor_recovery()
     {
