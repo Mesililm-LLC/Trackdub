@@ -7,6 +7,8 @@ public sealed class QwenRefinementOutputGuardTests
 {
     [Theory]
     [InlineData("hello world", "Hello world.")]
+    [InlineData("hi", "Hi.")]
+    [InlineData("i", "I.")]
     [InlineData("hello world. this is a test", "Hello world. This is a test.")]
     [InlineData("directora del programa.", "Directora del programa.")]
     [InlineData("Directora del programa.", "directora del programa.")]
@@ -24,6 +26,7 @@ public sealed class QwenRefinementOutputGuardTests
     [InlineData("I met John at the office yesterday.", "I met James at the office yesterday.")]
     [InlineData("I met María at the office yesterday.", "I met Marta at the office yesterday.")]
     [InlineData("I met John at the office yesterday.", "I met John John at the office yesterday.")]
+    [InlineData("John met Mary at the office yesterday.", "Mary met John at the office yesterday.")]
     public void Evaluate_rejects_changed_or_duplicated_names(string original, string polished)
     {
         QwenRefinementGuardResult result = QwenRefinementOutputGuard.Evaluate(original, polished);
@@ -31,6 +34,16 @@ public sealed class QwenRefinementOutputGuardTests
         Assert.False(result.Accepted);
         Assert.Equal(original, result.DisplayedText);
         Assert.Contains(TextRefinementCorrectionCodes.NameNumberGuardTriggered, result.AppliedCorrections);
+    }
+
+    [Fact]
+    public void Evaluate_rejects_substantial_short_segment_rewrites()
+    {
+        QwenRefinementGuardResult result = QwenRefinementOutputGuard.Evaluate("go now", "be sad");
+
+        Assert.False(result.Accepted);
+        Assert.Equal("go now", result.DisplayedText);
+        Assert.Contains(TextRefinementCorrectionCodes.LengthGuardTriggered, result.AppliedCorrections);
     }
 
     [Fact]

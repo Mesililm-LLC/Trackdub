@@ -178,9 +178,16 @@ public static partial class QwenRefinementOutputGuard
             return false;
         }
 
-        double ratio = NormalizedLevenshteinRatio(originalText, cleaned);
+        // Punctuation and case are the primary polish operations. Measure
+        // lexical changes so short replies such as "hi" -> "Hi." remain valid.
+        string originalWords = NormalizeForEditDistance(originalText);
+        string cleanedWords = NormalizeForEditDistance(cleaned);
+        double ratio = NormalizedLevenshteinRatio(originalWords, cleanedWords);
         return ratio > 0.45;
     }
+
+    private static string NormalizeForEditDistance(string text) =>
+        string.Join(" ", WordTokenRegex().Matches(text).Select(match => match.Value)).ToLowerInvariant();
 
     private static bool TriggersNameNumberGuard(string originalText, string cleaned)
     {
@@ -194,22 +201,14 @@ public static partial class QwenRefinementOutputGuard
         // Capitalization is a requested correction, not evidence of a new name.
         // Protect name-like words from either text by comparing their occurrences
         // against all words in the other text, independent of capitalization.
-        IEnumerable<string> protectedNames = ExtractNameLikeTokens(originalText)
+        HashSet<string> protectedNames = ExtractNameLikeTokens(originalText)
             .Concat(ExtractNameLikeTokens(cleaned))
-            .Distinct(StringComparer.OrdinalIgnoreCase);
-        string[] originalWords = WordTokenRegex().Matches(originalText).Select(match => match.Value).ToArray();
-        string[] cleanedWords = WordTokenRegex().Matches(cleaned).Select(match => match.Value).ToArray();
-        foreach (string name in protectedNames)
-        {
-            int originalCount = originalWords.Count(word => string.Equals(word, name, StringComparison.OrdinalIgnoreCase));
-            int cleanedCount = cleanedWords.Count(word => string.Equals(word, name, StringComparison.OrdinalIgnoreCase));
-            if (originalCount != cleanedCount)
-            {
-                return true;
-            }
-        }
-
-        return false;
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        IEnumerable<string> originalNames = WordTokenRegex().Matches(originalText)
+            .Select(match => match.Value).Where(protectedNames.Contains);
+        IEnumerable<string> cleanedNames = WordTokenRegex().Matches(cleaned)
+            .Select(match => match.Value).Where(protectedNames.Contains);
+        return !originalNames.SequenceEqual(cleanedNames, StringComparer.OrdinalIgnoreCase);
     }
 
     private static IReadOnlyList<string> ExtractNumericTokens(string text)
