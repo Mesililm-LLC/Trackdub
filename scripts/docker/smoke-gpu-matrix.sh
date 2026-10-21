@@ -30,11 +30,10 @@ set -euo pipefail
 #                              (default: container-pipeline-trackdub:latest).
 #
 # Evidence / result of record:
-#   The JSON summary printed on stdout by each smoke run is the result of
-#   record. Native smoke processes can exit 139 (SIGSEGV) during teardown
-#   AFTER printing their JSON summary, so a non-zero exit code alone does
-#   not mean the smoke failed; the script records the exit code separately
-#   and never aborts the matrix on a non-zero run.
+#   Each run records its JSON summary, stderr, and container exit code.
+#   A non-zero exit code fails that matrix row even when the summary reports
+#   a passing inference probe. The matrix continues so every model retains
+#   evidence, then exits non-zero if any row failed.
 #
 # Matrix notes:
 #   Silero VAD is excluded entirely (CPU by design). tts-kokoro is excluded
@@ -105,24 +104,29 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
 fi
 
 mkdir -p "$OUTPUT_DIR"
+MATRIX_FAILED=0
+RUN_STEMS=()
 
 run_smoke() {
   local provider="$1"
   local label="$2"
+  RUN_STEMS+=("${provider}__${label}")
   local stdout_file="$OUTPUT_DIR/${provider}__${label}.stdout.json"
   local stderr_file="$OUTPUT_DIR/${provider}__${label}.stderr.log"
   local exitcode_file="$OUTPUT_DIR/${provider}__${label}.exitcode"
   local exit_code=0
 
-  set +e
-  docker run --rm --gpus all \
+  if docker run --rm --gpus all \
     -v "$VOLUME:/data" \
     "${VRAM_ENV_ARGS[@]}" \
     "$IMAGE" \
     providers "$provider" smoke --model "$label" \
-    >"$stdout_file" 2>"$stderr_file"
-  exit_code=$?
-  set -e
+    >"$stdout_file" 2>"$stderr_file"; then
+    exit_code=0
+  else
+    exit_code=$?
+    MATRIX_FAILED=1
+  fi
 
   printf '%s\n' "$exit_code" >"$exitcode_file"
   echo "$provider $label exit=$exit_code"
@@ -136,20 +140,23 @@ for label in "${TENSORRT_LABELS[@]}"; do
   run_smoke tensorrt "$label"
 done
 
-# Aggregation: the per-run JSON on stdout is the result of record; the exit
-# code is reported alongside it, not used as the pass/fail verdict.
+# Aggregation combines the smoke summary with the container exit status.
 if command -v python3 >/dev/null 2>&1; then
-  OUTPUT_DIR="$OUTPUT_DIR" python3 - <<'PYEOF'
+  if OUTPUT_DIR="$OUTPUT_DIR" CURRENT_RUN_STEMS="$(printf '%s\n' "${RUN_STEMS[@]}")" python3 - <<'PYEOF'
 import glob
 import json
 import os
 
 output_dir = os.environ["OUTPUT_DIR"]
+current_stems = set(os.environ["CURRENT_RUN_STEMS"].splitlines())
 rows = []
 
 for stdout_path in sorted(glob.glob(os.path.join(output_dir, "*.stdout.json"))):
     base = os.path.basename(stdout_path)
     stem = base[: -len(".stdout.json")]
+    # Evidence from earlier runs in a reused output directory is not part of this matrix.
+    if stem not in current_stems:
+        continue
     provider, _, label = stem.partition("__")
 
     exit_code = None
@@ -177,6 +184,8 @@ for stdout_path in sorted(glob.glob(os.path.join(output_dir, "*.stdout.json"))):
             break
 
     if not isinstance(summary, dict):
+        detail = "No valid smoke JSON summary."
+        detail += f" Container exited with code {exit_code}." if exit_code is not None else " Missing or invalid container exit code."
         rows.append({
             "provider": provider,
             "label": label,
@@ -185,7 +194,7 @@ for stdout_path in sorted(glob.glob(os.path.join(output_dir, "*.stdout.json"))):
             "passed": 0,
             "failed": 0,
             "skipped": 0,
-            "detail": None,
+            "detail": detail,
             "exitCode": exit_code,
         })
         continue
@@ -201,7 +210,13 @@ for stdout_path in sorted(glob.glob(os.path.join(output_dir, "*.stdout.json"))):
             detail = target.get("detail")
             break
 
-    if failed >= 1:
+    if exit_code is None:
+        status = "failed"
+        detail = detail or "Missing or invalid container exit code."
+    elif exit_code != 0:
+        status = "failed"
+        detail = f"{detail + ' ' if detail else ''}Container exited with code {exit_code}."
+    elif failed >= 1:
         status = "failed"
     elif attempted == 0:
         status = "skipped"
@@ -234,9 +249,22 @@ with open(summary_path, "w", encoding="utf-8") as fh:
 print(f"{'provider':<10} {'label':<32} status")
 for row in rows:
     print(f"{row['provider']:<10} {row['label']:<32} {row['status']}")
+
+raise SystemExit(1 if any(row["status"] not in ("passed", "skipped") for row in rows) else 0)
 PYEOF
+then
+  AGGREGATION_EXIT_CODE=0
 else
-  echo "python3 not found; skipping aggregation (per-run evidence files are in $OUTPUT_DIR)."
+  AGGREGATION_EXIT_CODE=$?
+fi
+else
+  echo "python3 not found; cannot aggregate (per-run evidence files are in $OUTPUT_DIR)." >&2
+  AGGREGATION_EXIT_CODE=1
+fi
+
+if [[ "$MATRIX_FAILED" -ne 0 || "$AGGREGATION_EXIT_CODE" -ne 0 ]]; then
+  echo "GPU smoke matrix failed. Evidence: $OUTPUT_DIR" >&2
+  exit 1
 fi
 
 echo "GPU smoke matrix complete. Evidence: $OUTPUT_DIR"

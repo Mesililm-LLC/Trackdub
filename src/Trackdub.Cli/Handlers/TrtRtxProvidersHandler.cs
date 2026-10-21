@@ -240,6 +240,19 @@ internal static class TrtRtxProvidersHandler
             await progressOutput.WriteLineAsync(ex.Message).ConfigureAwait(false);
             return Program.ExitPipelineFailure;
         }
+        finally
+        {
+            try
+            {
+                await EvictIdleSessionsAsync(factory).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                await progressOutput.WriteLineAsync(
+                        $"Failed to evict idle inference sessions: {ex.Message}")
+                    .ConfigureAwait(false);
+            }
+        }
 
         var payload = new TrtRtxSmokeOutput
         {
@@ -337,6 +350,19 @@ internal static class TrtRtxProvidersHandler
             await output.WriteLineAsync(JsonSerializer.Serialize(failed, SmokeJsonOptions)).ConfigureAwait(false);
             return Program.ExitPipelineFailure;
         }
+        finally
+        {
+            try
+            {
+                await EvictIdleSessionsAsync(factory).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                await Console.Error.WriteLineAsync(
+                        $"Failed to evict idle inference sessions: {ex.Message}")
+                    .ConfigureAwait(false);
+            }
+        }
 
         bool passed = result.Status == TrtRtxStarterPackSmokeTargetStatus.Passed;
         var payload = new TrtRtxVerifyOutput
@@ -351,6 +377,9 @@ internal static class TrtRtxProvidersHandler
 
         return passed ? Program.ExitSuccess : Program.ExitPipelineFailure;
     }
+
+    private static Task EvictIdleSessionsAsync(TrackdubSessionFactory factory) =>
+        factory.GetRequiredService<IInferenceSessionPoolEvictor>().EvictAllIdleAsync(CancellationToken.None);
 
     private static IReadOnlyList<TrtRtxSmokeCatalog.Target> FilterTargets(
         IReadOnlyList<TrtRtxSmokeCatalog.Target> targets,

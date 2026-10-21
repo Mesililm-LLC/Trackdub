@@ -327,3 +327,6 @@ e2e-*-log.txt
 # Snapdragon QNN smoke scratch (venv, generated model, results)
 tools/provider-smoke/.qnn-smoke/
 qodana.sarif.json
+
+# Local process lock files (PID-keyed, never shared)
+/state/*.lock

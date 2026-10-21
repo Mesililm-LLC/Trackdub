@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 
 using Trackdub.Composition.StarterPacks;
 using Trackdub.Contracts;
+using Trackdub.Contracts.ApplicationContracts;
 using Trackdub.Domain;
 using Trackdub.Inference.Runtime.Planning;
 using Trackdub.Sdk;
@@ -116,6 +117,19 @@ internal static class ProviderSmokeHandler
             await progressOutput.WriteLineAsync(ex.Message).ConfigureAwait(false);
             return Program.ExitPipelineFailure;
         }
+        finally
+        {
+            try
+            {
+                await EvictIdleSessionsAsync(factory).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                await progressOutput.WriteLineAsync(
+                        $"Failed to evict idle inference sessions: {ex.Message}")
+                    .ConfigureAwait(false);
+            }
+        }
 
         var payload = new ProviderSmokeOutput
         {
@@ -152,6 +166,9 @@ internal static class ProviderSmokeHandler
 
         return report.HasFailures ? Program.ExitPipelineFailure : Program.ExitSuccess;
     }
+
+    private static Task EvictIdleSessionsAsync(TrackdubSessionFactory factory) =>
+        factory.GetRequiredService<IInferenceSessionPoolEvictor>().EvictAllIdleAsync(CancellationToken.None);
 
     private static string ScopeForProvider(ExecutionProviderKind provider) => provider switch
     {
