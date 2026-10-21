@@ -37,9 +37,8 @@ public sealed class HuggingFaceTranslationModelCatalog(HttpClient httpClient, st
                     using HttpResponseMessage response = await httpClient.GetAsync(next, cancellationToken).ConfigureAwait(false);
                     response.EnsureSuccessStatusCode();
                     using JsonDocument page = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false), cancellationToken: cancellationToken).ConfigureAwait(false);
-                    foreach (JsonElement item in page.RootElement.EnumerateArray())
+                    foreach (string? repository in page.RootElement.EnumerateArray().Select(item => GetString(item, "id")))
                     {
-                        string? repository = GetString(item, "id");
                         if (repository is null || !repository.StartsWith(publisher + "/opus-mt-", StringComparison.Ordinal)) continue;
                         try
                         {
@@ -153,10 +152,7 @@ public sealed class HuggingFaceTranslationModelCatalog(HttpClient httpClient, st
             foreach (string target in targets)
             {
                 string? prefix = targets.Length > 1 ? $">>{target}<<" : null;
-                if (prefix is not null)
-                {
-                    if (!targetVocabulary!.RootElement.TryGetProperty(prefix, out _)) continue;
-                }
+                if (prefix is not null && !targetVocabulary!.RootElement.TryGetProperty(prefix, out _)) continue;
                 descriptors.Add(new($"hf:{repository}", repository, revision, NormalizeLanguage(source), NormalizeLanguage(target), prefix, multilingual, license, evidence, files.ToImmutable()));
             }
         if (descriptors.Count == 0) throw new InvalidDataException("No verified target language prefixes.");

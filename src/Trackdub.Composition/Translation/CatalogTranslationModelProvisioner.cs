@@ -40,8 +40,13 @@ public sealed class CatalogTranslationModelProvisioner(
     private async Task RefreshInBackgroundAsync()
     {
         try { Publish(await catalog.RefreshAsync(false, CancellationToken.None).ConfigureAwait(false)); }
-        catch (Exception ex) when (ex is HttpRequestException or IOException or System.Text.Json.JsonException)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            // Keep the shared refresh task successful so later translations are not blocked by a fault.
+            // Clearing lastRefresh lets the next refresh retry instead of waiting out the 24-hour window.
+            await refreshGate.WaitAsync().ConfigureAwait(false);
+            try { lastRefresh = DateTimeOffset.MinValue; }
+            finally { refreshGate.Release(); }
             Publish(catalog.Snapshot);
         }
     }
