@@ -264,8 +264,10 @@ public static class StageArtifactResumeEvaluator
         IReadOnlyList<ProjectArtifact> artifacts,
         IArtifactStore artifactStore)
     {
+        // GetLatestSuccessfulRun only returns Completed runs, so a partially completed
+        // producer can never satisfy this gate.
         StageRunRecord? latestRun = GetLatestSuccessfulRun(runs, StageNames.AudioPreparation);
-        if (latestRun is null || latestRun.Status == StageRunStatus.PartiallyCompleted)
+        if (latestRun is null)
         {
             return false;
         }

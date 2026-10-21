@@ -144,7 +144,7 @@ public sealed class SpeechAudioPreparationStageHandler(
         {
             await CleanupRegisteredArtifactsAsync(registeredArtifactIds).ConfigureAwait(false);
             await StageRunHelper
-                .FailAsync(stageRunStore, stageRun, null, ex.Message, cancellationToken, runtimePlanningPreferences, logger)
+                .FailAsync(stageRunStore, stageRun, null, ex.Message, CancellationToken.None, runtimePlanningPreferences, logger)
                 .ConfigureAwait(false);
             throw;
         }
@@ -158,7 +158,7 @@ public sealed class SpeechAudioPreparationStageHandler(
             {
                 await mediaAssetRepository.DeleteArtifactAsync(artifactId, CancellationToken.None).ConfigureAwait(false);
             }
-            catch
+            catch (Exception)
             {
                 // Preserve the original cancellation/failure; cleanup errors should not replace it.
             }

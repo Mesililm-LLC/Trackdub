@@ -144,7 +144,7 @@ public static class TranscriptWorkflowUtilities
         IReadOnlyList<ProjectArtifact> artifacts,
         IReadOnlyList<StageRunRecord>? stageRuns = null) =>
         ResolveLatestCompletedAudioPreparationAsrArtifact(artifacts, stageRuns)
-        ?? GetLatestArtifactByKind(artifacts, ArtifactKind.SpeechEnhancedAudio)
+        ?? GetAcceptedSpeechEnhancedAudio(artifacts, stageRuns)
         ?? GetLatestAcceptedVocalStem(artifacts, stageRuns)
         ?? GetLatestArtifactByKind(artifacts, ArtifactKind.NormalizedAudio);
 

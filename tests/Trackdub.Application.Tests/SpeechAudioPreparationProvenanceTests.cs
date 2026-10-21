@@ -115,6 +115,54 @@ public sealed class SpeechAudioPreparationProvenanceTests
     }
 
     [Fact]
+    public void GetAcceptedSpeechEnhancedAudio_ignores_failed_producer()
+    {
+        Guid projectId = Guid.NewGuid();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        StageRunRecord completedRun = StageRunRecord
+            .Start(projectId, StageNames.SpeechEnhancement, now)
+            .Complete(now.AddMinutes(1));
+        StageRunRecord failedRun = StageRunRecord
+            .Start(projectId, StageNames.SpeechEnhancement, now.AddMinutes(2))
+            .Fail(now.AddMinutes(3), "failed");
+        ProjectArtifact completedArtifact = CreateEnhancedArtifact(projectId, completedRun.Id, now.AddMinutes(1));
+        ProjectArtifact failedArtifact = CreateEnhancedArtifact(projectId, failedRun.Id, now.AddMinutes(3));
+
+        ProjectArtifact? accepted = TranscriptWorkflowUtilities.GetAcceptedSpeechEnhancedAudio(
+            [completedArtifact, failedArtifact],
+            [completedRun, failedRun]);
+
+        Assert.Equal(completedArtifact.Id, accepted?.Id);
+        Assert.Null(TranscriptWorkflowUtilities.GetAcceptedSpeechEnhancedAudio([failedArtifact], [failedRun]));
+        Assert.Null(TranscriptWorkflowUtilities.GetAcceptedSpeechEnhancedAudio([failedArtifact], stageRuns: null));
+    }
+
+    [Fact]
+    public void ResolveAsrAudioArtifact_does_not_fall_back_to_a_failed_enhancement_producer()
+    {
+        Guid projectId = Guid.NewGuid();
+        Guid mediaAssetId = Guid.NewGuid();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        StageRunRecord failedRun = StageRunRecord
+            .Start(projectId, StageNames.SpeechEnhancement, now)
+            .Fail(now.AddMinutes(1), "failed");
+        var normalized = new ProjectArtifact(
+            Guid.NewGuid(), projectId, mediaAssetId, ArtifactKind.NormalizedAudio,
+            ProjectArtifactPaths.NormalizedAudioRelativePath, "hash", 100, 12.0d, 48000, 1, now);
+        ProjectArtifact failedEnhanced = CreateEnhancedArtifact(projectId, failedRun.Id, now.AddMinutes(1)) with
+        {
+            ProjectId = projectId,
+            MediaAssetId = mediaAssetId,
+        };
+
+        ProjectArtifact? resolved = TranscriptWorkflowUtilities.ResolveAsrAudioArtifact(
+            [normalized, failedEnhanced],
+            [failedRun]);
+
+        Assert.Equal(normalized.Id, resolved?.Id);
+    }
+
+    [Fact]
     public void ResolveAsrAudioArtifact_uses_earlier_completed_run_when_latest_preparation_run_canceled()
     {
         Guid projectId = Guid.NewGuid();
@@ -211,6 +259,22 @@ public sealed class SpeechAudioPreparationProvenanceTests
             createdAtUtc,
             StageRunId: stageRunId,
             Provenance: "speech-processing:source=x;stage=asr;profile=p;version=1;hash=h;analysis=y");
+
+    private static ProjectArtifact CreateEnhancedArtifact(Guid projectId, Guid stageRunId, DateTimeOffset createdAtUtc) =>
+        new(
+            Guid.NewGuid(),
+            projectId,
+            Guid.NewGuid(),
+            ArtifactKind.SpeechEnhancedAudio,
+            ProjectArtifactPaths.GetSpeechEnhancedAudioRelativePath(stageRunId),
+            "hash",
+            100,
+            12.0d,
+            48000,
+            1,
+            createdAtUtc,
+            StageRunId: stageRunId,
+            Provenance: "speech-enhancement");
 
     private static AudioQualityAnalysisResult CreateAnalysis(IReadOnlyList<AudioQualityDefectKind> defects) =>
         new(
