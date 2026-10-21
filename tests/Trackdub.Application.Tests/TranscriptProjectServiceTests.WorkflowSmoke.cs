@@ -237,7 +237,7 @@ public partial class TranscriptProjectServiceTests
             scope.CreateReopenedStateService(),
             new LipSynthesisStageHandler(
                 lipEngine, new FakeFaceDetector(), new FakeFaceLandmarkProvider(), new FakeFacePoseEstimator(),
-                scope.ArtifactStore, scope.StageRunStore, mediaAssetRepository: scope.MediaAssetRepository),
+                scope.ArtifactStore, scope.StageRunStore, new FakeLipSynthesisSegmentRepository(), mediaAssetRepository: scope.MediaAssetRepository),
             scope.ArtifactStore);
         TranscriptProjectState synthesized = await lipWorkflow.SynthesizeAllAsync(new LipSynthesisRunRequest(), token);
         Assert.NotEmpty(lipEngine.Requests);

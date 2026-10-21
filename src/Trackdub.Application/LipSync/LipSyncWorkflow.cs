@@ -2,15 +2,13 @@ namespace Trackdub.Application.LipSync;
 
 using Trackdub.Application.Transcripts;
 using Trackdub.Contracts;
-using Trackdub.Contracts.LipSync;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Contracts.Projects;
 
 public sealed class LipSyncWorkflow(
     TranscriptProjectStateService stateService,
     LipSyncStageHandler lipSyncStageHandler,
-    IArtifactStore artifactStore,
-    ILipSyncSegmentRepository? lipSyncSegmentRepository = null)
+    IArtifactStore artifactStore)
     : IDisposable
 {
     private const string ConcurrentOperationMessage = "A lip-sync operation is already running for this project.";
@@ -24,7 +22,7 @@ public sealed class LipSyncWorkflow(
 
     /// <summary>
     /// Run the full lip-sync alignment and stretch pass for all takes in the current project state.
-    /// Segments are persisted via <see cref="ILipSyncSegmentRepository"/> when available.
+    /// The stage handler persists accepted segments before finalizing the stage run.
     /// Returns the refreshed project state.
     /// </summary>
     public async Task<TranscriptProjectState> AlignAllAsync(
@@ -59,19 +57,8 @@ public sealed class LipSyncWorkflow(
                         SourceLanguageCode: currentState.TranscriptLanguage,
                         TargetLanguageCode: currentState.SelectedTranslationTargetLanguage);
 
-                    LipSyncStageResult emptyResult = await lipSyncStageHandler
+                    await lipSyncStageHandler
                         .HandleAsync(emptyTakeRequest, token).ConfigureAwait(false);
-
-                    if (lipSyncSegmentRepository is not null && emptyResult.Segments.Count > 0)
-                    {
-                        await lipSyncSegmentRepository
-                            .SaveAllAsync(
-                                emptyTakeRequest.ProjectId,
-                                emptyResult.StageRun.Id,
-                                emptyResult.Segments,
-                                token)
-                            .ConfigureAwait(false);
-                    }
 
                     return await ReloadAsync(currentState.SelectedTranslationTargetLanguage, token)
                         .ConfigureAwait(false);
@@ -135,19 +122,8 @@ public sealed class LipSyncWorkflow(
                     SourceLanguageCode: currentState.TranscriptLanguage,
                     TargetLanguageCode: currentState.SelectedTranslationTargetLanguage);
 
-                LipSyncStageResult result = await lipSyncStageHandler
+                await lipSyncStageHandler
                     .HandleAsync(stageRequest, token).ConfigureAwait(false);
-
-                if (lipSyncSegmentRepository is not null && result.Segments.Count > 0)
-                {
-                    await lipSyncSegmentRepository
-                        .SaveAllAsync(
-                            stageRequest.ProjectId,
-                            result.StageRun.Id,
-                            result.Segments,
-                            token)
-                        .ConfigureAwait(false);
-                }
 
                 return await ReloadAsync(currentState.SelectedTranslationTargetLanguage, token)
                     .ConfigureAwait(false);

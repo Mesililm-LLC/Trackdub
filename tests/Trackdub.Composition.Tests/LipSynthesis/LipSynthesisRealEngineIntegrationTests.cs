@@ -52,6 +52,7 @@ public sealed class LipSynthesisRealEngineIntegrationTests
                 facePoseEstimator: stack.FacePoseEstimator,
                 artifactStore: artifactStore,
                 stageRunStore: stageRunStore,
+                segmentRepository: new FakeLipSynthesisSegmentRepository(),
                 mediaAssetRepository: mediaRepo);
 
             var turn = new LipSynthesisTurn(
