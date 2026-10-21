@@ -146,15 +146,15 @@ public sealed class HuggingFaceTranslationModelCatalog(HttpClient httpClient, st
             ? await GetJsonAsync($"https://huggingface.co/{repository}/resolve/{revision}/vocab.json", ct).ConfigureAwait(false)
             : null;
         foreach (string source in sources)
-        foreach (string target in targets)
-        {
-            string? prefix = targets.Length > 1 ? $">>{target}<<" : null;
-            if (prefix is not null)
+            foreach (string target in targets)
             {
-                if (!targetVocabulary!.RootElement.TryGetProperty(prefix, out _)) continue;
+                string? prefix = targets.Length > 1 ? $">>{target}<<" : null;
+                if (prefix is not null)
+                {
+                    if (!targetVocabulary!.RootElement.TryGetProperty(prefix, out _)) continue;
+                }
+                descriptors.Add(new($"hf:{repository}", repository, revision, NormalizeLanguage(source), NormalizeLanguage(target), prefix, multilingual, license, evidence, files.ToImmutable()));
             }
-            descriptors.Add(new($"hf:{repository}", repository, revision, NormalizeLanguage(source), NormalizeLanguage(target), prefix, multilingual, license, evidence, files.ToImmutable()));
-        }
         if (descriptors.Count == 0) throw new InvalidDataException("No verified target language prefixes.");
         return descriptors.ToImmutable();
     }

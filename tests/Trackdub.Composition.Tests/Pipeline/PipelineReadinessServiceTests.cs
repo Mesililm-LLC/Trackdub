@@ -28,8 +28,10 @@ public sealed class PipelineReadinessServiceTests
         {
             PlanHandler = request => new StageRuntimePlan
             {
-                Stage = request.Stage, Status = StageRuntimePlanStatus.Ready,
-                ModelId = model.ModelId, ModelAlias = "kokoro-onnx"
+                Stage = request.Stage,
+                Status = StageRuntimePlanStatus.Ready,
+                ModelId = model.ModelId,
+                ModelAlias = "kokoro-onnx"
             }
         };
         var service = new PipelineReadinessService(planner, new NullCloudApiKeyProvider(), new FakeConsentService(), modelRegistry: registry);
