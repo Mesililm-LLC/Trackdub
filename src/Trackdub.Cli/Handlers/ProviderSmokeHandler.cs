@@ -119,7 +119,16 @@ internal static class ProviderSmokeHandler
         }
         finally
         {
-            await EvictIdleSessionsAsync(factory).ConfigureAwait(false);
+            try
+            {
+                await EvictIdleSessionsAsync(factory).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                await progressOutput.WriteLineAsync(
+                        $"Failed to evict idle inference sessions: {ex.Message}")
+                    .ConfigureAwait(false);
+            }
         }
 
         var payload = new ProviderSmokeOutput

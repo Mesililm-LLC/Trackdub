@@ -252,8 +252,8 @@ else
   AGGREGATION_EXIT_CODE=$?
 fi
 else
-  echo "python3 not found; skipping aggregation (per-run evidence files are in $OUTPUT_DIR)."
-  AGGREGATION_EXIT_CODE=0
+  echo "python3 not found; cannot aggregate (per-run evidence files are in $OUTPUT_DIR)." >&2
+  AGGREGATION_EXIT_CODE=1
 fi
 
 if [[ "$MATRIX_FAILED" -ne 0 || "$AGGREGATION_EXIT_CODE" -ne 0 ]]; then
