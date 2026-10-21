@@ -36,6 +36,7 @@ public sealed class ExportStageHandler(
 {
     private const double DurationToleranceSeconds = 0.5d;
     private const double MaxMatchOriginalUpwardBoostDb = 9d;
+    private const string RecoveryFailureDataKey = "Trackdub.ExportDeliveryRecoveryFailure";
     private static readonly Encoding SubtitleEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
     private readonly MixPlanBuilder mixPlanBuilder =
@@ -96,18 +97,12 @@ public sealed class ExportStageHandler(
 
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 
-        // Sweep stale .bak sidecars from prior runs that completed delivery but crashed before
-        // CompleteAsync removed them. Doing this at stage start (rather than at app launch) keeps
-        // the cleanup scoped to the export's actual delivery directory.
-        SweepStaleDeliveryBackups(outputPath);
-
         StageRunRecord stageRun = await StageRunHelper
             .StartAsync(stageRunStore, request.ProjectId, StageNames.Export, cancellationToken)
             .ConfigureAwait(false);
 
         string manifestRelativePath = ProjectArtifactPaths.GetExportManifestRelativePath(stageRun.Id);
         string failureRelativePath = ProjectArtifactPaths.GetExportFailureReportRelativePath(stageRun.Id);
-        var pendingDeliveryOutputs = new List<DeliveryReplacement>();
         var transientArtifactPaths = new List<string>();
         var rollbackArtifactPaths = new List<string>();
         var registeredExportArtifactIds = new List<Guid>();
@@ -116,8 +111,11 @@ public sealed class ExportStageHandler(
         // returns without throwing.  Centralising cleanup in finally ensures it always runs on any failure
         // path — including future catch arms that might be added without remembering to duplicate the calls.
         bool exportSucceeded = false;
+        bool recoveringDelivery = true;
         try
         {
+            ExportDeliveryTransaction.Recover(outputPath);
+            recoveringDelivery = false;
             ProjectArtifact manifestArtifact = await InitializeExportAsync(
                 currentState, mediaAsset, request, stageRun, manifestRelativePath,
                 rollbackArtifactPaths, registeredExportArtifactIds, cancellationToken).ConfigureAwait(false);
@@ -146,7 +144,7 @@ public sealed class ExportStageHandler(
                 currentState, request, stageRun, manifestRelativePath, manifestArtifact,
                 mixPlan, subtitles, audioArtifact, audioRenderResult,
                 videoFinalPath, videoArtifact, videoRenderResult,
-                outputPath, pendingDeliveryOutputs, transientArtifactPaths,
+                outputPath, transientArtifactPaths,
                 rollbackArtifactPaths, cancellationToken).ConfigureAwait(false);
 
             exportSucceeded = true;
@@ -156,30 +154,35 @@ public sealed class ExportStageHandler(
         {
             throw;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex)
         {
+            Exception? recoveryFailure = ex.Data[RecoveryFailureDataKey] as Exception;
+            if (recoveryFailure is not null)
+            {
+                ExportFailureReport report = new(request.ProjectId, stageRun.Id, DateTimeOffset.UtcNow,
+                    [new ExportFailureCause("export-canceled", ex.Message),
+                     new ExportFailureCause("export-recovery-error", recoveryFailure.Message)]);
+                await TryWriteFailureReportAsync(failureRelativePath, outputPath, report).ConfigureAwait(false);
+            }
             await StageRunHelper
-                .CancelAsync(stageRunStore, stageRun, runtimeReporter: null, "Export canceled.", CancellationToken.None, runtimePlanningPreferences, logger)
+                .CancelAsync(stageRunStore, stageRun, runtimeReporter: null,
+                    recoveryFailure is null ? "Export canceled." : $"Export canceled. Delivery recovery failed: {recoveryFailure.Message}",
+                    CancellationToken.None, runtimePlanningPreferences, logger)
                 .ConfigureAwait(false);
             throw;
         }
         catch (Exception ex)
         {
+            List<ExportFailureCause> causes = [new(recoveringDelivery ? "export-recovery-error" : "export-error", ex.Message)];
+            if (ex.Data[RecoveryFailureDataKey] is Exception recoveryFailure)
+                causes.Add(new ExportFailureCause("export-recovery-error", recoveryFailure.Message));
             ExportFailureReport report = new(
                 request.ProjectId,
                 stageRun.Id,
                 DateTimeOffset.UtcNow,
-                [new ExportFailureCause("export-error", ex.Message)]);
+                causes);
             // Preserve the diagnostic report even when the caller's token is already canceled.
-            try
-            {
-                await WriteFailureReportAsync(failureRelativePath, outputPath, report, CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (Exception reportWriteException)
-            {
-                logger?.LogWarning(
-                    $"Failed to write export failure report. {reportWriteException.GetType().Name}: {reportWriteException.Message}");
-            }
+            await TryWriteFailureReportAsync(failureRelativePath, outputPath, report).ConfigureAwait(false);
 
             await StageRunHelper
                 .FailAsync(stageRunStore, stageRun, runtimeReporter: null, ex.Message, CancellationToken.None, runtimePlanningPreferences, logger)
@@ -192,7 +195,7 @@ public sealed class ExportStageHandler(
             if (!exportSucceeded)
             {
                 await CleanupRegisteredExportArtifactsAsync(registeredExportArtifactIds, CancellationToken.None).ConfigureAwait(false);
-                CleanupPartialExportOutputs(pendingDeliveryOutputs, transientArtifactPaths.Concat(rollbackArtifactPaths));
+                CleanupPartialExportOutputs(transientArtifactPaths.Concat(rollbackArtifactPaths));
             }
         }
     }
@@ -538,7 +541,6 @@ public sealed class ExportStageHandler(
         ProjectArtifact videoArtifact,
         ExportRenderResult videoRenderResult,
         string outputPath,
-        List<DeliveryReplacement> pendingDeliveryOutputs,
         List<string> transientArtifactPaths,
         List<string> rollbackArtifactPaths,
         CancellationToken cancellationToken)
@@ -580,31 +582,39 @@ public sealed class ExportStageHandler(
                 CreatedAtUtc = DateTimeOffset.UtcNow
             },
             cancellationToken).ConfigureAwait(false);
-        pendingDeliveryOutputs.Add(await PrepareDeliveryReplacementAsync(
-            videoFinalPath,
-            outputPath,
-            cancellationToken).ConfigureAwait(false));
-        foreach (SubtitleSidecarOutput subtitleSidecar in subtitles.Sidecars)
+        List<(string DestinationPath, string ReplacementPath)> replacements = [(outputPath, videoFinalPath)];
+        replacements.AddRange(subtitles.Sidecars.Select(sidecar => (sidecar.OutputPath, sidecar.ArtifactPath)));
+        replacements.Add((GetSidecarManifestPath(outputPath), artifactStore.GetPath(manifestRelativePath)));
+        using var delivery = new ExportDeliveryTransaction(replacements, stageRun.Id);
+        StageRunRecord completed;
+        try
         {
-            pendingDeliveryOutputs.Add(await PrepareDeliveryReplacementAsync(
-                subtitleSidecar.ArtifactPath,
-                subtitleSidecar.OutputPath,
-                cancellationToken).ConfigureAwait(false));
+            await delivery.PrepareAsync(cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            delivery.Apply();
+            cancellationToken.ThrowIfCancellationRequested();
+            completed = await StageRunHelper
+                .CompleteAsync(stageRunStore, stageRun, runtimeReporter: null, cancellationToken, runtimePlanningPreferences)
+                .ConfigureAwait(false);
+            delivery.Accept();
         }
-        pendingDeliveryOutputs.Add(await PrepareDeliveryReplacementAsync(
-            artifactStore.GetPath(manifestRelativePath),
-            GetSidecarManifestPath(outputPath),
-            cancellationToken).ConfigureAwait(false));
-        IReadOnlyList<string> deliveryBackupPaths = CommitDeliveryReplacements(pendingDeliveryOutputs);
+        catch (Exception originalFailure)
+        {
+            try
+            {
+                delivery.Rollback();
+            }
+            catch (Exception recoveryFailure)
+            {
+                // Keep cancellation/root cause intact. The outer lifecycle handler records
+                // both failures, while the unaccepted journal retains recovery evidence.
+                originalFailure.Data[RecoveryFailureDataKey] = recoveryFailure;
+                logger?.LogWarning($"Failed to recover export delivery '{outputPath}'. Recovery journal retained.", recoveryFailure);
+            }
+            throw;
+        }
         TryDelete(GetSidecarFailureReportPath(outputPath));
         CleanupTransientExportArtifacts(transientArtifactPaths);
-        StageRunRecord completed = await StageRunHelper
-            .CompleteAsync(stageRunStore, stageRun, runtimeReporter: null, cancellationToken, runtimePlanningPreferences)
-            .ConfigureAwait(false);
-        // Defer .bak deletion until AFTER stage-run completion succeeds. If CompleteAsync throws
-        // (DB write failure, cancellation racing with completion), the previous output remains
-        // recoverable from the .bak sidecar — invariant: original artifacts survive on failure.
-        DeleteCommittedDeliveryBackups(deliveryBackupPaths);
         rollbackArtifactPaths.Clear();
         return new ExportStageResult(
             completed,
@@ -883,6 +893,19 @@ public sealed class ExportStageHandler(
         throw new ExportStageException(reason, report, GetSidecarFailureReportPath(outputPath), reportWriteException);
     }
 
+    private async Task TryWriteFailureReportAsync(string relativePath, string outputPath, ExportFailureReport report)
+    {
+        try
+        {
+            await WriteFailureReportAsync(relativePath, outputPath, report, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception reportWriteException)
+        {
+            logger?.LogWarning(
+                $"Failed to write export failure report. {reportWriteException.GetType().Name}: {reportWriteException.Message}");
+        }
+    }
+
     private async Task WriteFailureReportAsync(
         string failureRelativePath,
         string outputPath,
@@ -1134,7 +1157,14 @@ public sealed class ExportStageHandler(
             sourcePath,
             destinationPath,
             cancellationToken).ConfigureAwait(false);
-        CommitDeliveryReplacements(new List<DeliveryReplacement> { replacement });
+        try
+        {
+            File.Move(replacement.TemporaryPath, replacement.DestinationPath, overwrite: true);
+        }
+        finally
+        {
+            TryDelete(replacement.TemporaryPath);
+        }
     }
 
     private static async Task CopyFileAsync(string sourcePath, string destinationPath, CancellationToken cancellationToken)
@@ -1164,14 +1194,8 @@ public sealed class ExportStageHandler(
     }
 
     private void CleanupPartialExportOutputs(
-        IEnumerable<DeliveryReplacement> pendingDeliveryOutputs,
         IEnumerable<string> transientArtifactPaths)
     {
-        foreach (DeliveryReplacement replacement in pendingDeliveryOutputs)
-        {
-            TryDelete(replacement.TemporaryPath);
-        }
-
         foreach (string path in transientArtifactPaths)
         {
             TryDelete(path);
@@ -1186,140 +1210,6 @@ public sealed class ExportStageHandler(
         }
 
         transientArtifactPaths.Clear();
-    }
-
-    /// <summary>
-    /// Atomically swaps in the new export outputs, returning the backup paths of any
-    /// pre-existing destination files that were preserved during the move. The caller is
-    /// responsible for deleting these backups only after <c>StageRunHelper.CompleteAsync</c>
-    /// has succeeded — that way a crash between the file swap and stage-run completion
-    /// leaves the backups available for manual recovery.
-    /// </summary>
-    private IReadOnlyList<string> CommitDeliveryReplacements(ICollection<DeliveryReplacement> replacements)
-    {
-        var committed = new List<CommittedDeliveryReplacement>();
-        try
-        {
-            foreach (DeliveryReplacement replacement in replacements)
-            {
-                string destinationPath = Path.GetFullPath(replacement.DestinationPath);
-                string? backupPath = null;
-                bool hadExistingFile = File.Exists(destinationPath);
-                if (hadExistingFile)
-                {
-                    backupPath = GetAdjacentTemporaryPath(destinationPath, ".bak");
-                    File.Move(destinationPath, backupPath);
-                }
-
-                try
-                {
-                    Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
-                    File.Move(replacement.TemporaryPath, destinationPath);
-                }
-                catch
-                {
-                    if (backupPath is not null && File.Exists(backupPath))
-                    {
-                        RestoreDeliveryBackup(backupPath, destinationPath);
-                    }
-
-                    throw;
-                }
-
-                committed.Add(new CommittedDeliveryReplacement(destinationPath, backupPath, hadExistingFile));
-            }
-        }
-        catch
-        {
-            RollBackCommittedDeliveryReplacements(committed);
-            foreach (DeliveryReplacement replacement in replacements)
-            {
-                TryDelete(replacement.TemporaryPath);
-            }
-
-            throw;
-        }
-
-        replacements.Clear();
-        return committed
-            .Where(replacement => replacement.BackupPath is not null)
-            .Select(replacement => replacement.BackupPath!)
-            .ToArray();
-    }
-
-    private void DeleteCommittedDeliveryBackups(IReadOnlyList<string> backupPaths)
-    {
-        foreach (string backupPath in backupPaths)
-        {
-            TryDelete(backupPath);
-        }
-    }
-
-    /// <summary>
-    /// Cleans up <c>.bak</c> sidecar files left behind by previous export runs that
-    /// completed delivery but crashed before <see cref="StageRunHelper.CompleteAsync"/>
-    /// finished. Best-effort: missing files or permission errors are ignored.
-    /// </summary>
-    private void SweepStaleDeliveryBackups(string outputPath)
-    {
-        try
-        {
-            string fullOutputPath = Path.GetFullPath(outputPath);
-            string? directory = Path.GetDirectoryName(fullOutputPath);
-            if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
-            {
-                return;
-            }
-
-            string baseFileName = Path.GetFileName(fullOutputPath);
-            // Match the naming convention emitted by GetAdjacentTemporaryPath: ".{fileName}.{guid}.bak".
-            // Sweep only this output's family and its sidecar siblings (manifest, subtitles).
-            foreach (string candidate in Directory.EnumerateFiles(directory, ".*.bak", SearchOption.TopDirectoryOnly))
-            {
-                string candidateName = Path.GetFileName(candidate);
-                if (!candidateName.StartsWith('.') ||
-                    !candidateName.EndsWith(".bak", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                if (candidateName.Contains(baseFileName, StringComparison.OrdinalIgnoreCase) ||
-                    candidateName.Contains(Path.GetFileNameWithoutExtension(baseFileName), StringComparison.OrdinalIgnoreCase))
-                {
-                    TryDelete(candidate);
-                }
-            }
-        }
-        catch (Exception ex) when (LogCleanupFailure("Failed to sweep stale export delivery backups.", ex))
-        {
-        }
-    }
-
-    private void RollBackCommittedDeliveryReplacements(IEnumerable<CommittedDeliveryReplacement> committed)
-    {
-        foreach (CommittedDeliveryReplacement replacement in committed.Reverse())
-        {
-            if (replacement.HadExistingFile && replacement.BackupPath is not null && File.Exists(replacement.BackupPath))
-            {
-                RestoreDeliveryBackup(replacement.BackupPath, replacement.DestinationPath);
-            }
-            else
-            {
-                TryDelete(replacement.DestinationPath);
-            }
-        }
-    }
-
-    private void RestoreDeliveryBackup(string backupPath, string destinationPath)
-    {
-        try
-        {
-            TryDelete(destinationPath);
-            File.Move(backupPath, destinationPath);
-        }
-        catch (Exception ex) when (LogCleanupFailure("Failed to restore previous export output '{DestinationPath}'.", destinationPath, ex))
-        {
-        }
     }
 
     private static string GetAdjacentTemporaryPath(string destinationPath, string suffix)
@@ -1409,9 +1299,4 @@ public sealed class ExportStageHandler(
     private sealed record DeliveryReplacement(
         string TemporaryPath,
         string DestinationPath);
-
-    private sealed record CommittedDeliveryReplacement(
-        string DestinationPath,
-        string? BackupPath,
-        bool HadExistingFile);
 }

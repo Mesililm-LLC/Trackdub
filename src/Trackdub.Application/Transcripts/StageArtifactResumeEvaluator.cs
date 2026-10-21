@@ -151,8 +151,7 @@ public static class StageArtifactResumeEvaluator
                     ArtifactKind.SpeechEnhancedAudio),
 
             _ when string.Equals(stageName, StageNames.Export, StringComparison.OrdinalIgnoreCase) =>
-                TryResolveExportPath(projectRootPath, exportPath, out string? resolvedExportPath) &&
-                File.Exists(resolvedExportPath),
+                ExportOutputsPresent(state.StageRuns, projectRootPath, exportPath),
 
             _ when string.Equals(stageName, StageNames.OverlapRescue, StringComparison.OrdinalIgnoreCase) =>
                 OverlapRescueOutputsPresent(state.StageRuns, artifacts, artifactStore),
@@ -338,6 +337,24 @@ public static class StageArtifactResumeEvaluator
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
+            return false;
+        }
+    }
+
+    private static bool ExportOutputsPresent(
+        IReadOnlyList<StageRunRecord> runs, string projectRootPath, string? exportPath)
+    {
+        if (!TryResolveExportPath(projectRootPath, exportPath, out string? resolvedPath) || resolvedPath is null)
+            return false;
+        try
+        {
+            StageRunRecord? producer = GetLatestSuccessfulRun(runs, StageNames.Export);
+            return producer is not null && ExportDeliveryTransaction.IsAcceptedDelivery(resolvedPath, producer.Id) &&
+                File.Exists(resolvedPath);
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        {
+            // An unreadable or unrecoverable journal cannot establish delivery acceptance.
             return false;
         }
     }
