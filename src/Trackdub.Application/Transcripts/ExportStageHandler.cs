@@ -276,6 +276,7 @@ public sealed class ExportStageHandler(
             currentState.TranscriptSegments,
             currentState.TranslatedSegments,
             currentState.TtsTakes,
+            currentState.StageRuns,
             request.SourceGainDb,
             request.DubbedSpeechGainDb,
             request.DuckingGainDb,

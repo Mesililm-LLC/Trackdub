@@ -62,6 +62,7 @@ public sealed class PreviewMixWorkflow(
                 currentState.TranscriptSegments,
                 currentState.TranslatedSegments,
                 currentState.TtsTakes,
+                currentState.StageRuns,
                 request.SourceGainDb,
                 request.DubbedSpeechGainDb,
                 request.DuckingGainDb,

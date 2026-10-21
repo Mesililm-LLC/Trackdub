@@ -145,14 +145,18 @@ public static class TranscriptWorkflowUtilities
         IReadOnlyList<StageRunRecord>? stageRuns = null) =>
         ResolveLatestCompletedAudioPreparationAsrArtifact(artifacts, stageRuns)
         ?? GetLatestArtifactByKind(artifacts, ArtifactKind.SpeechEnhancedAudio)
-        ?? GetLatestAcceptedVocalStem(artifacts)
+        ?? GetLatestAcceptedVocalStem(artifacts, stageRuns)
         ?? GetLatestArtifactByKind(artifacts, ArtifactKind.NormalizedAudio);
 
-    public static ProjectArtifact? GetLatestAcceptedVocalStem(IReadOnlyList<ProjectArtifact> artifacts) =>
-        GetLatestAcceptedStemArtifact(artifacts, ArtifactKind.Vocals);
+    public static ProjectArtifact? GetLatestAcceptedVocalStem(
+        IReadOnlyList<ProjectArtifact> artifacts,
+        IReadOnlyList<StageRunRecord>? stageRuns) =>
+        GetAcceptedStemArtifacts(artifacts, stageRuns).FirstOrDefault(static artifact => artifact.Kind == ArtifactKind.Vocals);
 
-    public static ProjectArtifact? GetLatestAcceptedAmbianceStem(IReadOnlyList<ProjectArtifact> artifacts) =>
-        GetLatestAcceptedStemArtifact(artifacts, ArtifactKind.Ambiance);
+    public static ProjectArtifact? GetLatestAcceptedAmbianceStem(
+        IReadOnlyList<ProjectArtifact> artifacts,
+        IReadOnlyList<StageRunRecord>? stageRuns) =>
+        GetAcceptedStemArtifacts(artifacts, stageRuns).FirstOrDefault(static artifact => artifact.Kind == ArtifactKind.Ambiance);
 
     public static ProjectArtifact? ResolveStageProcessedAudioArtifact(
         IReadOnlyList<ProjectArtifact> artifacts,
@@ -168,11 +172,11 @@ public static class TranscriptWorkflowUtilities
 
     public static StemAudioRoute BuildStemAudioRoute(
         IReadOnlyList<ProjectArtifact> artifacts,
-        IReadOnlyList<StageRunRecord>? stageRuns = null)
+        IReadOnlyList<StageRunRecord>? stageRuns)
     {
         ProjectArtifact? asrArtifact = ResolveAsrAudioArtifact(artifacts, stageRuns);
-        ProjectArtifact? vocalsArtifact = GetLatestAcceptedVocalStem(artifacts);
-        ProjectArtifact? mixSourceArtifact = GetLatestAcceptedAmbianceStem(artifacts)
+        ProjectArtifact? vocalsArtifact = GetLatestAcceptedVocalStem(artifacts, stageRuns);
+        ProjectArtifact? mixSourceArtifact = GetLatestAcceptedAmbianceStem(artifacts, stageRuns)
             ?? GetLatestArtifactByKind(artifacts, ArtifactKind.NormalizedAudio);
         string asrRelativePath = asrArtifact?.RelativePath ?? ProjectArtifactPaths.NormalizedAudioRelativePath;
         string mixRelativePath = mixSourceArtifact?.RelativePath ?? ProjectArtifactPaths.NormalizedAudioRelativePath;
@@ -207,7 +211,7 @@ public static class TranscriptWorkflowUtilities
         artifacts.Any(IsLegacySeparatorStem);
 
     private static bool IsLegacySeparatorStem(ProjectArtifact artifact) =>
-        artifact.Kind is ArtifactKind.Vocals or ArtifactKind.Ambiance &&
+        (artifact.Kind is ArtifactKind.Vocals or ArtifactKind.Ambiance) &&
         !string.IsNullOrWhiteSpace(artifact.Provenance) &&
         (artifact.Provenance.Contains(DemucsV4StemProvenance, StringComparison.OrdinalIgnoreCase) ||
             artifact.Provenance.Contains("engine_family=demucs-v4", StringComparison.OrdinalIgnoreCase) ||
@@ -215,16 +219,47 @@ public static class TranscriptWorkflowUtilities
             artifact.Provenance.Contains(HushDialogueStemProvenance, StringComparison.OrdinalIgnoreCase) ||
             artifact.Provenance.Contains("model=hush-dialogue", StringComparison.OrdinalIgnoreCase));
 
-    private static ProjectArtifact? GetLatestAcceptedStemArtifact(
+    // A producer is accepted only after all required metadata was saved. Select that
+    // producer as a unit, including optional stems, rather than combining timestamps.
+    internal static IReadOnlyList<ProjectArtifact> GetAcceptedStemArtifacts(
         IReadOnlyList<ProjectArtifact> artifacts,
-        ArtifactKind kind) =>
-        artifacts
-            .Where(artifact => artifact.Kind == kind && IsAcceptedCurrentStem(artifact))
-            .OrderByDescending(artifact => artifact.CreatedAtUtc)
-            .FirstOrDefault();
+        IReadOnlyList<StageRunRecord>? stageRuns)
+    {
+        if (stageRuns is null)
+        {
+            return [];
+        }
+
+        foreach (StageRunRecord run in stageRuns
+                     .Where(static run => run.StageName == StageNames.Separation && run.Status == StageRunStatus.Completed)
+                     .OrderByDescending(static run => run.CompletedAtUtc ?? run.StartedAtUtc)
+                     .ThenByDescending(static run => run.Id))
+        {
+            foreach (IGrouping<Guid, ProjectArtifact> group in artifacts
+                         .Where(artifact => artifact.ProjectId == run.ProjectId && artifact.StageRunId == run.Id)
+                         .GroupBy(static artifact => artifact.MediaAssetId))
+            {
+                ProjectArtifact[] required = group.Where(IsAcceptedCurrentStem).ToArray();
+                if (!required.Any(static artifact => artifact.Kind == ArtifactKind.Vocals) ||
+                    !required.Any(static artifact => artifact.Kind == ArtifactKind.Ambiance))
+                {
+                    continue;
+                }
+
+                return group.Where(static artifact => IsAcceptedCurrentStem(artifact) ||
+                        artifact.Kind is ArtifactKind.Music or ArtifactKind.SoundEffects)
+                    .OrderByDescending(static artifact => artifact.CreatedAtUtc)
+                    .ThenByDescending(static artifact => artifact.Id)
+                    .DistinctBy(static artifact => artifact.Kind)
+                    .ToArray();
+            }
+        }
+
+        return [];
+    }
 
     private static bool IsAcceptedCurrentStem(ProjectArtifact artifact) =>
-        artifact.Kind is ArtifactKind.Vocals or ArtifactKind.Ambiance &&
+        (artifact.Kind is ArtifactKind.Vocals or ArtifactKind.Ambiance) &&
         !string.IsNullOrWhiteSpace(artifact.Provenance) &&
         (artifact.Provenance.Contains(SpleeterStemProvenance, StringComparison.OrdinalIgnoreCase) ||
             artifact.Provenance.Contains("engine_family=spleeter", StringComparison.OrdinalIgnoreCase) ||
@@ -257,7 +292,7 @@ public static class TranscriptWorkflowUtilities
 
         SpeechAudioSourceKind? selectedSourceKind = ResolveSelectedSourceKind(artifacts, stageRun.Id);
         if (selectedSourceKind is SpeechAudioSourceKind.VocalStem &&
-            GetLatestAcceptedVocalStem(artifacts) is null)
+            GetLatestAcceptedVocalStem(artifacts, stageRuns) is null)
         {
             return GetLatestArtifactByKind(artifacts, ArtifactKind.NormalizedAudio);
         }
@@ -271,7 +306,7 @@ public static class TranscriptWorkflowUtilities
         return selectedSourceKind switch
         {
             SpeechAudioSourceKind.FullMix => GetLatestArtifactByKind(artifacts, ArtifactKind.NormalizedAudio),
-            SpeechAudioSourceKind.VocalStem => GetLatestAcceptedVocalStem(artifacts)
+            SpeechAudioSourceKind.VocalStem => GetLatestAcceptedVocalStem(artifacts, stageRuns)
                 ?? GetLatestArtifactByKind(artifacts, ArtifactKind.NormalizedAudio),
             _ => null
         };

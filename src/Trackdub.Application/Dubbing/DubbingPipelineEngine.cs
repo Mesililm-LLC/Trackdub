@@ -135,7 +135,7 @@ public sealed class DubbingPipelineEngine(
                 UpdateExecutionSnapshotWithSourceAudioKind(
                     executionSnapshot,
                     options,
-                    ResolveSourceAudioKind(initialProjectState.ProjectState.Artifacts));
+                    ResolveSourceAudioKind(initialProjectState));
             }
 
             // --- Pre-flight checks ---
@@ -2926,8 +2926,8 @@ public sealed class DubbingPipelineEngine(
         return snapshot;
     }
 
-    private static ArtifactKind ResolveSourceAudioKind(IReadOnlyList<ProjectArtifact> artifacts) =>
-        TranscriptWorkflowUtilities.GetLatestAcceptedAmbianceStem(artifacts) is not null
+    private static ArtifactKind ResolveSourceAudioKind(TranscriptProjectState state) =>
+        TranscriptWorkflowUtilities.GetLatestAcceptedAmbianceStem(state.ProjectState.Artifacts, state.StageRuns) is not null
             ? ArtifactKind.Ambiance
             : ArtifactKind.NormalizedAudio;
 

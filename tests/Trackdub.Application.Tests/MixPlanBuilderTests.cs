@@ -8,6 +8,7 @@ using Trackdub.Domain.Artifacts;
 using Trackdub.Domain.Media;
 using Trackdub.Domain.Mixing;
 using Trackdub.Domain.Projects;
+using Trackdub.Domain.StageRuns;
 using Trackdub.Domain.Transcript;
 using Trackdub.Domain.Translation;
 using Trackdub.Domain.Tts;
@@ -17,6 +18,26 @@ namespace Trackdub.Application.Tests;
 
 public sealed class MixPlanBuilderTests
 {
+    [Theory]
+    [InlineData(StageRunStatus.Failed)]
+    [InlineData(StageRunStatus.Canceled)]
+    [InlineData(StageRunStatus.Running)]
+    public void Build_keeps_both_mix_stems_on_the_prior_completed_producer(StageRunStatus status)
+    {
+        TestProjectContext context = CreateContext();
+        ProjectArtifact ambiance = CreateArtifact(context, ArtifactKind.Ambiance, "accepted/ambiance.wav", 0);
+        (ProjectArtifact vocals, StageRunRecord run) = CreateCompletedStemPair(ref ambiance);
+        StageRunRecord interrupted = StageRunRecord.Start(context.ProjectId, StageNames.Separation, run.StartedAtUtc.AddMinutes(1)) with { Status = status };
+        ProjectArtifact orphanVocals = vocals with { Id = Guid.NewGuid(), StageRunId = interrupted.Id, RelativePath = "orphan/vocals.wav", CreatedAtUtc = vocals.CreatedAtUtc.AddMinutes(1) };
+        ProjectArtifact orphanAmbiance = ambiance with { Id = Guid.NewGuid(), StageRunId = interrupted.Id, RelativePath = "orphan/ambiance.wav", CreatedAtUtc = ambiance.CreatedAtUtc.AddMinutes(1) };
+
+        MixPlan plan = new MixPlanBuilder().Build(new MixPlanBuildRequest(context.ProjectId, context.MediaAssetId,
+            [vocals, ambiance, orphanVocals, orphanAmbiance], [], [], [], StageRuns: [run, interrupted]));
+
+        Assert.Equal(vocals.RelativePath, plan.VocalStemRelativePath);
+        Assert.Equal(ambiance.RelativePath, plan.SourceAudioRelativePath);
+    }
+
     [Fact]
     public async Task Timeline_media_is_prepared_once_by_content_and_default_source_is_not_duplicated()
     {
@@ -343,6 +364,7 @@ public sealed class MixPlanBuilderTests
         TranscriptSegment second = TranscriptSegment.Create(context.TranscriptRevisionId, 1, 3.0d, 4.0d, "Again", context.SpeakerId);
         ProjectArtifact normalized = CreateArtifact(context, ArtifactKind.NormalizedAudio, ProjectArtifactPaths.NormalizedAudioRelativePath, createdOffsetSeconds: 0);
         ProjectArtifact ambiance = CreateArtifact(context, ArtifactKind.Ambiance, "artifacts/stems/run/ambiance.wav", createdOffsetSeconds: 1);
+        (ProjectArtifact vocals, StageRunRecord run) = CreateCompletedStemPair(ref ambiance);
         ProjectArtifact takeArtifact = CreateArtifact(context, ArtifactKind.TtsTake, "artifacts/tts/take-0001.wav", createdOffsetSeconds: 2, durationSeconds: 2.25d);
         TtsTake take = TtsTake.Create(context.ProjectId, context.VoiceAssignmentId, segmentIndex: first.SegmentIndex)
             .Complete(takeArtifact.Id, durationSamples: 60000, sampleRate: 48000, provider: "fake");
@@ -350,10 +372,11 @@ public sealed class MixPlanBuilderTests
         MixPlan plan = new MixPlanBuilder().Build(new MixPlanBuildRequest(
             context.ProjectId,
             context.MediaAssetId,
-            [normalized, ambiance, takeArtifact],
+            [normalized, ambiance, vocals, takeArtifact],
             [first, second],
             [],
-            [take]));
+            [take],
+            StageRuns: [run]));
 
         Assert.Equal(ArtifactKind.Ambiance, plan.SourceAudioKind);
         Assert.Equal(ambiance.RelativePath, plan.SourceAudioRelativePath);
@@ -399,7 +422,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             [],
-            [take]));
+            [take], StageRuns: null));
 
         // Take starts at 8.0s and runs 3.0s, ending at 11.0s — 1.0s past the 10.0s source audio.
         MixPlanWarning warning = Assert.Single(plan.Warnings);
@@ -439,7 +462,7 @@ public sealed class MixPlanBuilderTests
             [segment],
             [],
             [take],
-            MediaDurationSeconds: 6.0d));
+            MediaDurationSeconds: 6.0d, StageRuns: null));
 
         // Take runs 5.0s–7.0s: inside the 10.0s source audio but 1.0s past the 6.0s media end.
         MixPlanWarning warning = Assert.Single(plan.Warnings);
@@ -473,7 +496,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             [],
-            [take]));
+            [take], StageRuns: null));
 
         Assert.Empty(plan.Warnings);
     }
@@ -504,7 +527,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             [],
-            [take]));
+            [take], StageRuns: null));
 
         Assert.Empty(plan.Warnings);
     }
@@ -535,7 +558,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             [],
-            [take]));
+            [take], StageRuns: null));
 
         Assert.Empty(plan.Warnings);
     }
@@ -557,7 +580,7 @@ public sealed class MixPlanBuilderTests
 
         MixPlan plan = new MixPlanBuilder().Build(new MixPlanBuildRequest(
             context.ProjectId, context.MediaAssetId, [source, artifact], [segment], [], [take],
-            MediaDurationSeconds: mediaDuration));
+            MediaDurationSeconds: mediaDuration, StageRuns: null));
 
         Assert.Equal(warns, plan.Warnings.Any(warning => warning.Code == MixPlanWarningCode.TakeExceedsSourceAudio));
     }
@@ -579,6 +602,7 @@ public sealed class MixPlanBuilderTests
             "artifacts/stems/run/ambiance.wav",
             createdOffsetSeconds: 1,
             channelCount: 1);
+        (ProjectArtifact vocals, StageRunRecord run) = CreateCompletedStemPair(ref ambiance);
         ProjectArtifact takeArtifact = CreateArtifact(context, ArtifactKind.TtsTake, "artifacts/tts/take.wav", createdOffsetSeconds: 2, durationSeconds: 1d);
         TtsTake take = TtsTake.Create(context.ProjectId, context.VoiceAssignmentId, segmentIndex: segment.SegmentIndex)
             .Complete(takeArtifact.Id, durationSamples: 48000, sampleRate: 48000, provider: "fake");
@@ -586,11 +610,12 @@ public sealed class MixPlanBuilderTests
         MixPlan plan = new MixPlanBuilder().Build(new MixPlanBuildRequest(
             context.ProjectId,
             context.MediaAssetId,
-            [normalized, ambiance, takeArtifact],
+            [normalized, ambiance, vocals, takeArtifact],
             [segment],
             [],
             [take],
-            RestoreOriginalPan: true));
+            RestoreOriginalPan: true,
+            StageRuns: [run]));
 
         Assert.Equal(ArtifactKind.Ambiance, plan.SourceAudioKind);
         Assert.Equal(ambiance.RelativePath, plan.SourceAudioRelativePath);
@@ -624,6 +649,7 @@ public sealed class MixPlanBuilderTests
             "artifacts/stems/run/ambiance.wav",
             createdOffsetSeconds: 1,
             channelCount: 1);
+        (ProjectArtifact vocals, StageRunRecord run) = CreateCompletedStemPair(ref ambiance);
         ProjectArtifact takeArtifact = CreateArtifact(context, ArtifactKind.TtsTake, "artifacts/tts/take.wav", createdOffsetSeconds: 2, durationSeconds: 1d);
         TtsTake take = TtsTake.Create(context.ProjectId, context.VoiceAssignmentId, segmentIndex: segment.SegmentIndex)
             .Complete(takeArtifact.Id, durationSamples: 48000, sampleRate: 48000, provider: "fake");
@@ -631,11 +657,12 @@ public sealed class MixPlanBuilderTests
         MixPlan plan = new MixPlanBuilder().Build(new MixPlanBuildRequest(
             context.ProjectId,
             context.MediaAssetId,
-            [newerOtherMediaNormalized, normalized, ambiance, takeArtifact],
+            [newerOtherMediaNormalized, normalized, ambiance, vocals, takeArtifact],
             [segment],
             [],
             [take],
-            RestoreOriginalPan: true));
+            RestoreOriginalPan: true,
+            StageRuns: [run]));
 
         Assert.Equal(ProjectArtifactPaths.NormalizedAudioRelativePath, plan.OriginalMixAudioRelativePath);
     }
@@ -656,7 +683,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             [],
-            [take]));
+            [take], StageRuns: null));
 
         Assert.Equal(ArtifactKind.NormalizedAudio, plan.SourceAudioKind);
         Assert.Equal(-13d, plan.DuckingGainDb);
@@ -685,7 +712,7 @@ public sealed class MixPlanBuilderTests
             [normalized, legacyAmbiance, takeArtifact],
             [segment],
             [],
-            [take]));
+            [take], StageRuns: null));
 
         Assert.Equal(ArtifactKind.NormalizedAudio, plan.SourceAudioKind);
         Assert.Equal(ProjectArtifactPaths.NormalizedAudioRelativePath, plan.SourceAudioRelativePath);
@@ -698,6 +725,7 @@ public sealed class MixPlanBuilderTests
         TestProjectContext context = CreateContext();
         TranscriptSegment segment = TranscriptSegment.Create(context.TranscriptRevisionId, 0, 0.0d, 1.0d, "Hello", context.SpeakerId);
         ProjectArtifact ambiance = CreateArtifact(context, ArtifactKind.Ambiance, "artifacts/stems/run/ambiance.wav", createdOffsetSeconds: 0);
+        (ProjectArtifact vocals, StageRunRecord run) = CreateCompletedStemPair(ref ambiance);
         ProjectArtifact takeArtifact = CreateArtifact(context, ArtifactKind.TtsTake, "artifacts/tts/take.wav", createdOffsetSeconds: 1, durationSeconds: 1d);
         TtsTake take = TtsTake.Create(context.ProjectId, context.VoiceAssignmentId, segmentIndex: segment.SegmentIndex)
             .Complete(takeArtifact.Id, durationSamples: 48000, sampleRate: 48000, provider: "fake");
@@ -705,11 +733,12 @@ public sealed class MixPlanBuilderTests
         MixPlan plan = new MixPlanBuilder().Build(new MixPlanBuildRequest(
             context.ProjectId,
             context.MediaAssetId,
-            [ambiance, takeArtifact],
+            [ambiance, vocals, takeArtifact],
             [segment],
             [],
             [take],
-            DuckingGainDb: -6d));
+            DuckingGainDb: -6d,
+            StageRuns: [run]));
 
         Assert.Equal(-6d, plan.DuckingGainDb);
         Assert.Equal(-6d, Assert.Single(plan.DuckingRegions).GainDb);
@@ -732,7 +761,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             [],
-            [staleTake]));
+            [staleTake], StageRuns: null));
 
         MixSpeechClip clip = Assert.Single(plan.SpeechClips);
         Assert.True(clip.IsSilentGap);
@@ -773,7 +802,7 @@ public sealed class MixPlanBuilderTests
             [normalized, freshArtifact, staleArtifact],
             [segment],
             [translatedSegment],
-            [freshTake, staleTake]));
+            [freshTake, staleTake], StageRuns: null));
 
         MixSpeechClip clip = Assert.Single(plan.SpeechClips);
         Assert.False(clip.IsSilentGap);
@@ -803,7 +832,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             TranslatedSegments: [],
-            [orphanedTake]));
+            [orphanedTake], StageRuns: null));
 
         MixSpeechClip clip = Assert.Single(plan.SpeechClips);
         Assert.True(clip.IsSilentGap);
@@ -831,7 +860,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             TranslatedSegments: [],
-            [orphanedTake]));
+            [orphanedTake], StageRuns: null));
 
         MixSpeechClip clip = Assert.Single(plan.SpeechClips);
         Assert.True(clip.IsSilentGap);
@@ -861,7 +890,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             [translatedSegment],
-            [take]));
+            [take], StageRuns: null));
 
         MixSpeechClip clip = Assert.Single(plan.SpeechClips);
         Assert.False(clip.IsSilentGap);
@@ -889,7 +918,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             [translatedSegment],
-            [take]));
+            [take], StageRuns: null));
 
         MixSpeechClip clip = Assert.Single(plan.SpeechClips);
         Assert.False(clip.IsSilentGap);
@@ -913,7 +942,7 @@ public sealed class MixPlanBuilderTests
             [normalized, takeArtifact],
             [segment],
             [translatedSegment],
-            [take]));
+            [take], StageRuns: null));
 
         MixSpeechClip clip = Assert.Single(plan.SpeechClips);
         Assert.False(clip.IsSilentGap);
@@ -1229,6 +1258,20 @@ public sealed class MixPlanBuilderTests
             VoiceAssignmentWarnings: []);
     }
 
+    private static (ProjectArtifact Vocals, StageRunRecord Run) CreateCompletedStemPair(ref ProjectArtifact ambiance)
+    {
+        StageRunRecord run = StageRunRecord.Start(ambiance.ProjectId, StageNames.Separation, ambiance.CreatedAtUtc.AddSeconds(-1))
+            .Complete(ambiance.CreatedAtUtc);
+        ambiance = ambiance with { StageRunId = run.Id };
+        return (ambiance with
+        {
+            Id = Guid.NewGuid(),
+            Kind = ArtifactKind.Vocals,
+            RelativePath = "artifacts/stems/run/vocals.wav",
+            Provenance = "generated-spleeter-vocals;engine_family=spleeter;model=spleeter"
+        }, run);
+    }
+
     private static ProjectArtifact CreateArtifact(
         TestProjectContext context,
         ArtifactKind kind,
@@ -1324,7 +1367,7 @@ public sealed class MixPlanBuilderTests
                 [normalized, ttsArtifact, lipSyncArtifact],
                 [segment],
                 [],
-                [take]));
+                [take], StageRuns: null));
 
             // Assert — speech clip should use the LipSync path.
             Assert.Single(plan.SpeechClips);
@@ -1378,7 +1421,7 @@ public sealed class MixPlanBuilderTests
                 [normalized, ttsArtifact, lipSyncArtifact],
                 [segment],
                 [],
-                [take]));
+                [take], StageRuns: null));
 
             // Assert — should fall back to TTS take and emit a warning.
             Assert.Single(plan.SpeechClips);
@@ -1426,7 +1469,7 @@ public sealed class MixPlanBuilderTests
             [normalized, ttsArtifact, lipSyncArtifact],
             [segment],
             [],
-            [take]));
+            [take], StageRuns: null));
 
         // Assert — falls through to TTS take because store is null (no file check, no warning).
         Assert.Single(plan.SpeechClips);

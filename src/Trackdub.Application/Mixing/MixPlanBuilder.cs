@@ -1,4 +1,5 @@
 using Trackdub.Contracts;
+using Trackdub.Domain;
 using Trackdub.Domain.Artifacts;
 using Trackdub.Domain.Mixing;
 using Trackdub.Domain.Transcript;
@@ -15,6 +16,7 @@ public sealed record MixPlanBuildRequest(
     IReadOnlyList<TranscriptSegment> TranscriptSegments,
     IReadOnlyList<TranslatedSegment> TranslatedSegments,
     IReadOnlyList<TtsTake> TtsTakes,
+    IReadOnlyList<StageRunRecord>? StageRuns,
     double SourceGainDb = 0d,
     double DubbedSpeechGainDb = 0d,
     double? DuckingGainDb = null,
@@ -41,13 +43,13 @@ public sealed class MixPlanBuilder(IArtifactStore? artifactStore = null)
             throw new ArgumentException("Project id is required.", nameof(request));
         }
 
-        ProjectArtifact sourceArtifact = SelectSourceAudioArtifact(request.Artifacts)
-            ?? throw new InvalidOperationException("The project does not contain source audio for preview mixing.");
-        ProjectArtifact? originalMixArtifact = SelectOriginalMixAudioArtifact(request.Artifacts, request.MediaAssetId);
         IReadOnlyList<ProjectArtifact> stemCandidates = request.MediaAssetId is Guid assetId
             ? request.Artifacts.Where(a => a.MediaAssetId == assetId).ToList()
             : request.Artifacts;
-        ProjectArtifact? vocalStemArtifact = TranscriptWorkflowUtilities.GetLatestAcceptedVocalStem(stemCandidates);
+        ProjectArtifact sourceArtifact = SelectSourceAudioArtifact(stemCandidates, request.StageRuns)
+            ?? throw new InvalidOperationException("The project does not contain source audio for preview mixing.");
+        ProjectArtifact? originalMixArtifact = SelectOriginalMixAudioArtifact(request.Artifacts, request.MediaAssetId);
+        ProjectArtifact? vocalStemArtifact = TranscriptWorkflowUtilities.GetLatestAcceptedVocalStem(stemCandidates, request.StageRuns);
         Dictionary<Guid, ProjectArtifact> ttsArtifactsById = request.Artifacts
             .Where(static artifact => artifact.Kind == ArtifactKind.TtsTake)
             .GroupBy(static artifact => artifact.Id)
@@ -144,8 +146,8 @@ public sealed class MixPlanBuilder(IArtifactStore? artifactStore = null)
             request.MediaClips);
     }
 
-    private static ProjectArtifact? SelectSourceAudioArtifact(IReadOnlyList<ProjectArtifact> artifacts) =>
-        TranscriptWorkflowUtilities.GetLatestAcceptedAmbianceStem(artifacts)
+    private static ProjectArtifact? SelectSourceAudioArtifact(IReadOnlyList<ProjectArtifact> artifacts, IReadOnlyList<StageRunRecord>? stageRuns) =>
+        TranscriptWorkflowUtilities.GetLatestAcceptedAmbianceStem(artifacts, stageRuns)
         ?? artifacts
             .Where(static artifact => artifact.Kind == ArtifactKind.NormalizedAudio)
             .OrderByDescending(static artifact => artifact.CreatedAtUtc)

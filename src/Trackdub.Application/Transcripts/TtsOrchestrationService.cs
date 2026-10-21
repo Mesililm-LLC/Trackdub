@@ -1129,7 +1129,7 @@ public sealed class TtsOrchestrationService(
 
     private static ProjectArtifact? TryResolveReferenceClipSourceAudioArtifact(TranscriptProjectState state)
     {
-        ProjectArtifact? acceptedVocalStem = TranscriptWorkflowUtilities.GetLatestAcceptedVocalStem(state.ProjectState.Artifacts);
+        ProjectArtifact? acceptedVocalStem = TranscriptWorkflowUtilities.GetLatestAcceptedVocalStem(state.ProjectState.Artifacts, state.StageRuns);
         ProjectArtifact? routedArtifact = state.ProjectState.Artifacts
             .FirstOrDefault(artifact => string.Equals(
                 artifact.RelativePath,

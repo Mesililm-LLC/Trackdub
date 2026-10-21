@@ -180,7 +180,7 @@ public sealed class SpeakerReferenceClipService(
 
     private static ProjectArtifact ResolveReferenceClipSourceAudioArtifact(TranscriptProjectState state)
     {
-        ProjectArtifact? acceptedVocalStem = TranscriptWorkflowUtilities.GetLatestAcceptedVocalStem(state.ProjectState.Artifacts);
+        ProjectArtifact? acceptedVocalStem = TranscriptWorkflowUtilities.GetLatestAcceptedVocalStem(state.ProjectState.Artifacts, state.StageRuns);
         ProjectArtifact? routedArtifact = state.ProjectState.Artifacts
             .FirstOrDefault(artifact => string.Equals(
                 artifact.RelativePath,

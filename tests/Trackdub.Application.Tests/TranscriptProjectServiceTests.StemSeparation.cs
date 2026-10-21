@@ -24,6 +24,67 @@ namespace Trackdub.Application.Tests;
 
 public partial class TranscriptProjectServiceTests
 {
+    [Theory]
+    [InlineData(StageRunStatus.Failed)]
+    [InlineData(StageRunStatus.Canceled)]
+    [InlineData(StageRunStatus.Running)]
+    public async Task Failed_producer_is_not_selected(StageRunStatus status)
+    {
+        await AssertPriorStemPairRemainsSelectedAsync(status, includeAmbiance: true);
+    }
+
+    [Fact]
+    public async Task Stem_pair_comes_from_one_completed_run()
+    {
+        await AssertPriorStemPairRemainsSelectedAsync(StageRunStatus.Completed, includeAmbiance: false);
+    }
+
+    private async Task AssertPriorStemPairRemainsSelectedAsync(StageRunStatus status, bool includeAmbiance)
+    {
+        string directory = CreateTempDirectory();
+        string sourcePath = Path.Join(directory, "sample.mp4");
+        await File.WriteAllBytesAsync(sourcePath, [1, 2, 3, 4], TestContext.Current.CancellationToken);
+        FakeServiceScope scope = CreateScope(directory);
+        TranscriptProjectState prior = await CreateWithStemsAsync(scope, new("Stem generations", sourcePath));
+        ProjectArtifact vocals = Assert.Single(prior.ProjectState.Artifacts, a => a.Kind == ArtifactKind.Vocals);
+        ProjectArtifact ambiance = Assert.Single(prior.ProjectState.Artifacts, a => a.Kind == ArtifactKind.Ambiance);
+        DateTimeOffset now = DateTimeOffset.UtcNow.AddMinutes(1);
+        StageRunRecord orphanRun = StageRunRecord.Start(vocals.ProjectId, StageNames.Separation, now) with
+        {
+            Status = status,
+            CompletedAtUtc = status == StageRunStatus.Running ? null : now.AddSeconds(1)
+        };
+        await scope.StageRunStore.CreateAsync(orphanRun, TestContext.Current.CancellationToken);
+        scope.MediaAssetRepository.Artifacts.Add(vocals with
+        {
+            Id = Guid.NewGuid(),
+            StageRunId = orphanRun.Id,
+            CreatedAtUtc = now,
+            RelativePath = "artifacts/stems/orphan/vocals.wav"
+        });
+        if (includeAmbiance)
+        {
+            scope.MediaAssetRepository.Artifacts.Add(ambiance with
+            {
+                Id = Guid.NewGuid(),
+                StageRunId = orphanRun.Id,
+                CreatedAtUtc = now,
+                RelativePath = "artifacts/stems/orphan/ambiance.wav"
+            });
+        }
+
+        TranscriptProjectState reopened = await scope.Service.OpenAsync(TestContext.Current.CancellationToken);
+        StemAudioRoute route = TranscriptWorkflowUtilities.BuildStemAudioRoute(
+            reopened.ProjectState.Artifacts, reopened.StageRuns.Where(r => r.StageName == StageNames.Separation).ToArray());
+        ProjectArtifact selectedVocals = Assert.Single(reopened.ProjectState.Artifacts,
+            a => a.RelativePath == route.AsrAudioRelativePath);
+        ProjectArtifact selectedAmbiance = Assert.Single(reopened.ProjectState.Artifacts,
+            a => a.RelativePath == reopened.MixSourceAudioRelativePath);
+        Assert.Equal(selectedVocals.StageRunId, selectedAmbiance.StageRunId);
+        Assert.Equal(vocals.StageRunId, selectedAmbiance.StageRunId);
+        Assert.Equal(ambiance.RelativePath, reopened.MixSourceAudioRelativePath);
+    }
+
     [Fact]
     public async Task CreateAsync_with_stem_separation_keeps_transcript_stages_on_the_full_mix()
     {
@@ -132,7 +193,7 @@ public partial class TranscriptProjectServiceTests
     }
 
     [Fact]
-    public async Task RunStemSeparationAsync_replaces_existing_vocals_and_ambiance_records()
+    public async Task RunStemSeparationAsync_preserves_prior_stems_and_selects_new_completed_run()
     {
         string tempDirectory = CreateTempDirectory();
         string sourcePath = Path.Join(tempDirectory, "sample.mp4");
@@ -152,18 +213,24 @@ public partial class TranscriptProjectServiceTests
 
         TranscriptProjectState rerun = await scope.Service.RunStemSeparationAsync(TestContext.Current.CancellationToken);
 
-        ProjectArtifact rerunVocals = Assert.Single(rerun.ProjectState.Artifacts, artifact => artifact.Kind == ArtifactKind.Vocals);
-        ProjectArtifact rerunAmbiance = Assert.Single(rerun.ProjectState.Artifacts, artifact => artifact.Kind == ArtifactKind.Ambiance);
-        ProjectArtifact rerunMusic = Assert.Single(rerun.ProjectState.Artifacts, artifact => artifact.Kind == ArtifactKind.Music);
-        ProjectArtifact rerunSfx = Assert.Single(rerun.ProjectState.Artifacts, artifact => artifact.Kind == ArtifactKind.SoundEffects);
-        Assert.Equal(initialVocals.Id, rerunVocals.Id);
-        Assert.Equal(initialAmbiance.Id, rerunAmbiance.Id);
-        Assert.Equal(initialMusic.Id, rerunMusic.Id);
-        Assert.Equal(initialSfx.Id, rerunSfx.Id);
+        ProjectArtifact rerunVocals = Assert.IsType<ProjectArtifact>(TranscriptWorkflowUtilities.GetLatestAcceptedVocalStem(rerun.ProjectState.Artifacts, rerun.StageRuns));
+        ProjectArtifact rerunAmbiance = Assert.IsType<ProjectArtifact>(TranscriptWorkflowUtilities.GetLatestAcceptedAmbianceStem(rerun.ProjectState.Artifacts, rerun.StageRuns));
+        ProjectArtifact rerunMusic = Assert.Single(rerun.ProjectState.Artifacts, artifact => artifact.Kind == ArtifactKind.Music && artifact.StageRunId == rerunVocals.StageRunId);
+        ProjectArtifact rerunSfx = Assert.Single(rerun.ProjectState.Artifacts, artifact => artifact.Kind == ArtifactKind.SoundEffects && artifact.StageRunId == rerunVocals.StageRunId);
+        Assert.NotEqual(initialVocals.Id, rerunVocals.Id);
+        Assert.Contains(initialVocals, rerun.ProjectState.Artifacts);
+        Assert.NotEqual(initialAmbiance.Id, rerunAmbiance.Id);
+        Assert.Contains(initialAmbiance, rerun.ProjectState.Artifacts);
+        Assert.NotEqual(initialMusic.Id, rerunMusic.Id);
+        Assert.Contains(initialMusic, rerun.ProjectState.Artifacts);
+        Assert.NotEqual(initialSfx.Id, rerunSfx.Id);
+        Assert.Contains(initialSfx, rerun.ProjectState.Artifacts);
         Assert.NotEqual(initialVocals.RelativePath, rerunVocals.RelativePath);
         Assert.NotEqual(initialAmbiance.RelativePath, rerunAmbiance.RelativePath);
         Assert.NotEqual(initialMusic.RelativePath, rerunMusic.RelativePath);
         Assert.NotEqual(initialSfx.RelativePath, rerunSfx.RelativePath);
+        Assert.Equal(rerunVocals.StageRunId, rerunAmbiance.StageRunId);
+        Assert.Equal(rerunAmbiance.RelativePath, rerun.MixSourceAudioRelativePath);
         Assert.NotEqual(rerunVocals.RelativePath, rerun.AsrAudioRelativePath);
         Assert.Equal(created.CurrentTranscriptRevision!.Id, rerun.CurrentTranscriptRevision!.Id);
         Assert.Equal(2, scope.StemSeparationEngine.CallCount);

@@ -39,12 +39,8 @@ public sealed class StemSeparationStageHandler(
             .StartAsync(stageRunStore, request.ProjectId, StageNames.Separation, cancellationToken)
             .ConfigureAwait(false);
 
-        StemSeparationTempDirectories.CleanupStale(DateTimeOffset.UtcNow);
-
-        cancellationToken.ThrowIfCancellationRequested();
-
         string tempDirectory = StemSeparationTempDirectories.GetRunDirectory(stageRun.Id);
-        Directory.CreateDirectory(tempDirectory);
+        var registeredStemArtifactIds = new List<Guid>();
         string tempVocalsPath = Path.Join(tempDirectory, "vocals.wav");
         string tempAmbiancePath = Path.Join(tempDirectory, "ambiance.wav");
         string tempMusicPath = Path.Join(tempDirectory, "music.wav");
@@ -53,6 +49,9 @@ public sealed class StemSeparationStageHandler(
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            StemSeparationTempDirectories.CleanupStale(DateTimeOffset.UtcNow);
+            Directory.CreateDirectory(tempDirectory);
             StemSeparationResult result = await stemSeparationEngine.SeparateAsync(
                 new StemSeparationRequest(
                     artifactStore.GetPath(request.SourceAudioArtifact.RelativePath),
@@ -149,10 +148,6 @@ public sealed class StemSeparationStageHandler(
                     .ConfigureAwait(false)
                 : null;
 
-            stageRun = await StageRunHelper
-                .CompleteAsync(stageRunStore, stageRun, stemSeparationEngine, cancellationToken, runtimePlanningPreferences)
-                .ConfigureAwait(false);
-
             ProjectArtifact vocalsArtifact = CreateArtifact(
                 request,
                 stageRun,
@@ -191,27 +186,33 @@ public sealed class StemSeparationStageHandler(
                     ResolveBaseProvenance(result, "sfx"));
 
             await mediaAssetRepository.SaveArtifactAsync(vocalsArtifact, cancellationToken).ConfigureAwait(false);
+            registeredStemArtifactIds.Add(vocalsArtifact.Id);
             await mediaAssetRepository.SaveArtifactAsync(ambianceArtifact, cancellationToken).ConfigureAwait(false);
+            registeredStemArtifactIds.Add(ambianceArtifact.Id);
             if (musicArtifact is not null)
             {
                 await mediaAssetRepository.SaveArtifactAsync(musicArtifact, cancellationToken).ConfigureAwait(false);
+                registeredStemArtifactIds.Add(musicArtifact.Id);
             }
 
             if (soundEffectsArtifact is not null)
             {
                 await mediaAssetRepository.SaveArtifactAsync(soundEffectsArtifact, cancellationToken).ConfigureAwait(false);
+                registeredStemArtifactIds.Add(soundEffectsArtifact.Id);
             }
 
-            await DeleteOmittedOptionalStemArtifactsAsync(
-                request,
-                musicArtifact,
-                soundEffectsArtifact,
-                cancellationToken).ConfigureAwait(false);
+            // The completed producer row accepts the entire persisted set. An interrupted
+            // registration leaves only ineligible metadata and preserves the prior producer.
+            cancellationToken.ThrowIfCancellationRequested();
+            stageRun = await StageRunHelper
+                .CompleteAsync(stageRunStore, stageRun, stemSeparationEngine, cancellationToken, runtimePlanningPreferences)
+                .ConfigureAwait(false);
 
             return new StemSeparationStageResult(stageRun, vocalsArtifact, ambianceArtifact, musicArtifact, soundEffectsArtifact);
         }
         catch (OperationCanceledException)
         {
+            await CleanupRegisteredStemArtifactsAsync(registeredStemArtifactIds).ConfigureAwait(false);
             await StageRunHelper
                 .CancelAsync(stageRunStore, stageRun, stemSeparationEngine, "Stem separation canceled.", CancellationToken.None, runtimePlanningPreferences, logger)
                 .ConfigureAwait(false);
@@ -219,6 +220,7 @@ public sealed class StemSeparationStageHandler(
         }
         catch (Exception ex)
         {
+            await CleanupRegisteredStemArtifactsAsync(registeredStemArtifactIds).ConfigureAwait(false);
             await StageRunHelper
                 .FailAsync(stageRunStore, stageRun, stemSeparationEngine, ex.Message, cancellationToken, runtimePlanningPreferences, logger)
                 .ConfigureAwait(false);
@@ -227,6 +229,21 @@ public sealed class StemSeparationStageHandler(
         finally
         {
             StemSeparationTempDirectories.DeleteIfExists(tempDirectory);
+        }
+    }
+
+    private async Task CleanupRegisteredStemArtifactsAsync(IEnumerable<Guid> registeredStemArtifactIds)
+    {
+        foreach (Guid artifactId in registeredStemArtifactIds)
+        {
+            try
+            {
+                await mediaAssetRepository.DeleteArtifactAsync(artifactId, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Preserve the original cancellation/failure; cleanup errors should not replace it.
+            }
         }
     }
 
@@ -293,25 +310,6 @@ public sealed class StemSeparationStageHandler(
             FileOptions.Asynchronous | FileOptions.SequentialScan);
         await source.CopyToAsync(destination, bufferSize, cancellationToken).ConfigureAwait(false);
         await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private static Task DeleteOmittedOptionalStemArtifactsAsync(
-        StemSeparationStageRequest request,
-        ProjectArtifact? musicArtifact,
-        ProjectArtifact? soundEffectsArtifact,
-        CancellationToken cancellationToken)
-    {
-        // Artifact preservation invariant: when the current separation run does not produce
-        // an optional stem (Music or SoundEffects), keep the prior artifact rather than
-        // deleting it. Downstream mix planning resolves stems by newest-per-kind, so a run
-        // that produces only Vocals correctly inherits the previous Music/SFX rendering.
-        // Deleting them previously caused mix output to lose music cues whenever the user
-        // re-ran separation with a model that does not emit those optional stems.
-        _ = request;
-        _ = musicArtifact;
-        _ = soundEffectsArtifact;
-        _ = cancellationToken;
-        return Task.CompletedTask;
     }
 
     private static bool HasOutput(string path)
@@ -418,20 +416,9 @@ public sealed class StemSeparationStageHandler(
         StemSeparationResult result,
         string provenance)
     {
-        // Use MaxBy with a secondary key so the result is deterministic even when two
-        // artifacts share the same CreatedAtUtc timestamp (e.g., rapid re-runs).
-        Guid artifactId = request.ExistingArtifacts
-            .Where(artifact => artifact.Kind == kind)
-            .MaxBy(artifact => (artifact.CreatedAtUtc, artifact.Id))
-            ?.Id ?? Guid.Empty;
-
-        if (artifactId == Guid.Empty)
-        {
-            artifactId = Guid.NewGuid();
-        }
-
+        // Never overwrite an accepted producer's metadata while publishing a new run.
         return new ProjectArtifact(
-            artifactId,
+            Guid.NewGuid(),
             request.ProjectId,
             request.MediaAsset.Id,
             kind,
