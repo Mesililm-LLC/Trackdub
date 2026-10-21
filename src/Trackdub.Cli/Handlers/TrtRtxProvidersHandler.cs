@@ -240,7 +240,6 @@ internal static class TrtRtxProvidersHandler
             await progressOutput.WriteLineAsync(ex.Message).ConfigureAwait(false);
             return Program.ExitPipelineFailure;
         }
-
         finally
         {
             await EvictIdleSessionsAsync(factory).ConfigureAwait(false);
@@ -342,7 +341,6 @@ internal static class TrtRtxProvidersHandler
             await output.WriteLineAsync(JsonSerializer.Serialize(failed, SmokeJsonOptions)).ConfigureAwait(false);
             return Program.ExitPipelineFailure;
         }
-
         finally
         {
             await EvictIdleSessionsAsync(factory).ConfigureAwait(false);

@@ -117,7 +117,6 @@ internal static class ProviderSmokeHandler
             await progressOutput.WriteLineAsync(ex.Message).ConfigureAwait(false);
             return Program.ExitPipelineFailure;
         }
-
         finally
         {
             await EvictIdleSessionsAsync(factory).ConfigureAwait(false);
