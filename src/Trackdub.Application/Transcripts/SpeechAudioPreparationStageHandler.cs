@@ -38,97 +38,131 @@ public sealed class SpeechAudioPreparationStageHandler(
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        (StageRunRecord _, TranscriptAudioRoutingPlan routingPlan) = await StageRunHelper.RunStageAsync(
-                stageRunStore,
-                request.ProjectId,
-                StageNames.AudioPreparation,
-                null,
-                async (stageRun, ct) =>
-                {
-                    AudioQualityAnalysisResult fullMixAnalysis = await AnalyzeAsync(
-                        request.NormalizedAudioArtifact,
-                        SpeechAudioSourceKind.FullMix,
-                        ct).ConfigureAwait(false);
-                    SpeechAudioPreparationPlan preparationPlan = preparationPlanner.Plan(
-                        new SpeechAudioPreparationPlanningRequest(fullMixAnalysis));
-
-                    ProjectArtifact selectedSourceArtifact = request.NormalizedAudioArtifact;
-                    Guid analysisArtifactId = Guid.NewGuid();
-                    var processedArtifacts = new Dictionary<Guid, ProjectArtifact>();
-
-                    SpeechAudioStageDecision vadDecision = await ProcessStageIfNeededAsync(
-                        request,
-                        stageRun,
-                        selectedSourceArtifact,
-                        preparationPlan.VadDecision,
-                        preparationPlan.FullMixAnalysis,
-                        analysisArtifactId,
-                        processedArtifacts,
-                        ct).ConfigureAwait(false);
-                    SpeechAudioStageDecision asrDecision = await ProcessStageIfNeededAsync(
-                        request,
-                        stageRun,
-                        selectedSourceArtifact,
-                        preparationPlan.AsrDecision,
-                        preparationPlan.FullMixAnalysis,
-                        analysisArtifactId,
-                        processedArtifacts,
-                        ct).ConfigureAwait(false);
-                    SpeechAudioStageDecision diarizationDecision = await ProcessStageIfNeededAsync(
-                        request,
-                        stageRun,
-                        selectedSourceArtifact,
-                        preparationPlan.DiarizationDecision,
-                        preparationPlan.FullMixAnalysis,
-                        analysisArtifactId,
-                        processedArtifacts,
-                        ct).ConfigureAwait(false);
-
-                    var audit = SpeechAudioPreparationAudit.Create(
-                        request,
-                        preparationPlan,
-                        vadDecision,
-                        asrDecision,
-                        diarizationDecision);
-
-                    string analysisRelativePath = ProjectArtifactPaths.GetAudioQualityAnalysisRelativePath(stageRun.Id);
-                    await artifactStore.WriteJsonAsync(analysisRelativePath, audit, ct).ConfigureAwait(false);
-                    FileFingerprint analysisFingerprint = await fileFingerprintService
-                        .ComputeAsync(artifactStore.GetPath(analysisRelativePath), ct)
-                        .ConfigureAwait(false);
-
-                    ProjectArtifact analysisArtifact = CreateAnalysisArtifact(
-                        request,
-                        stageRun,
-                        preparationPlan,
-                        analysisArtifactId,
-                        analysisRelativePath,
-                        analysisFingerprint);
-
-                    foreach (ProjectArtifact processedArtifact in processedArtifacts.Values)
-                    {
-                        await mediaAssetRepository.SaveArtifactAsync(processedArtifact, ct).ConfigureAwait(false);
-                    }
-
-                    await mediaAssetRepository.SaveArtifactAsync(analysisArtifact, ct).ConfigureAwait(false);
-
-                    return new TranscriptAudioRoutingPlan(
-                        ResolveArtifact(selectedSourceArtifact, vadDecision, processedArtifacts),
-                        ResolveArtifact(selectedSourceArtifact, asrDecision, processedArtifacts),
-                        ResolveArtifact(selectedSourceArtifact, diarizationDecision, processedArtifacts),
-                        preparationPlan.SelectedSourceKind,
-                        analysisArtifact,
-                        vadDecision,
-                        asrDecision,
-                        diarizationDecision);
-                },
-                "Speech audio preparation canceled.",
-                cancellationToken,
-                runtimePlanningPreferences,
-                logger)
+        StageRunRecord stageRun = await StageRunHelper
+            .StartAsync(stageRunStore, request.ProjectId, StageNames.AudioPreparation, cancellationToken)
             .ConfigureAwait(false);
 
-        return routingPlan;
+        // Artifacts are registered while the run is Running, mirroring the stem and lip
+        // layers: the completed producer row then accepts the whole persisted set, and an
+        // interrupted registration removes its rows so a canceled or failed producer can
+        // never be selected by a later consumer.
+        var registeredArtifactIds = new List<Guid>();
+        try
+        {
+            AudioQualityAnalysisResult fullMixAnalysis = await AnalyzeAsync(
+                request.NormalizedAudioArtifact,
+                SpeechAudioSourceKind.FullMix,
+                cancellationToken).ConfigureAwait(false);
+            SpeechAudioPreparationPlan preparationPlan = preparationPlanner.Plan(
+                new SpeechAudioPreparationPlanningRequest(fullMixAnalysis));
+
+            ProjectArtifact selectedSourceArtifact = request.NormalizedAudioArtifact;
+            Guid analysisArtifactId = Guid.NewGuid();
+            var processedArtifacts = new Dictionary<Guid, ProjectArtifact>();
+
+            SpeechAudioStageDecision vadDecision = await ProcessStageIfNeededAsync(
+                request,
+                stageRun,
+                selectedSourceArtifact,
+                preparationPlan.VadDecision,
+                preparationPlan.FullMixAnalysis,
+                analysisArtifactId,
+                processedArtifacts,
+                registeredArtifactIds,
+                cancellationToken).ConfigureAwait(false);
+            SpeechAudioStageDecision asrDecision = await ProcessStageIfNeededAsync(
+                request,
+                stageRun,
+                selectedSourceArtifact,
+                preparationPlan.AsrDecision,
+                preparationPlan.FullMixAnalysis,
+                analysisArtifactId,
+                processedArtifacts,
+                registeredArtifactIds,
+                cancellationToken).ConfigureAwait(false);
+            SpeechAudioStageDecision diarizationDecision = await ProcessStageIfNeededAsync(
+                request,
+                stageRun,
+                selectedSourceArtifact,
+                preparationPlan.DiarizationDecision,
+                preparationPlan.FullMixAnalysis,
+                analysisArtifactId,
+                processedArtifacts,
+                registeredArtifactIds,
+                cancellationToken).ConfigureAwait(false);
+
+            var audit = SpeechAudioPreparationAudit.Create(
+                request,
+                preparationPlan,
+                vadDecision,
+                asrDecision,
+                diarizationDecision);
+
+            string analysisRelativePath = ProjectArtifactPaths.GetAudioQualityAnalysisRelativePath(stageRun.Id);
+            await artifactStore.WriteJsonAsync(analysisRelativePath, audit, cancellationToken).ConfigureAwait(false);
+            FileFingerprint analysisFingerprint = await fileFingerprintService
+                .ComputeAsync(artifactStore.GetPath(analysisRelativePath), cancellationToken)
+                .ConfigureAwait(false);
+
+            ProjectArtifact analysisArtifact = CreateAnalysisArtifact(
+                request,
+                stageRun,
+                preparationPlan,
+                analysisArtifactId,
+                analysisRelativePath,
+                analysisFingerprint);
+
+            await mediaAssetRepository.SaveArtifactAsync(analysisArtifact, cancellationToken).ConfigureAwait(false);
+            registeredArtifactIds.Add(analysisArtifact.Id);
+
+            var routingPlan = new TranscriptAudioRoutingPlan(
+                ResolveArtifact(selectedSourceArtifact, vadDecision, processedArtifacts),
+                ResolveArtifact(selectedSourceArtifact, asrDecision, processedArtifacts),
+                ResolveArtifact(selectedSourceArtifact, diarizationDecision, processedArtifacts),
+                preparationPlan.SelectedSourceKind,
+                analysisArtifact,
+                vadDecision,
+                asrDecision,
+                diarizationDecision);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            await StageRunHelper
+                .CompleteAsync(stageRunStore, stageRun, null, cancellationToken, runtimePlanningPreferences)
+                .ConfigureAwait(false);
+
+            return routingPlan;
+        }
+        catch (OperationCanceledException)
+        {
+            await CleanupRegisteredArtifactsAsync(registeredArtifactIds).ConfigureAwait(false);
+            await StageRunHelper
+                .CancelAsync(stageRunStore, stageRun, null, "Speech audio preparation canceled.", CancellationToken.None, runtimePlanningPreferences, logger)
+                .ConfigureAwait(false);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            await CleanupRegisteredArtifactsAsync(registeredArtifactIds).ConfigureAwait(false);
+            await StageRunHelper
+                .FailAsync(stageRunStore, stageRun, null, ex.Message, CancellationToken.None, runtimePlanningPreferences, logger)
+                .ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private async Task CleanupRegisteredArtifactsAsync(IEnumerable<Guid> registeredArtifactIds)
+    {
+        foreach (Guid artifactId in registeredArtifactIds)
+        {
+            try
+            {
+                await mediaAssetRepository.DeleteArtifactAsync(artifactId, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Preserve the original cancellation/failure; cleanup errors should not replace it.
+            }
+        }
     }
 
     private async Task<AudioQualityAnalysisResult> AnalyzeAsync(
@@ -163,6 +197,7 @@ public sealed class SpeechAudioPreparationStageHandler(
         AudioQualityAnalysisResult sourceAnalysis,
         Guid analysisArtifactId,
         IDictionary<Guid, ProjectArtifact> processedArtifacts,
+        List<Guid> registeredArtifactIds,
         CancellationToken cancellationToken)
     {
         if (!decision.RequiresProcessing)
@@ -259,6 +294,8 @@ public sealed class SpeechAudioPreparationStageHandler(
             processingResult,
             decision,
             analysisArtifactId);
+        await mediaAssetRepository.SaveArtifactAsync(artifact, cancellationToken).ConfigureAwait(false);
+        registeredArtifactIds.Add(artifact.Id);
         processedArtifacts[artifact.Id] = artifact;
 
         return decision with

@@ -135,12 +135,7 @@ public static class StageArtifactResumeEvaluator
                 LipSyncOutputsPresent(state.StageRuns, artifacts, artifactStore),
 
             _ when string.Equals(stageName, StageNames.AudioPreparation, StringComparison.OrdinalIgnoreCase) =>
-                StageRunScopedArtifactsPresent(
-                    state.StageRuns,
-                    artifacts,
-                    artifactStore,
-                    StageNames.AudioPreparation,
-                    ArtifactKind.AudioQualityAnalysis),
+                AudioPreparationOutputsPresent(state.StageRuns, artifacts, artifactStore),
 
             _ when string.Equals(stageName, StageNames.SpeechEnhancement, StringComparison.OrdinalIgnoreCase) =>
                 StageRunScopedArtifactsPresent(
@@ -240,6 +235,14 @@ public static class StageArtifactResumeEvaluator
             return false;
         }
 
+        if (string.Equals(stageName, StageNames.AudioPreparation, StringComparison.OrdinalIgnoreCase))
+        {
+            return await AudioPreparationAuditMatchesAsync(
+                state,
+                artifactStore,
+                cancellationToken).ConfigureAwait(false);
+        }
+
         if (!string.Equals(stageName, StageNames.Export, StringComparison.OrdinalIgnoreCase))
         {
             return true;
@@ -254,6 +257,104 @@ public static class StageArtifactResumeEvaluator
             artifactStore,
             snapshot,
             cancellationToken).ConfigureAwait(false);
+    }
+
+    private static bool AudioPreparationOutputsPresent(
+        IReadOnlyList<StageRunRecord> runs,
+        IReadOnlyList<ProjectArtifact> artifacts,
+        IArtifactStore artifactStore)
+    {
+        // GetLatestSuccessfulRun only returns Completed runs, so a partially completed
+        // producer can never satisfy this gate.
+        StageRunRecord? latestRun = GetLatestSuccessfulRun(runs, StageNames.AudioPreparation);
+        if (latestRun is null)
+        {
+            return false;
+        }
+
+        ProjectArtifact[] analysisArtifacts = artifacts
+            .Where(a => a.StageRunId == latestRun.Id && a.Kind == ArtifactKind.AudioQualityAnalysis)
+            .ToArray();
+        if (analysisArtifacts.Length == 0 || !analysisArtifacts.All(a => ArtifactExists(artifactStore, a)))
+        {
+            return false;
+        }
+
+        // Every processed artifact the producer registered must still be on disk; a
+        // partially deleted set cannot satisfy resume even though the analysis survives.
+        return artifacts
+            .Where(a => a.StageRunId == latestRun.Id && a.Kind == ArtifactKind.SpeechProcessedAudio)
+            .All(a => ArtifactExists(artifactStore, a));
+    }
+
+    /// <summary>
+    /// The persisted preparation audit is the producer's own record of which processed
+    /// artifacts it created. Resume requires every non-fallback processed output in that
+    /// audit to still exist as a row from the same completed run with its file present,
+    /// so a row deleted outright (invisible to the synchronous check) also fails closed.
+    /// </summary>
+    private static async Task<bool> AudioPreparationAuditMatchesAsync(
+        TranscriptProjectState state,
+        IArtifactStore artifactStore,
+        CancellationToken cancellationToken)
+    {
+        StageRunRecord? latestRun = GetLatestSuccessfulRun(state.StageRuns, StageNames.AudioPreparation);
+        if (latestRun is null)
+        {
+            return false;
+        }
+
+        IReadOnlyList<ProjectArtifact> artifacts = state.ProjectState.Artifacts;
+        ProjectArtifact? analysisArtifact = artifacts
+            .Where(a => a.StageRunId == latestRun.Id && a.Kind == ArtifactKind.AudioQualityAnalysis)
+            .OrderByDescending(static a => a.CreatedAtUtc)
+            .FirstOrDefault();
+        if (analysisArtifact is null)
+        {
+            return false;
+        }
+
+        SpeechAudioPreparationAudit? audit;
+        try
+        {
+            audit = await artifactStore
+                .ReadJsonAsync<SpeechAudioPreparationAudit>(analysisArtifact.RelativePath, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        {
+            // An audit that cannot be read cannot prove the producer's output set.
+            return false;
+        }
+
+        if (audit is null || audit.ProjectId != state.ProjectState.Project.Id)
+        {
+            return false;
+        }
+
+        foreach (SpeechAudioDecisionAudit decision in audit.Decisions)
+        {
+            if (!decision.RequiresProcessing || decision.FallbackReason is not null)
+            {
+                continue;
+            }
+
+            if (decision.OutputArtifactId is not Guid outputArtifactId)
+            {
+                return false;
+            }
+
+            ProjectArtifact? output = artifacts.FirstOrDefault(a => a.Id == outputArtifactId);
+            if (output is null ||
+                output.StageRunId != latestRun.Id ||
+                output.Kind != ArtifactKind.SpeechProcessedAudio ||
+                !ArtifactExists(artifactStore, output))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static async Task<bool> ExportGatingMatchesSnapshotAsync(

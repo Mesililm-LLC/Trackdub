@@ -144,7 +144,7 @@ public static class TranscriptWorkflowUtilities
         IReadOnlyList<ProjectArtifact> artifacts,
         IReadOnlyList<StageRunRecord>? stageRuns = null) =>
         ResolveLatestCompletedAudioPreparationAsrArtifact(artifacts, stageRuns)
-        ?? GetLatestArtifactByKind(artifacts, ArtifactKind.SpeechEnhancedAudio)
+        ?? GetAcceptedSpeechEnhancedAudio(artifacts, stageRuns)
         ?? GetLatestAcceptedVocalStem(artifacts, stageRuns)
         ?? GetLatestArtifactByKind(artifacts, ArtifactKind.NormalizedAudio);
 
@@ -157,6 +157,53 @@ public static class TranscriptWorkflowUtilities
         IReadOnlyList<ProjectArtifact> artifacts,
         IReadOnlyList<StageRunRecord>? stageRuns) =>
         GetAcceptedStemArtifacts(artifacts, stageRuns).FirstOrDefault(static artifact => artifact.Kind == ArtifactKind.Ambiance);
+
+    // A processed artifact is accepted only when the preparation run that produced it
+    // completed. Selecting by timestamp alone would reuse output registered by a
+    // canceled or failed re-run, mixing producers the same way stem selection once did.
+    public static ProjectArtifact? GetAcceptedSpeechProcessedAudio(
+        IReadOnlyList<ProjectArtifact> artifacts,
+        IReadOnlyList<StageRunRecord>? stageRuns) =>
+        GetAcceptedStageAudio(artifacts, stageRuns, StageNames.AudioPreparation, ArtifactKind.SpeechProcessedAudio);
+
+    public static ProjectArtifact? GetAcceptedSpeechEnhancedAudio(
+        IReadOnlyList<ProjectArtifact> artifacts,
+        IReadOnlyList<StageRunRecord>? stageRuns) =>
+        GetAcceptedStageAudio(artifacts, stageRuns, StageNames.SpeechEnhancement, ArtifactKind.SpeechEnhancedAudio);
+
+    private static ProjectArtifact? GetAcceptedStageAudio(
+        IReadOnlyList<ProjectArtifact> artifacts,
+        IReadOnlyList<StageRunRecord>? stageRuns,
+        string stageName,
+        ArtifactKind kind)
+    {
+        if (stageRuns is null)
+        {
+            return null;
+        }
+
+        // Only the latest completed producer is accepted. An earlier producer's artifact
+        // must not resurface when the newest completed run produced no matching output
+        // (for example, every preparation decision failed a guardrail).
+        StageRunRecord? latestCompletedRun = stageRuns
+            .Where(run =>
+                string.Equals(run.StageName, stageName, StringComparison.OrdinalIgnoreCase) &&
+                run.Status == StageRunStatus.Completed)
+            .OrderByDescending(static run => run.CompletedAtUtc ?? run.StartedAtUtc)
+            .ThenByDescending(static run => run.Id)
+            .FirstOrDefault();
+        if (latestCompletedRun is null)
+        {
+            return null;
+        }
+
+        return artifacts
+            .Where(artifact =>
+                artifact.Kind == kind &&
+                artifact.StageRunId == latestCompletedRun.Id)
+            .OrderByDescending(static artifact => artifact.CreatedAtUtc)
+            .FirstOrDefault();
+    }
 
     public static ProjectArtifact? ResolveStageProcessedAudioArtifact(
         IReadOnlyList<ProjectArtifact> artifacts,
@@ -315,7 +362,8 @@ public static class TranscriptWorkflowUtilities
     private static StageRunRecord? GetLatestAudioPreparationRun(IReadOnlyList<StageRunRecord>? stageRuns) =>
         stageRuns?
             .Where(static stageRun =>
-                string.Equals(stageRun.StageName, StageNames.AudioPreparation, StringComparison.OrdinalIgnoreCase))
+                string.Equals(stageRun.StageName, StageNames.AudioPreparation, StringComparison.OrdinalIgnoreCase) &&
+                stageRun.Status == StageRunStatus.Completed)
             .OrderByDescending(static stageRun => stageRun.CompletedAtUtc ?? stageRun.StartedAtUtc)
             .FirstOrDefault();
 
