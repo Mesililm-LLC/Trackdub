@@ -2596,6 +2596,8 @@ public sealed class DubbingPipelineEngine(
             LipSynthesisModelAlias = preferences.LipSynthesisModelAlias ?? selections.LipSynthesisModelAlias,
             ModelVariantOverrides = requested.ModelVariantOverrides is { Count: > 0 }
                 ? new Dictionary<string, string>(selections.ModelVariantOverrides ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase)
+                    .Where(pair => !ModelVariantOverrideKeys.TryParse(pair.Key, out string stageKey, out _)
+                        || !requested.ModelVariantOverrides.ContainsKey(stageKey))
                     .Concat(requested.ModelVariantOverrides).GroupBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
                     .ToDictionary(g => g.Key, g => g.Last().Value, StringComparer.OrdinalIgnoreCase)
                 : selections.ModelVariantOverrides,

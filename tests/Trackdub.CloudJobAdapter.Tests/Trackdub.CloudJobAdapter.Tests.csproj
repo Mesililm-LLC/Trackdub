@@ -4,5 +4,5 @@
   <ItemGroup><PackageReference Include="Microsoft.NET.Test.Sdk" /><PackageReference Include="xunit.v3" /><PackageReference Include="xunit.runner.visualstudio" /></ItemGroup>
   <ItemGroup><Using Include="Xunit" /></ItemGroup>
   <ItemGroup><Compile Include="../Trackdub.TestDoubles/FakeJobStore.cs" Link="Fakes/FakeJobStore.cs" /></ItemGroup>
-  <ItemGroup><None Include="../fixtures/cloud-poc/en-speech.mp4" Link="Fixtures/en-speech.mp4" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+  <ItemGroup><None Include="../Fixtures/cloud-poc/en-speech.mp4" Link="Fixtures/en-speech.mp4" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
 </Project>
