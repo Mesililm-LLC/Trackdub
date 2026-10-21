@@ -11,6 +11,21 @@ namespace Trackdub.Architecture.Tests;
 /// </summary>
 public sealed class DependencyGraphTests
 {
+    [Theory]
+    [InlineData("Api")]
+    [InlineData("CloudJobAdapter")]
+    public void CloudHostsExcludeInferenceAndSdkTransitively(string host)
+    {
+        var graph = ReadAllSrcCsprojDependencies(Path.Join(FindRepoRoot(), "src"));
+        var allowed = new[] { "Api", "CloudJobAdapter", "Cloud.Aws", "Cloud", "Contracts", "Domain" }.Select(Normalize).ToHashSet();
+        var pending = new Stack<string>(); var visited = new HashSet<string>(); pending.Push(Normalize(host));
+        while (pending.TryPop(out string? project))
+        {
+            if (!visited.Add(project)) continue;
+            Assert.Contains(project, allowed);
+            foreach (string dependency in graph[project]) pending.Push(dependency);
+        }
+    }
     [Fact]
     public void AgentsMdDiagramMatchesEveryCsprojProjectReference()
     {

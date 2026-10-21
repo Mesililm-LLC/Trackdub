@@ -1,5 +1,9 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/Trackdub.Api/Trackdub.Api.csproj" />
+    <Project Path="src/Trackdub.Cloud/Trackdub.Cloud.csproj" />
+    <Project Path="src/Trackdub.Cloud.Aws/Trackdub.Cloud.Aws.csproj" />
+    <Project Path="src/Trackdub.CloudJobAdapter/Trackdub.CloudJobAdapter.csproj" />
     <Project Path="src/DubBench/Trackdub.DubBench.csproj" />
     <Project Path="src/DubBench.DevHost/Trackdub.DubBench.DevHost.csproj" />
     <Project Path="src/Trackdub.Analyzers/Trackdub.Analyzers.csproj" />
@@ -23,6 +27,11 @@
     <Project Path="src/Trackdub.Tools/Trackdub.Tools.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Trackdub.Api.Tests/Trackdub.Api.Tests.csproj" />
+    <Project Path="tests/Trackdub.Cloud.Tests/Trackdub.Cloud.Tests.csproj" />
+    <Project Path="tests/Trackdub.Cloud.Aws.Tests/Trackdub.Cloud.Aws.Tests.csproj" />
+    <Project Path="tests/Trackdub.CloudJobAdapter.Tests/Trackdub.CloudJobAdapter.Tests.csproj" />
+    <Project Path="tests/Trackdub.CloudJobFixture/Trackdub.CloudJobFixture.csproj" />
     <Project Path="tests/Trackdub.Analyzers.Tests/Trackdub.Analyzers.Tests.csproj" />
     <Project Path="tests/Trackdub.Application.Tests/Trackdub.Application.Tests.csproj" />
     <Project Path="tests/Trackdub.Architecture.Tests/Trackdub.Architecture.Tests.csproj" />

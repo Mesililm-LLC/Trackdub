@@ -1,0 +1,3 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup><ProjectReference Include="../Trackdub.Contracts/Trackdub.Contracts.csproj" /></ItemGroup>
+</Project>

@@ -21,6 +21,10 @@ InferenceWorker → Inference.Onnx
 Composition → Application, Inference, Inference.Onnx, InferenceWorker, Infrastructure, Licensing, Media, Media.Playback
 Sdk → Application, Composition, Licensing
 Cli → Sdk
+Cloud → Contracts
+Cloud.Aws → Cloud
+Api → Cloud.Aws
+CloudJobAdapter → Cloud.Aws
 DubBench → Benchmarks, Domain, Inference, Inference.Onnx
 DubBench.DevHost → DubBench, Infrastructure
 Benchmarks → Application, Composition, Domain, Inference, Inference.Onnx, Infrastructure
