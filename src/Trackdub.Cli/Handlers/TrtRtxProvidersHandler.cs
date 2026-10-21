@@ -242,7 +242,16 @@ internal static class TrtRtxProvidersHandler
         }
         finally
         {
-            await EvictIdleSessionsAsync(factory).ConfigureAwait(false);
+            try
+            {
+                await EvictIdleSessionsAsync(factory).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                await progressOutput.WriteLineAsync(
+                        $"Failed to evict idle inference sessions: {ex.Message}")
+                    .ConfigureAwait(false);
+            }
         }
 
         var payload = new TrtRtxSmokeOutput
@@ -343,7 +352,16 @@ internal static class TrtRtxProvidersHandler
         }
         finally
         {
-            await EvictIdleSessionsAsync(factory).ConfigureAwait(false);
+            try
+            {
+                await EvictIdleSessionsAsync(factory).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                await Console.Error.WriteLineAsync(
+                        $"Failed to evict idle inference sessions: {ex.Message}")
+                    .ConfigureAwait(false);
+            }
         }
 
         bool passed = result.Status == TrtRtxStarterPackSmokeTargetStatus.Passed;
