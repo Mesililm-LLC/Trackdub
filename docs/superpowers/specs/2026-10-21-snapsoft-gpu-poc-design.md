@@ -1,6 +1,6 @@
 # Trackdub SnapSoft GPU POC: source assessment and proposed architecture
 
-Status: **proposed; awaiting Michael's plan approval and SnapSoft scope/service alignment**. This document is an assessment, not an implementation or deployment authorization. No AWS resources were created, no paid workloads were started, and no application code was changed.
+Status: **AWS-only API/storage required by Michael; implementation remains proposed pending plan approval and SnapSoft scope/service alignment**. This document is an assessment, not an implementation or deployment authorization. No AWS resources were created, no paid workloads were started, and no application code was changed.
 
 ## 1. Evidence and repository truth
 
@@ -47,7 +47,7 @@ All core paths below are relative to `/workspace/Trackdub`.
 | Session reuse | `src/Trackdub.Inference.Onnx/Pool/InferenceSessionPool.cs::Shared`; `SharedPoolOptions.cs`; `src/Trackdub.Composition/Pipeline/ResidentWarmupService.cs` | Process-local pool; sessions serialized per lease and subject to eviction. Current GPU budget is 75% at/below 16 GiB, 85% above, clamped 4096–65536 MiB. Linux headless telemetry lacks the default Windows process-isolated GPU reader; reservation accounting is not coordination across containers. |
 | Existing workers | `src/Trackdub.Cli/Handlers/ServeHandler.cs::ServeAsync`; `src/Trackdub.Contracts/Serving/IResidentInferenceHost.cs`; `src/Trackdub.InferenceWorker/Trackdub.InferenceWorker.csproj` | `serve` is a resident tensor-inference JSON stdin/stdout protocol, not media-job HTTP or a durable queue consumer. `InferenceWorker` is a Windows CUDA isolation executable, not the AWS job worker. |
 
-### Existing cloud API changes the baseline
+### Existing cloud API: verified context, superseded for this POC
 
 In `trackdubllc/api.trackdub` at the pinned ref:
 
@@ -61,7 +61,7 @@ In `trackdubllc/api.trackdub` at the pinned ref:
 | `src/types/env.ts::Bindings` | `DB`, `MEDIA` (R2), auth configuration | AWS scheduler bindings/credentials and internal adapter authentication |
 | `src/lib/errors.ts::ApiError`, `toErrorBody` | Existing safe `{error:{code,message,requestId,details?}}` | Stable job execution error taxonomy |
 
-Creation currently durably inserts a Queued row and returns 201, with no dispatch. Cancellation immediately writes terminal Cancelled for Queued/Running; that will be incorrect once real execution exists. No Batch, ECS, SQS, S3/DynamoDB job adapter was found in core or these API source surfaces. D1/R2 integrations already exist. Reuse them provisionally rather than add a second API/auth system or second authoritative job database.
+Creation currently durably inserts a Queued row and returns 201, with no dispatch. Cancellation immediately writes terminal Cancelled for Queued/Running; that will be incorrect once real execution exists. No Batch, ECS, SQS, S3/DynamoDB job adapter was found in core or these API source surfaces. D1/R2 integrations already exist. Michael subsequently required AWS-only API/storage. These Cloudflare components remain verified historical context, not dependencies of the approved hosting boundary. The AWS proposal below supersedes the earlier reuse recommendation; no deployed cutover or data migration has occurred.
 
 ### Linux boundaries
 
@@ -69,24 +69,26 @@ Portable `net10.0` targets exist alongside conditional Windows targets. `Trackdu
 
 ## 2. Recommended architecture (proposed)
 
-Prefer **existing lightweight API + durable job/outbox + AWS Batch on EC2 GPU + a small supervisor around the existing one-shot CLI**. Final Batch versus ECS choice remains with SnapSoft delivery alignment. Keep the client contract and adapter independent of that choice.
+**Confirmed requirement: API hosting and all operational job/media storage must be in AWS.** Propose a lightweight ASP.NET Core .NET 10 CPU API, DynamoDB for durable job/outbox/attempt state, S3 for immutable inputs/results/artifacts, and AWS Batch on EC2 GPU with a small supervisor around the existing one-shot CLI. Final Batch versus direct ECS choice remains with SnapSoft delivery alignment.
 
 ```mermaid
 flowchart LR
-  C[Desktop / web client] --> A[Existing API: auth and job DTOs]
-  A --> D[(D1: jobs, attempts, outbox)]
-  D --> S[Scheduled dispatcher / reconciler in same API deployment]
+  C[Desktop / web client] --> A[ASP.NET Core CPU API in AWS]
+  A <--> D[(DynamoDB: jobs, attempts, outbox)]
+  A --> S[Background dispatcher / reconciler in API host]
   S --> B[AWS Batch job queue on EC2 GPU]
   B --> W[One-shot job adapter]
   W --> CLI[Existing GPU CLI]
-  W <--> O[(R2 input and artifacts)]
-  W --> A
-  A --> C
+  W <--> O[(S3 input, results and artifacts)]
+  W <--> D
+  A --> O
 ```
 
-No SQS, Step Functions, Kubernetes, Redis or separate always-on dispatcher is required for this baseline. Use a scheduled handler in the existing Worker for bounded outbox dispatch and reconciliation. For POC traffic, dispatch cadence of one minute is acceptable unless Michael requires lower queue latency. A request may trigger a best-effort immediate dispatch after durable commit; correctness must not depend on that request or `waitUntil` surviving.
+Proposed API hosting is one CPU ECS/Fargate service behind HTTPS/ALB, with bounded `BackgroundService` dispatch/reconciliation loops in the same API deployment. Fargate is for the CPU API only; GPU execution remains EC2. Multiple API replicas use conditional DynamoDB claims. No separate dispatcher service, SQS, Step Functions, Redis or Kubernetes is needed for initial POC traffic. Poll pending work at most once per minute, configurable; immediate post-commit wakeups are an optimization, never the durable acceptance mechanism.
 
-This is a **cross-cloud proposal**, not a claim about the AWS-funded SOW. If SnapSoft requires AWS-only API/storage, use a lightweight ASP.NET CPU host, one DynamoDB job/outbox store, S3, and the same Batch/CLI adapter; explicitly supersede/migrate the API scaffold rather than run two authoritative job systems. Resolve this before implementing host-specific code. Do not install a GPU runtime in the client API. API host reuse refers to job control only; execution remains in shared application/SDK services behind the CLI host.
+Use AWS task roles and the AWS SDK default credential chain for DynamoDB/S3/Batch access; no cross-cloud scheduler keys or R2 credentials. Propose Cognito-issued JWTs for client authentication, validating issuer, audience, expiry and job scopes; Cognito setup/client flows remain subject to alignment. Existing Cloudflare Better Auth cookies are not automatically valid at the new API. API CPU projects must not reference GPU composition/runtime packages. Pipeline execution stays in the shared application/SDK through the CLI.
+
+The Cloudflare API/D1/R2 job scaffold is not an execution dependency or second authority. For the POC, create fresh AWS jobs and uploads. Do not silently copy legacy records or serve them from AWS as if their media were in S3. Before portal cutover, confirm whether any real legacy jobs/data exist, define an explicit migration/export or retained-history policy, and disable old job intake so new submissions have exactly one authority. Existing portal hosting may remain elsewhere; the job API, identity proposal and operational storage are AWS services. Preserve `/api/dubs` DTO compatibility in the AWS API if the current portal participates; both route families use the same AWS records/services. No Cloudflare deployment, deletion or migration is authorized by this planning revision.
 
 ### Alternatives
 
@@ -108,7 +110,7 @@ GPU task placement needs GPU-capable EC2 capacity and GPU resource reservations;
 
 ## 3. Minimal POC and deferred scope
 
-**Include:** one authenticated principal using existing auth; one immutable uploaded video per job; one fixed server preset; EN→ES first; one GPU job at a time on the dedicated POC host; bounded queue/runtime; durable acceptance, status polling, cancellation, error classification, artifact download; restart/duplicate safety; pinned image/models; documented host provisioning, seeding and cache warming. EN→ZH/voice cloning is a separate acceptance fixture only if explicitly agreed and supported by the selected model/voice route.
+**Include:** one authenticated principal using an agreed AWS-hosted identity flow; one immutable uploaded video per job; one fixed server preset; EN→ES first; one GPU job at a time on the dedicated POC host; bounded queue/runtime; durable acceptance, status polling, cancellation, error classification, artifact download; restart/duplicate safety; pinned image/models; documented host provisioning, seeding and cache warming. EN→ZH/voice cloning is a separate acceptance fixture only if explicitly agreed and supported by the selected model/voice route.
 
 **Defer:** persistent media-job worker, cross-job resident-session tuning, parallel GPU jobs, multi-GPU scheduling, fleet-wide writable caches/SQLite, streaming/websocket progress, arbitrary model/provider/stage options from clients, multi-GB upload overhaul, billing/usage metering, Spot optimization, automatic project resume across lost hosts, formal benchmarking and cost analysis. Timing startup/loading during functional diagnosis is permitted; it is not a comparative performance/cost deliverable.
 
@@ -116,11 +118,12 @@ The SOW removal of “Benchmarking and Cost Analysis” and removal of Michael's
 
 ## 4. Proposed job/API contract
 
-Keep existing `/api/dubs` routes compatible. Add versioned `/jobs` routes as aliases over the **same service and records**, not a second implementation. Version new DTOs with `schemaVersion: 1`; `/api/dubs` maps Completed to the new succeeded state and maps internal phases to existing Queued/Running display status. Add `phase` and `cancelRequested` so legacy UI does not falsely show stopped execution. Coordinate portal compatibility before changing DELETE semantics.
+Implement `/jobs` in the new AWS ASP.NET API. Where required by the current portal, expose `/api/dubs` compatibility adapters over the **same AWS service and DynamoDB records**, not a second job implementation. Version new DTOs with `schemaVersion: 1`; `/api/dubs` maps Completed to the new succeeded state and maps internal phases to existing Queued/Running display status. Add `phase` and `cancelRequested` so legacy UI does not falsely show stopped execution. Coordinate portal compatibility before changing DELETE semantics.
 
 ### Request and response types
 
 ```ts
+// Language-neutral JSON shape; implement these DTOs as C# records.
 type JobState = "accepted" | "queued" | "running" | "cancelRequested"
   | "succeeded" | "failed" | "cancelled" | "timedOut";
 type JobPhase = "dispatching" | "starting" | "staging" | "pipeline" | "publishing";
@@ -165,31 +168,31 @@ IDs are opaque server-generated UUIDs. Logical `jobId`, scheduler `executionId`,
 
 | Endpoint | Proposed semantics |
 |---|---|
-| `POST /jobs` | Require auth and `Idempotency-Key`; validate staged input and capability. Return `202` with `{job: JobDto}`, `Location: /jobs/{id}`, `Retry-After: 5` **only after** one atomic D1 batch durably records job, idempotency mapping and outbox intent. Replay same key/body returns original job; same key/different body returns 409. Unavailable store/disabled processor returns 503 with no acceptance. |
+| `POST /jobs` | Require auth and `Idempotency-Key`; validate staged input and capability. Return `202` with `{job: JobDto}`, `Location: /jobs/{id}`, `Retry-After: 5` **only after** one DynamoDB `TransactWriteItems` transaction durably records job, idempotency mapping and outbox intent. Replay same key/body returns original job; same key/different body returns 409. Unavailable store/disabled processor returns 503 with no acceptance. |
 | `GET /jobs/{id}` | Return 200 owned job; 404 for absent or other owner's job. Poll interval hint; optionally ETag using `version`. No request waits for the pipeline. |
 | `POST /jobs/{id}/cancel` | Idempotent. Terminal cancelled returns 200; other terminal states return 409. Unlaunched accepted job can atomically cancel/delete pending intent. Otherwise record `cancelRequested` and durable cancel intent, return 202; report cancelled only after execution is confirmed stopped. |
 | `GET /jobs/{id}/artifacts` | Return 200 `{items: ArtifactRef[]}` for owned jobs, empty until artifacts are committed; failure diagnostics may be listed separately. Issue fresh short-lived download capabilities on request, never persist signed URLs as durable identity. |
 
-The existing `/api/dubs/upload` may remain for the POC, with its verified 100 MiB limit. Add immutable upload records and checksum metadata; clients submit `uploadId`, while legacy `inputMediaPath` is resolved/validated server-side. Enforce ownership, existence, bytes, allowed media, duration/resolution limits and allowed language/voice pairs. Validate actual media with ffprobe in the adapter, not filename extension alone. Accept no remote fetch URLs or user-controlled destination keys. Configure explicit POC limits before intake is enabled; proposed fixture ceiling is 100 MiB/5 minutes/1080p, subject to Michael's approval. Advertised supported language lists do not prove actual model coverage.
+Add `POST /uploads` to reserve a server-generated owned S3 key and return a short-lived presigned upload capability, then `POST /uploads/{id}/complete` to validate object version, size and checksum before marking its DynamoDB upload record ready. Bind each accepted job to that immutable S3 version/checksum; reject incomplete or changed input. Use private versioned buckets, blocked public access and encryption; no anonymous object URLs. Keep a 100 MiB POC cap as an explicit proposed limit rather than inheriting a Worker limit. A presigned URL alone does not enforce all limits: validate object metadata/checksum on completion and independently verify bytes/hash in the adapter. Enforce ownership, actual media type, duration/resolution limits and language/voice coverage. Proposed fixture ceiling remains 100 MiB/5 minutes/1080p, subject to approval. Never accept arbitrary client bucket/key/URL destinations. If portal multipart upload compatibility is needed, add a bounded AWS endpoint backed by the same S3/upload records, not R2.
 
-Reuse Better Auth/session authorization and existing CORS. Cross-origin clients need `Idempotency-Key` allowed by CORS. Desktop authentication is unresolved: use an agreed supported authenticated session flow for POC; do not expose an admin token or invent a second identity system. Worker-control routes use a separate authenticated service identity and job/attempt-bound capabilities; browser sessions cannot claim or complete jobs.
+Use ASP.NET JWT bearer authentication with the agreed Cognito issuer/audience and a stable subject-based owner ID. Cross-origin clients require an exact allowed origin and `Idempotency-Key` in CORS; no credentialed wildcard. Proposed desktop flow is authorization code with PKCE through the system browser, with no client secret in the desktop binary; web flow/client registration must be aligned separately. IAM task roles handle worker claims, progress and candidate outcomes directly in DynamoDB and object transfer in S3, avoiding a new externally callable worker-control API. Centralize conditional mutations in the shared cloud service. Restrict runtime roles by table/bucket/prefix and scheduler actions; the API validates job ownership and neither browser nor desktop receives AWS service credentials. POC workers are trusted workloads with potentially broader DynamoDB permissions than one job; fencing is an application correctness boundary, not tenant-proof IAM isolation. Stronger per-job IAM isolation is deferred.
 
-Reuse the current API error envelope `{error:{code,message,requestId,details?}}`; define codes `INVALID_INPUT`, `INPUT_CHANGED`, `IDEMPOTENCY_CONFLICT`, `PREFLIGHT_FAILED`, `PIPELINE_FAILED`, `WORKER_CRASHED`, `RESULT_MISSING`, `ARTIFACT_UPLOAD_FAILED`, `QUEUE_TIMEOUT`, `EXECUTION_TIMEOUT`, `CANCELLED`. Client-safe messages omit credentials, local paths and stack traces; diagnostics remain access controlled.
+Implement the existing client-compatible API error envelope `{error:{code,message,requestId,details?}}`; define codes `INVALID_INPUT`, `INPUT_CHANGED`, `IDEMPOTENCY_CONFLICT`, `PREFLIGHT_FAILED`, `PIPELINE_FAILED`, `WORKER_CRASHED`, `RESULT_MISSING`, `ARTIFACT_UPLOAD_FAILED`, `QUEUE_TIMEOUT`, `EXECUTION_TIMEOUT`, `CANCELLED`. Client-safe messages omit credentials, local paths and stack traces; diagnostics remain access controlled.
 
 ### Durable ownership, dispatch, retries and restarts
 
-D1 owns business job state. Batch/ECS owns execution facts. Local project SQLite owns pipeline/project state; it is not a distributed job store. R2 owns immutable inputs/output objects. No AWS job ID or scheduler status alone is the client result.
+DynamoDB owns business job state. Batch/ECS owns execution facts. Local project SQLite owns pipeline/project state; it is not a distributed job store. S3 owns immutable versioned inputs/output objects. No AWS job ID or scheduler status alone is the client result.
 
-1. Use one atomic D1 `batch()` for acceptance and outbox insert, backed by unique `(ownerId, idempotencyKey)` and `(jobId, dispatchId)` constraints. Keep mappings at least as long as the job; no automatic POC TTL that silently permits duplicate submissions. D1 batches roll back as a unit on statement failure. [D1 batch API](https://developers.cloudflare.com/d1/worker-api/d1-database/)
+1. Use DynamoDB `TransactWriteItems` with conditional creation of job, idempotency and outbox items. Encode `(ownerId, idempotencyKey)` in a deterministic unique item key and store the normalized request hash/job ID. On duplicate-key conflict, strongly read the existing mapping and return the original job or 409 for a changed hash. A transaction request token can protect short retries but is not the durable idempotency record. Keep mappings at least as long as the job; do not rely on DynamoDB TTL for uniqueness. Store immutable upload identity, attempts and artifact references in the same authority. Pending-work discovery may use an eventually consistent GSI; claims/CAS use conditional writes against base-table items and strongly consistent reads where correctness depends on fresh state. Store full run results in S3, keeping DynamoDB summaries bounded below its item-size limit. [DynamoDB transactions](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transactions.html)
 2. Scheduled dispatch claims pending intents with conditional updates and a bounded lease. It submits a fixed image/definition with opaque IDs, records execution ID, then acknowledges the intent. Retry transient dispatch calls with capped exponential backoff and jitter.
 3. Batch `SubmitJob` does not expose a client idempotency token. A lost submit response can create duplicate scheduler jobs; a deterministic job name is not deduplication. Persist `dispatchId`, discover/reconcile matching jobs, and require a **conditional start claim before downloading or invoking CLI**. Only one execution may claim the logical attempt; losers exit without executing. Record every discovered execution ID and terminate duplicates. [SubmitJob API](https://docs.aws.amazon.com/batch/latest/APIReference/API_SubmitJob.html)
 4. Attempt claims are bound to execution identity and monotonically increasing fencing generation. Heartbeats/progress/results must match the active attempt/generation. Lease expiry stops an isolated adapter; it does not by itself authorize another pipeline on a possibly live old container. Reconcile/terminate the old execution before replacement. A stale writer can only leave orphan attempt objects, never publish the job result.
-5. Start with **Batch `retryStrategy.attempts = 1`**. The control plane may authorize one replacement attempt (two total) only for confirmed host loss or transient staging failure; do not retry model/configuration/native crash/pipeline errors automatically. This avoids two independent retry owners. Artifact upload/callback retries stay within the attempt and do not rerun the pipeline. Batch does have native retry support; broader use is deferred. [Batch retry behavior](https://docs.aws.amazon.com/batch/latest/userguide/job_retries.html)
+5. Start with **Batch `retryStrategy.attempts = 1`**. The control plane may authorize one replacement attempt (two total) only for confirmed host loss or transient staging failure; do not retry model/configuration/native crash/pipeline errors automatically. This avoids two independent retry owners. Artifact upload/outcome-write retries stay within the attempt and do not rerun the pipeline. Batch does have native retry support; broader use is deferred. [Batch retry behavior](https://docs.aws.amazon.com/batch/latest/userguide/job_retries.html)
 6. Proposed deadlines: queue acceptance-to-start 3600 seconds; execution staging-through-publication 7200 seconds; heartbeat every 15 seconds, claim lease 90 seconds; latest progress snapshot at most once per 5 seconds plus stage transitions. These are operational limits to confirm, not performance promises. Separate queue deadline because Batch attempt timeout starts at RUNNING and excludes queue/startup. Reconcile starting/image-pull hangs against the queue deadline. Set Batch timeout as a backstop and enforce the application deadline in the adapter. [Batch timeout behavior](https://docs.aws.amazon.com/batch/latest/userguide/job_timeouts.html)
 7. API restart loses no accepted work; scheduled dispatch resumes persisted intent. CLI/container death is reconciled using scheduler terminal facts and any uploaded result; the job cannot remain Running forever. Lost result publication is repaired from attempt objects. Successful upload followed by control-plane outage is retried without re-execution; no terminal success is exposed before artifact verification and final state commit.
-8. Upload output and typed result to immutable `jobs/{ownerId}/{jobId}/attempts/{attemptId}/...` keys. The adapter reports a candidate completion and exits. Reconciler commits success only after adapter/scheduler exit 0, valid strict CLI result, required artifacts verified, and a CAS confirms the current attempt and no winning cancellation. R2 objects do not need a transaction with D1: upload first, commit references second, clean unreferenced objects later.
-9. Cancellation and completion serialize through CAS. A completion committed first stays succeeded and cancel gets 409. A cancel intent committed first blocks success publication, stops the execution, then becomes cancelled. Duplicate cancel/callback/event requests are safe. Batch `CancelJob` only cancels pre-start jobs and can return success without stopping Running jobs; `TerminateJob` handles starting/running and also pre-start jobs. Verify terminal cessation rather than HTTP status. [CancelJob](https://docs.aws.amazon.com/batch/latest/APIReference/API_CancelJob.html), [TerminateJob](https://docs.aws.amazon.com/batch/latest/APIReference/API_TerminateJob.html)
-10. The adapter observes cancel intent during heartbeats and forwards cooperative cancellation to CLI; explicit SIGTERM handling forwards shutdown and reaps FFmpeg/native child processes. Use a 20-second internal grace within the 30-second container stop window, then terminate the process tree; scheduler reconciliation supplies final state if the adapter is killed before callbacks. Exit 137/143 alone cannot distinguish user cancel, timeout or host failure; consult durable intent and scheduler reason.
+8. Upload output and typed result to immutable `jobs/{ownerId}/{jobId}/attempts/{attemptId}/...` keys. The adapter reports a candidate completion and exits. Reconciler commits success only after adapter/scheduler exit 0, valid strict CLI result, required artifacts verified, and a CAS confirms the current attempt and no winning cancellation. S3 objects do not need a transaction with DynamoDB: upload first, commit references second, clean unreferenced objects later.
+9. Cancellation and completion serialize through CAS. A completion committed first stays succeeded and cancel gets 409. A cancel intent committed first blocks success publication, stops the execution, then becomes cancelled. Duplicate cancel/outcome/event requests are safe. Batch `CancelJob` only cancels pre-start jobs and can return success without stopping Running jobs; `TerminateJob` handles starting/running and also pre-start jobs. Verify terminal cessation rather than HTTP status. [CancelJob](https://docs.aws.amazon.com/batch/latest/APIReference/API_CancelJob.html), [TerminateJob](https://docs.aws.amazon.com/batch/latest/APIReference/API_TerminateJob.html)
+10. The adapter observes cancel intent during heartbeats and forwards cooperative cancellation to CLI; explicit SIGTERM handling forwards shutdown and reaps FFmpeg/native child processes. Use a 20-second internal grace within the 30-second container stop window, then terminate the process tree; scheduler reconciliation supplies final state if the adapter is killed before outcome persistence. Exit 137/143 alone cannot distinguish user cancel, timeout or host failure; consult durable intent and scheduler reason.
 
 No exactly-once computation guarantee is claimed. Conditional claims and fenced publication prevent concurrent authorized attempts and duplicate committed results; a crash after computation but before durable evidence may require a fresh attempt.
 
@@ -224,7 +227,7 @@ Required execution prerequisites: seeded manifest-pinned weights, working FFmpeg
 
 ### Minimum new adapter and machine contract
 
-Create one small `.NET 10` supervisor host `Trackdub.CloudJobAdapter` that claims the job, resolves short-lived input/output capabilities, downloads/verifies input, invokes **the same CLI**, tails a dedicated progress file, uploads whitelisted outputs, reports candidate outcome, and exits. Use `ProcessStartInfo.ArgumentList` with fixed executable/subcommand/options; never `sh -c`, command interpolation or client-supplied env/options. Generate all local names from server IDs. Constrain exported artifact paths to the job root and reject symlink/path escapes before upload.
+Create one small `.NET 10` supervisor host `Trackdub.CloudJobAdapter` that claims the job, uses its task role and claimed S3 object references, downloads/verifies input, invokes **the same CLI**, tails a dedicated progress file, uploads whitelisted outputs, records candidate outcome through fenced DynamoDB writes, and exits. Use `ProcessStartInfo.ArgumentList` with fixed executable/subcommand/options; never `sh -c`, command interpolation or client-supplied env/options. Generate all local names from server IDs. Constrain exported artifact paths to the job root and reject symlink/path escapes before upload.
 
 Do not replace the existing `server` entrypoint. A small derived `Dockerfile.cloud-worker` packages the supervisor atop an explicitly pinned server digest and changes the entrypoint only for the job-adapter image. It contains the same CLI pipeline implementation. Pin and record both base and adapter image digests.
 
@@ -251,7 +254,7 @@ Add `--result-file` and `--progress-file` to `run pipeline`; keep existing stdou
 | Exit 2 | Preflight/pipeline/result-write failure; use typed reason if present, otherwise generic nonretryable failure |
 | Exit 130 / typed cancelled | Cancel only with durable cancel intent; timeout if deadline caused it; unexpected interruption otherwise |
 | Exit 134/139, signal, OOM or host death | Crash/infrastructure failure; a previously printed success summary cannot override abnormal exit |
-| Missing final callback | Reconciler observes scheduler stop/result objects and supplies durable failure/cancel/timeout |
+| Missing final outcome write | Reconciler observes scheduler stop/result objects and supplies durable failure/cancel/timeout |
 
 Current cancellation behavior must be normalized to 130 at the pipeline handler. Explicit Linux SIGTERM handling and process-tree shutdown need implementation and verification; existing `CancellationToken` signatures do not prove signal handling works.
 
@@ -273,13 +276,13 @@ Engine-cache reuse is conditional on GPU model/architecture, driver, TensorRT bi
 | CLI/shared application | Own machine output, cancellation normalization, preset/model selection and Linux fixes | Review deployability and report target-host failures |
 | Job adapter | Own supervisor implementation and application tests | Integrate execution identity, credentials, task entrypoint and operational validation |
 | Scheduler/task definitions | Define job states, retry/deadline requirements and scheduler interface | Recommend Batch/ECS; implement task/job definitions, GPU placement/capacity limits |
-| Artifact storage/access | Define artifact inventory, authorization, immutable keys and retrieval behavior | Confirm R2/S3 boundary, network/IAM integration, retention and transfer operation |
-| IAM/secrets | Define application permissions; configure existing API secrets with approved process | Own AWS roles, execution/task role separation, secret delivery/rotation and registry pull access |
+| Artifact storage/access | Define artifact inventory, authorization, immutable keys and retrieval behavior | Provision agreed S3/versioning/encryption/access controls, network/IAM integration, retention and transfer operation |
+| IAM/secrets | Define application permissions; implement JWT validation and define API/worker task-role permissions | Own AWS roles, execution/task role separation, secret delivery/rotation and registry pull access |
 | GPU host/AMI/drivers | Supply compatibility pins and diagnostics | Provision/validate approved GPU AMI, driver/toolkit, GPU agent support |
 | Model seeding/warming | Own pinned model lists, verification logic and notices | Automate prepared-host storage/bootstrap, capacity and warm procedure on agreed target |
 | Persistent storage | Define model/cache/project durability and concurrency requirements | Own EBS sizing/mount/permissions/lifecycle and any agreed replacement-host recovery |
 | Logging/status | Own typed events, error mapping and durable business state | Own AWS logs/retention, scheduler telemetry and correlation integration |
-| Deployment/IaC | Own app release/versioning and existing Cloudflare configuration | Own agreed AWS IaC/deployment/handoff; identify CF changes outside their scope |
+| Deployment/IaC | Own AWS API/application release/versioning and portal contract/cutover changes | Own agreed AWS IaC/deployment/handoff, including CPU API, DynamoDB, S3 and identity setup |
 | Functional acceptance/handoff | Supply licensed fixture, expected artifacts/criteria, sign off behavior | Run agreed AWS validation, capture reproducible evidence, deliver runbook/IaC and handoff |
 
 ## 7. Functional acceptance (proposed, separate from benchmarking)
@@ -287,6 +290,7 @@ Engine-cache reuse is conditional on GPU model/architecture, driver, TensorRT bi
 Use a short licensed non-silent English MP4 fixture with a checked-in expected checksum and known speech. Empty/silent media can export successfully without dubbing, so it cannot establish ASR/translation/TTS success. EN→ES is the first test; EN→ZH/voice clone requires a separately specified fixture/consent and supported route.
 
 - [ ] Record core commit, API commit, server image digest, adapter image digest, task/job-definition revision, AWS region/instance/GPU model, AMI, driver/toolkit, ORT/TensorRT identity and POC preset version. Pin by digest, not `main-server`.
+- [ ] Verify the API deployment, identity flow, job/outbox/attempt state, uploads, results and artifacts all use the agreed AWS services. Exercise API/dispatcher with Cloudflare API/D1/R2 access unavailable; owned-job operations still work. Verify forged/expired/wrong-audience tokens fail, cross-owner access fails, and S3 public access is blocked. Record the agreed legacy-job cutover/migration outcome.
 - [ ] Demonstrate image pull on the actual AWS host using the approved registry mechanism; capture pull and runtime exit status.
 - [ ] Seed every `docker/poc-models.txt` model/variant using bundled revision/hash pins; preserve license/attribution. Wrong hash fails. Verify UID 10001 access and sufficient disk/RAM.
 - [ ] Run `doctor`, `providers list`, and strict provider readiness for the chosen preset on the target GPU. Record detected VRAM/admission source; fail on unidentified GPU/floor fallback rather than raising the budget to force acceptance. Assert per-stage allowed provider/model/variant selections, including intentional CPU stages; provider registration alone is insufficient.
@@ -295,7 +299,7 @@ Use a short licensed non-silent English MP4 fixture with a checked-in expected c
 - [ ] Full EN→ES run performs required ASR, translation, TTS and export on known speech, with no unapproved skipped/degraded required stage. Verify nonempty translated speech/subtitles, plausible media duration/audio/video streams, typed run evidence and normal CLI/adapter exits. Download authorized artifacts and verify checksums; durable status is succeeded only after publication and scheduler confirmation.
 - [ ] Deterministic execution failure: corrupt the staged media after a valid upload record in an isolated fixture, or deliberately withhold a required model in an isolated cache. Expect failed with stable code/reason and no successful result; preserve diagnostics. Also simulate native/process exit 139 after printing success and verify it never becomes succeeded.
 - [ ] Cancel before dispatch: no CLI starts. Cancel a running fixture: observe cancelRequested, cooperative stop or bounded forced stop, then cancelled after scheduler cessation. Repeat cancellation and race it with completion; one consistent terminal result remains. Check for orphan FFmpeg/native processes.
-- [ ] Kill a running container and separately simulate timeout. Reconciler removes stale Running state and records the correct reason; retry only according to the agreed two-attempt maximum. A stale callback cannot overwrite a newer attempt.
+- [ ] Kill a running container and separately simulate timeout. Reconciler removes stale Running state and records the correct reason; retry only according to the agreed two-attempt maximum. A stale outcome write cannot overwrite a newer attempt.
 - [ ] Replace API/container after completion: final state and downloads survive. Models/engine cache survive container replacement via prepared storage. Verify private attempt workspaces/databases and cross-user 404s. Demonstrate live SQLite backup consistency if project export is part of handoff.
 - [ ] Capture stdout, stderr, process exit codes, scheduler execution IDs/reasons, strict results, provider selections, object inventory/checksums and test pass/fail. A smoke summary or outer matrix script exit 0 alone is not acceptance.
 
@@ -312,13 +316,13 @@ Correct these stale/misleading surfaces in implementation, not in this assessmen
 - `docs/specs/pipeline-readiness-spec.md`, `docs/decisions/ADR-0015-pipeline-transient-telemetry.md` and their aggregates: current-path claims about absent `src/Trackdub.Api`/tests; identify historical context or link the actual separate API.
 - `docs/plans/open-core-split-continuation.md` and `docs/plans/plans.md`: label historical API layout as historical.
 - `scripts/docker/smoke-gpu-matrix.sh` and cloud runbook: the script can label a cell passed despite native exit 139 and finish with exit 0 despite failed cells. Preserve probe verdict and process health separately and add an acceptance failure verdict for any abnormal process exit. Do not adopt the existing recommendation to ignore process exit as workload acceptance policy.
-- Document that no current Swagger/ASP.NET API is served by the CLI image; no matching current Swagger host was found in the inspected core. Point cloud consumers to the separate API contract.
+- Document that no current Swagger/ASP.NET API is served by the CLI image; no matching current Swagger host was found in the inspected core. Distinguish the historical Cloudflare scaffold from the proposed AWS API and publish the approved AWS contract/endpoint when implemented.
 
-Missing handoff prerequisites: agreed AWS target/region/quotas; CUDA 13-compatible host driver and GPU container support; registry auth/ECR decision; object-storage boundary; disk/RAM requirements for selected bundles and engine files; EBS lifecycle; scheduler definitions/capacity; outbound access to model sources/storage/control plane; secret distribution; supported desktop auth; actual AWS E2E evidence; approved SOW responsibilities and functional acceptance.
+Missing handoff prerequisites: agreed AWS target/region/quotas; CUDA 13-compatible host driver and GPU container support; registry auth/ECR decision; S3 bucket/versioning/retention configuration; disk/RAM requirements for selected bundles and engine files; EBS lifecycle; scheduler definitions/capacity; outbound access to model sources/storage/control plane; secret distribution; supported desktop auth; actual AWS E2E evidence; approved SOW responsibilities and functional acceptance.
 
 ## 9. Decisions required from Michael / SnapSoft
 
-1. Extend existing Cloudflare API/D1/R2 for AWS execution, or require AWS-only control plane/storage? Reuse is the provisional recommendation; cross-cloud auth/credentials and funding must be explicitly accepted.
+1. **Resolved by Michael: AWS-only API/storage.** Confirm proposed CPU ECS/Fargate API hosting and Cognito client flows with SnapSoft, and identify whether portal compatibility or legacy-data migration is required. D1/R2 are excluded from the new runtime.
 2. Batch or direct ECS after SnapSoft container review? Which team implements dispatch/reconciliation and the adapter under revised paperwork?
 3. Which GPU instance/VRAM, host RAM, region, AMI and driver are funded/available? 24/48 GiB candidates documented in the runbook are not validated targets.
 4. Confirm revised SOW removes formal benchmarking/cost analysis and Michael's $2,000 contribution while retaining the explicit functional acceptance checklist.
@@ -327,4 +331,4 @@ Missing handoff prerequisites: agreed AWS target/region/quotas; CUDA 13-compatib
 7. Registry access: private GHCR credentials, public visibility, or ECR mirror? Who owns rotation and digest mapping?
 8. Required durability: container replacement only for the initial POC, or replacement EC2 host as well? Are resumable projects/SQLite snapshots deliverables, or only final artifacts?
 
-No decision above is assumed approved. The concrete implementation sequence is in the accompanying plan; implementation remains gated by the user's explicit instruction to approve the plan first.
+Only the AWS-only API/storage requirement is confirmed; the remaining decisions above are not assumed approved. The concrete implementation sequence is in the accompanying plan; implementation remains gated by the user's explicit instruction to approve the plan first.
