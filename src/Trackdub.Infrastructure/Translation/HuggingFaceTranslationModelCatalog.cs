@@ -95,6 +95,20 @@ public sealed class HuggingFaceTranslationModelCatalog(HttpClient httpClient, st
         string[] languages = [segments[^2], segments[^1]];
         using JsonDocument config = await GetJsonAsync($"https://huggingface.co/{repository}/resolve/{revision}/config.json", ct).ConfigureAwait(false);
         if (GetString(config.RootElement, "model_type") != "marian") throw new InvalidDataException("Unsupported model architecture.");
+        var (license, evidence, upstreamReadme) = await ResolveLicenseAsync(repository, revision, root, config.RootElement, ct).ConfigureAwait(false);
+        if (license is not ("apache-2.0" or "mit" or "cc-by-4.0")) throw new InvalidDataException("Unknown or unsupported weight license.");
+        ImmutableArray<TranslationModelFile> files = await CollectFilesAsync(repository, revision, root, ct).ConfigureAwait(false);
+        string[] required = ["onnx/encoder_model.onnx", "onnx/decoder_model_merged.onnx", "config.json", "tokenizer_config.json", "vocab.json", "source.spm", "target.spm"];
+        if (required.Any(path => !files.Any(file => file.Path == path))) throw new InvalidDataException("Incomplete supported Marian export.");
+        string[] sources = ParseLanguages(upstreamReadme, "source languages", languages[0]);
+        string[] targets = ParseLanguages(upstreamReadme, "target languages", languages[1]);
+        if (sources.Length == 0 || targets.Length == 0) throw new InvalidDataException("Language groups require explicit source and target metadata.");
+        return await BuildDescriptorsAsync(repository, revision, sources, targets, license, evidence, files, ct).ConfigureAwait(false);
+    }
+
+    private async Task<(string License, string Evidence, string? UpstreamReadme)> ResolveLicenseAsync(
+        string repository, string revision, JsonElement root, JsonElement config, CancellationToken ct)
+    {
         string license = root.TryGetProperty("cardData", out JsonElement card) ? GetString(card, "license") ?? "" : "";
         string evidence = $"https://huggingface.co/{repository}/blob/{revision}/README.md";
         string? upstream = card.ValueKind == JsonValueKind.Object ? GetString(card, "base_model") : null;
@@ -103,7 +117,7 @@ public sealed class HuggingFaceTranslationModelCatalog(HttpClient httpClient, st
             string[] candidates = bases.EnumerateArray().Where(value => value.ValueKind == JsonValueKind.String).Select(value => value.GetString()!).ToArray();
             if (candidates.Length == 1) upstream = candidates[0];
         }
-        upstream ??= GetString(config.RootElement, "_name_or_path");
+        upstream ??= GetString(config, "_name_or_path");
         string? upstreamReadme = null;
         if (upstream is not null && IsSafeRepositoryId(upstream) && upstream.StartsWith("Helsinki-NLP/opus-mt-", StringComparison.Ordinal) && !upstream.Contains("..", StringComparison.Ordinal))
         {
@@ -119,7 +133,11 @@ public sealed class HuggingFaceTranslationModelCatalog(HttpClient httpClient, st
             }
             upstreamReadme = System.Text.Encoding.UTF8.GetString(await ReadMetadataAsync($"https://huggingface.co/{upstream}/resolve/{upstreamRevision}/README.md", ct).ConfigureAwait(false));
         }
-        if (license is not ("apache-2.0" or "mit" or "cc-by-4.0")) throw new InvalidDataException("Unknown or unsupported weight license.");
+        return (license, evidence, upstreamReadme);
+    }
+
+    private async Task<ImmutableArray<TranslationModelFile>> CollectFilesAsync(string repository, string revision, JsonElement root, CancellationToken ct)
+    {
         var files = ImmutableArray.CreateBuilder<TranslationModelFile>();
         foreach (JsonElement file in root.GetProperty("siblings").EnumerateArray())
         {
@@ -137,11 +155,13 @@ public sealed class HuggingFaceTranslationModelCatalog(HttpClient httpClient, st
             if (hash is null || hash.Length != 64 || !hash.All(Uri.IsHexDigit)) throw new InvalidDataException($"Missing SHA-256: {path}");
             files.Add(new(path, size, hash));
         }
-        string[] required = ["onnx/encoder_model.onnx", "onnx/decoder_model_merged.onnx", "config.json", "tokenizer_config.json", "vocab.json", "source.spm", "target.spm"];
-        if (required.Any(path => !files.Any(file => file.Path == path))) throw new InvalidDataException("Incomplete supported Marian export.");
-        string[] sources = ParseLanguages(upstreamReadme, "source languages", languages[0]);
-        string[] targets = ParseLanguages(upstreamReadme, "target languages", languages[1]);
-        if (sources.Length == 0 || targets.Length == 0) throw new InvalidDataException("Language groups require explicit source and target metadata.");
+        return files.ToImmutable();
+    }
+
+    private async Task<ImmutableArray<TranslationModelDescriptor>> BuildDescriptorsAsync(
+        string repository, string revision, string[] sources, string[] targets, string license, string evidence,
+        ImmutableArray<TranslationModelFile> files, CancellationToken ct)
+    {
         bool multilingual = sources.Length > 1 || targets.Length > 1;
         var descriptors = ImmutableArray.CreateBuilder<TranslationModelDescriptor>();
         using JsonDocument? targetVocabulary = targets.Length > 1
@@ -153,7 +173,7 @@ public sealed class HuggingFaceTranslationModelCatalog(HttpClient httpClient, st
             {
                 string? prefix = targets.Length > 1 ? $">>{target}<<" : null;
                 if (prefix is not null && !targetVocabulary!.RootElement.TryGetProperty(prefix, out _)) continue;
-                descriptors.Add(new($"hf:{repository}", repository, revision, NormalizeLanguage(source), NormalizeLanguage(target), prefix, multilingual, license, evidence, files.ToImmutable()));
+                descriptors.Add(new($"hf:{repository}", repository, revision, NormalizeLanguage(source), NormalizeLanguage(target), prefix, multilingual, license, evidence, files));
             }
         if (descriptors.Count == 0) throw new InvalidDataException("No verified target language prefixes.");
         return descriptors.ToImmutable();
