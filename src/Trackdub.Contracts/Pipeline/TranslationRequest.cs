@@ -9,7 +9,8 @@ public sealed record TranslationRequest(
     IReadOnlyList<TranslationGlossaryHint>? GlossaryHints = null,
     string? PreferredExecutionProvider = null,
     bool RequirePreferredExecutionProvider = false,
-    string? PreferredModelVariantAlias = null);
+    string? PreferredModelVariantAlias = null,
+    Trackdub.Domain.Translation.TranslationModelProvenance? ModelProvenance = null);
 
 public sealed record TranslationGlossaryHint(
     string SourceTerm,

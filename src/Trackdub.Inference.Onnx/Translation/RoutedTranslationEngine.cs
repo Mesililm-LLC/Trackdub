@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using Trackdub.Contracts.Translation;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Inference.Onnx.Runtime.Routing;
 
@@ -6,7 +7,8 @@ namespace Trackdub.Inference.Onnx.Translation;
 
 public sealed class RoutedTranslationEngine(
     ITranslationLanguageRouter translationLanguageRouter,
-    IEnumerable<ITranslationEngineAdapter> adapters)
+    IEnumerable<ITranslationEngineAdapter> adapters,
+    ITranslationModelProvisioner? modelProvisioner = null)
     : IStreamingTranslationEngine, IStageRuntimeExecutionReporter, ITranslationExecutionMetadataReporter
 {
     private readonly ITranslationLanguageRouter translationLanguageRouter = translationLanguageRouter ?? throw new ArgumentNullException(nameof(translationLanguageRouter));
@@ -36,7 +38,7 @@ public sealed class RoutedTranslationEngine(
             LastExecutionSummary?.ModelId ?? route.ModelId,
             LastExecutionSummary?.ModelAlias ?? route.PreferredModelAlias,
             LastExecutionSummary?.SelectedProvider,
-            route.RoutingKind);
+            route.RoutingKind, (selectedEngine as ITranslationExecutionMetadataReporter)?.LastExecutionMetadata?.ModelProvenance ?? route.ModelProvenance);
         return translatedSegments;
     }
 
@@ -93,18 +95,20 @@ public sealed class RoutedTranslationEngine(
                 LastExecutionSummary?.ModelId ?? route.ModelId,
                 LastExecutionSummary?.ModelAlias ?? route.PreferredModelAlias,
                 LastExecutionSummary?.SelectedProvider,
-                route.RoutingKind);
+                route.RoutingKind, (adapter as ITranslationExecutionMetadataReporter)?.LastExecutionMetadata?.ModelProvenance ?? route.ModelProvenance);
         }
     }
 
     private async Task<(TranslationRouteSelection Route, TranslationRequest RoutedRequest, ITranslationEngineAdapter Adapter)>
         ResolveRouteAdapterAsync(TranslationRequest request, CancellationToken cancellationToken)
     {
+        string? provisionedAlias = modelProvisioner is null ? request.PreferredModelAlias :
+            await modelProvisioner.EnsureAsync(request.SourceLanguage, request.TargetLanguage, request.PreferredModelAlias, cancellationToken).ConfigureAwait(false);
         TranslationRouteSelection route = await translationLanguageRouter.ResolveRouteAsync(
             request.SourceLanguage,
             request.TargetLanguage,
             cancellationToken,
-            request.PreferredModelAlias).ConfigureAwait(false);
+            provisionedAlias).ConfigureAwait(false);
         if (!route.IsAvailable)
         {
             throw new InvalidOperationException(
@@ -115,7 +119,8 @@ public sealed class RoutedTranslationEngine(
         TranslationRequest routedRequest = request with
         {
             PreferredModelAlias = route.PreferredModelAlias,
-            ResolvedModelEntryPath = route.ResolvedModelEntryPath
+            ResolvedModelEntryPath = route.ResolvedModelEntryPath,
+            ModelProvenance = route.ModelProvenance
         };
 
         return (route, routedRequest, SelectAdapter(route));

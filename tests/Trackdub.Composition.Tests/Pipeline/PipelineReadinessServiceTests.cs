@@ -10,12 +10,73 @@ using Trackdub.Domain.Projects;
 using Trackdub.Domain.StageRuns;
 using Trackdub.Domain.Tts;
 using Trackdub.Inference.Runtime.Planning;
+using Trackdub.Inference.Runtime.ModelManifest;
 using Trackdub.TestDoubles;
 
 namespace Trackdub.Composition.Tests.Pipeline;
 
 public sealed class PipelineReadinessServiceTests
 {
+    [Theory]
+    [InlineData("en", false)]
+    [InlineData("uk", true)]
+    public async Task SpeechReadinessChecksSelectedModelsDeclaredTargetLanguages(string target, bool blocked)
+    {
+        Assert.True(BundledModelManifestRegistry.TryLoadDefault(out var registry, out var error), error);
+        var model = registry!.Entries.Single(entry => entry.Aliases.Contains("kokoro-onnx"));
+        var planner = new FakeRuntimePlanner
+        {
+            PlanHandler = request => new StageRuntimePlan
+            {
+                Stage = request.Stage, Status = StageRuntimePlanStatus.Ready,
+                ModelId = model.ModelId, ModelAlias = "kokoro-onnx"
+            }
+        };
+        var service = new PipelineReadinessService(planner, new NullCloudApiKeyProvider(), new FakeConsentService(), modelRegistry: registry);
+        var selections = new RuntimeModelSelections(AsrModelOverride.Auto, false,
+            new Dictionary<string, ExecutionProviderKind>(), TtsModelAlias: "kokoro-onnx");
+
+        var report = await service.EvaluateAsync([RuntimeStage.Tts], selections, state: null, targetLanguageCode: target);
+
+        var stage = Assert.Single(report.Stages);
+        Assert.Equal(blocked, stage.Status.IsBlocking());
+        Assert.Equal(blocked ? ReadinessState.UnsupportedLanguage : ReadinessState.Ready, stage.Status);
+        if (blocked) Assert.Contains("Translation is available", stage.Detail, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("en")]
+    public async Task EvaluateAsync_defers_automatic_translation_without_planning_fallback(string? sourceLanguage)
+    {
+        int planCalls = 0;
+        var planner = new FakeRuntimePlanner
+        {
+            PlanHandler = req =>
+            {
+                planCalls++;
+                return new StageRuntimePlan { Stage = req.Stage, Status = StageRuntimePlanStatus.Ready };
+            }
+        };
+        var service = new PipelineReadinessService(planner, new NullCloudApiKeyProvider(), new FakeConsentService());
+        var selections = new RuntimeModelSelections(AsrModelOverride.Auto, false,
+            new Dictionary<string, ExecutionProviderKind>(), TranslationModelAlias: "m2m100",
+            SelectionIntents: new Dictionary<RuntimeStage, RuntimeModelSelectionIntent>
+            {
+                [RuntimeStage.Translation] = RuntimeModelSelectionIntent.Automatic
+            });
+
+        var report = await service.EvaluateAsync([RuntimeStage.Translation], selections, state: null,
+            sourceLanguageCode: sourceLanguage, targetLanguageCode: "es");
+
+        var stage = Assert.Single(report.Stages);
+        Assert.Equal(ReadinessState.PendingTranslationResolution, stage.Status);
+        Assert.False(stage.Status.IsBlocking());
+        Assert.Null(stage.ModelAlias);
+        Assert.Null(stage.ResolveAction);
+        Assert.Equal(0, planCalls);
+    }
+
     [Fact]
     public async Task EvaluateAsync_normalizes_source_language_for_translation_planning()
     {
@@ -232,6 +293,7 @@ public sealed class PipelineReadinessServiceTests
         var service = new PipelineReadinessService(planner, new NullCloudApiKeyProvider(), new FakeConsentService());
         var cpuSelections = new RuntimeModelSelections(
             AsrModelOverride.Auto,
+            TranslationModelAlias: "opus-mt-en-es",
             IsDevBuild: false,
             HardwareOverrides: new Dictionary<string, ExecutionProviderKind>
             {
@@ -314,7 +376,7 @@ public sealed class PipelineReadinessServiceTests
         var selections = new RuntimeModelSelections(
             AsrModelOverride.Auto,
             IsDevBuild: false,
-            HardwareOverrides: new Dictionary<string, ExecutionProviderKind>());
+            HardwareOverrides: new Dictionary<string, ExecutionProviderKind>(), TranslationModelAlias: "opus-mt-en-es");
 
         PipelineReadinessReport report = await service.EvaluateAsync(
             [RuntimeStage.Translation], selections, state: null, validateRuntime: false);
@@ -341,7 +403,7 @@ public sealed class PipelineReadinessServiceTests
         var selections = new RuntimeModelSelections(
             AsrModelOverride.Auto,
             IsDevBuild: false,
-            HardwareOverrides: new Dictionary<string, ExecutionProviderKind>());
+            HardwareOverrides: new Dictionary<string, ExecutionProviderKind>(), TranslationModelAlias: "opus-mt-en-es");
 
         PipelineReadinessReport report = await service.EvaluateAsync(
             [RuntimeStage.Translation], selections, state: null, validateRuntime: false);
@@ -367,7 +429,7 @@ public sealed class PipelineReadinessServiceTests
         var selections = new RuntimeModelSelections(
             AsrModelOverride.Auto,
             IsDevBuild: false,
-            HardwareOverrides: new Dictionary<string, ExecutionProviderKind>());
+            HardwareOverrides: new Dictionary<string, ExecutionProviderKind>(), TranslationModelAlias: "opus-mt-en-es");
 
         PipelineReadinessReport report = await service.EvaluateAsync(
             [RuntimeStage.Translation], selections, state: null, validateRuntime: false);

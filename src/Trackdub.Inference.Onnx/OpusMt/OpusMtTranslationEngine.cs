@@ -16,7 +16,7 @@ public sealed class OpusMtTranslationEngine(IRuntimePlanner runtimePlanner,
     BenchmarkModelPathResolver modelPathResolver,
     IRuntimePlanningPreferences? runtimePlanningPreferences = null,
     IApplicationLogger? applicationLogger = null)
-    : IStreamingTranslationEngineAdapter, IStageRuntimeExecutionReporter
+    : IStreamingTranslationEngineAdapter, IStageRuntimeExecutionReporter, ITranslationExecutionMetadataReporter
 {
     public const string EngineFamilyName = "opus-mt";
 
@@ -25,6 +25,8 @@ public sealed class OpusMtTranslationEngine(IRuntimePlanner runtimePlanner,
     private readonly IApplicationLogger? applicationLogger = applicationLogger;
 
     public StageRuntimeExecutionSummary? LastExecutionSummary { get; private set; }
+
+    public TranslationExecutionMetadata? LastExecutionMetadata { get; private set; }
 
     public string EngineFamily => EngineFamilyName;
 
@@ -55,7 +57,15 @@ public sealed class OpusMtTranslationEngine(IRuntimePlanner runtimePlanner,
         string decoderModelPath = ResolveDecoderModelPath(plan, encoderModelPath);
         string modelRootPath = ResolveModelRootPath(encoderModelPath);
         OpusTokenizerDecoder tokenizer = await LoadTokenizerAsync(modelRootPath).ConfigureAwait(false);
-        string? targetPrefix = tokenizer.ResolveTargetLanguagePrefix(request.TargetLanguage);
+        string? targetPrefix = tokenizer.ResolveTargetLanguagePrefix(request.TargetLanguage, request.ModelProvenance?.TargetPrefix);
+        if (request.ModelProvenance is { CatalogPolicyVersion: not null } provenance &&
+            !string.Equals(provenance.TargetPrefix, targetPrefix, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The translation catalog target prefix does not match the installed tokenizer.");
+        }
+        LastExecutionMetadata = new TranslationExecutionMetadata("opus-mt", plan.ModelId, plan.ModelAlias,
+            plan.ExecutionProvider?.ToString(), TranslationRoutingKind.Direct,
+            request.ModelProvenance is { } identity ? identity with { TargetPrefix = targetPrefix } : null);
 
         if (tokenizer.RequiresTargetLanguagePrefix && targetPrefix is null)
         {
@@ -131,7 +141,15 @@ public sealed class OpusMtTranslationEngine(IRuntimePlanner runtimePlanner,
         string decoderModelPath = ResolveDecoderModelPath(plan, encoderModelPath);
         string modelRootPath = ResolveModelRootPath(encoderModelPath);
         OpusTokenizerDecoder tokenizer = await LoadTokenizerAsync(modelRootPath).ConfigureAwait(false);
-        string? targetPrefix = tokenizer.ResolveTargetLanguagePrefix(request.TargetLanguage);
+        string? targetPrefix = tokenizer.ResolveTargetLanguagePrefix(request.TargetLanguage, request.ModelProvenance?.TargetPrefix);
+        if (request.ModelProvenance is { CatalogPolicyVersion: not null } provenance &&
+            !string.Equals(provenance.TargetPrefix, targetPrefix, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The translation catalog target prefix does not match the installed tokenizer.");
+        }
+        LastExecutionMetadata = new TranslationExecutionMetadata("opus-mt", plan.ModelId, plan.ModelAlias,
+            plan.ExecutionProvider?.ToString(), TranslationRoutingKind.Direct,
+            request.ModelProvenance is { } identity ? identity with { TargetPrefix = targetPrefix } : null);
 
         if (tokenizer.RequiresTargetLanguagePrefix && targetPrefix is null)
         {

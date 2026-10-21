@@ -10,6 +10,7 @@ using Trackdub.Domain;
 using Trackdub.Domain.StageRuns;
 using Trackdub.Inference.Onnx.Runtime.Planning;
 using Trackdub.Inference.Runtime.Planning;
+using Trackdub.Inference.Runtime.ModelManifest;
 
 namespace Trackdub.Composition.Pipeline;
 
@@ -25,7 +26,8 @@ public sealed class PipelineReadinessService(
     IRuntimePlanningPreferences? runtimePlanningPreferences = null,
     int? maxConcurrentStageEvaluations = null,
     TimeSpan? stageEvaluationTimeout = null,
-    ICloudEgressConsentService? cloudEgressConsentService = null)
+    ICloudEgressConsentService? cloudEgressConsentService = null,
+    BundledModelManifestRegistry? modelRegistry = null)
     : IPipelineReadinessService
 {
     private readonly IRuntimePlanner _runtimePlanner =
@@ -206,6 +208,17 @@ public sealed class PipelineReadinessService(
         StageReadiness? skipped = GetDisabledOptionalStage(stage, selections);
         if (skipped is not null) return skipped;
 
+        // Automatic translation must select its pair after the transcript establishes
+        // the source. Generic preflight planning could otherwise download a large
+        // multilingual fallback before the pair-specific preparation gate runs.
+        if (stage == RuntimeStage.Translation &&
+            selections.GetSelectionIntent(stage) == RuntimeModelSelectionIntent.Automatic)
+        {
+            return new StageReadiness(StageNameFor(stage), ReadinessState.PendingTranslationResolution,
+                "Translation model selection and provisioning will be checked after source language resolution.",
+                ModelId: null, ModelAlias: null, ResolveAction: null);
+        }
+
         // The planning request carries every planner input; its fields double as the
         // rest of the cache key so plans computed under different provider, variant,
         // or tier inputs can never collide.
@@ -243,6 +256,21 @@ public sealed class PipelineReadinessService(
                     selections.GetSelectionIntent(stage),
                     cancellationToken).ConfigureAwait(false);
             _cache[cacheKey] = readiness;
+        }
+
+        if (stage == RuntimeStage.Tts && !string.IsNullOrWhiteSpace(targetLanguageCode) && modelRegistry is not null)
+        {
+            string target = TranscriptWorkflowUtilities.NormalizeTranslationTargetLanguageCode(targetLanguageCode);
+            var model = modelRegistry.Entries.FirstOrDefault(entry =>
+                entry.ModelId.Equals(readiness.ModelId, StringComparison.OrdinalIgnoreCase) ||
+                entry.Aliases.Contains(readiness.ModelAlias ?? modelAlias ?? string.Empty, StringComparer.OrdinalIgnoreCase));
+            if (model?.LanguageCoverage.TargetLanguages is { Count: > 0 } languages &&
+                !languages.Any(language => language.Equals(target, StringComparison.OrdinalIgnoreCase) || language is "*" or "multi" or "any"))
+            {
+                return new StageReadiness(StageNames.Tts, ReadinessState.UnsupportedLanguage,
+                    $"The selected speech model does not support '{target}'. Translation is available; choose a compatible speech model to dub this language.",
+                    model.ModelId, readiness.ModelAlias, null);
+            }
         }
 
         return ApplyVoiceCloneConsent(stage, state, readiness);
