@@ -6,9 +6,9 @@ TEST_ROOT="$(mktemp -d)"
 mkdir -p "$TEST_ROOT/failed-evidence" "$TEST_ROOT/passed-evidence"
 
 cleanup() {
-  rm -f -- "$TEST_ROOT/docker" "$TEST_ROOT"/*.output "$TEST_ROOT"/*.calls \
-    "$TEST_ROOT"/failed-evidence/* "$TEST_ROOT"/passed-evidence/*
-  rmdir -- "$TEST_ROOT/failed-evidence" "$TEST_ROOT/passed-evidence" "$TEST_ROOT"
+  if [[ -n "${TEST_ROOT:-}" ]]; then
+    rm -rf -- "$TEST_ROOT"
+  fi
 }
 trap cleanup EXIT
 
@@ -50,6 +50,10 @@ run_matrix failed 139 1
 test "$(grep -c '"status": "failed"' "$TEST_ROOT/failed-evidence/matrix-summary.json")" -eq 12
 test "$(grep -c '"exitCode": 139' "$TEST_ROOT/failed-evidence/matrix-summary.json")" -eq 12
 grep -q 'Container exited with code 139' "$TEST_ROOT/failed-evidence/matrix-summary.json"
+
+# Evidence left by an earlier run in a reused directory must not affect the current verdict.
+printf '%s\n' '{"attempted":1,"passed":0,"failed":1,"skipped":0,"targets":[{"status":"failed"}]}' \
+  > "$TEST_ROOT/passed-evidence/removed-label.stdout.json"
 
 run_matrix passed 0 0
 test "$(grep -c '"status": "passed"' "$TEST_ROOT/passed-evidence/matrix-summary.json")" -eq 12

@@ -105,10 +105,12 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 MATRIX_FAILED=0
+RUN_STEMS=()
 
 run_smoke() {
   local provider="$1"
   local label="$2"
+  RUN_STEMS+=("${provider}__${label}")
   local stdout_file="$OUTPUT_DIR/${provider}__${label}.stdout.json"
   local stderr_file="$OUTPUT_DIR/${provider}__${label}.stderr.log"
   local exitcode_file="$OUTPUT_DIR/${provider}__${label}.exitcode"
@@ -140,17 +142,21 @@ done
 
 # Aggregation combines the smoke summary with the container exit status.
 if command -v python3 >/dev/null 2>&1; then
-  if OUTPUT_DIR="$OUTPUT_DIR" python3 - <<'PYEOF'
+  if OUTPUT_DIR="$OUTPUT_DIR" CURRENT_RUN_STEMS="$(printf '%s\n' "${RUN_STEMS[@]}")" python3 - <<'PYEOF'
 import glob
 import json
 import os
 
 output_dir = os.environ["OUTPUT_DIR"]
+current_stems = set(os.environ["CURRENT_RUN_STEMS"].splitlines())
 rows = []
 
 for stdout_path in sorted(glob.glob(os.path.join(output_dir, "*.stdout.json"))):
     base = os.path.basename(stdout_path)
     stem = base[: -len(".stdout.json")]
+    # Evidence from earlier runs in a reused output directory is not part of this matrix.
+    if stem not in current_stems:
+        continue
     provider, _, label = stem.partition("__")
 
     exit_code = None
