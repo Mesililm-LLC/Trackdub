@@ -3,6 +3,7 @@ using System.Text.Json;
 using Trackdub.Contracts;
 using Trackdub.Contracts.Dubbing;
 using Trackdub.Contracts.Pipeline;
+using Trackdub.Contracts.Jobs;
 using Trackdub.Domain.StageRuns;
 using Trackdub.Sdk;
 
@@ -14,6 +15,34 @@ namespace Trackdub.Cli.Handlers;
 internal static class RunPipelineHandler
 {
     public static async Task<int> ExecuteAsync(
+        TrackdubSessionFactory factory,
+        RunPipelineRequest request,
+        IProgress<PipelineProgressEvent>? progress,
+        TextWriter output,
+        CancellationToken cancellationToken)
+    {
+        if (request.ResultFile is null && request.ProgressFile is null)
+            return await ExecuteCoreAsync(factory, request, progress, output, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (request.ResultFile is not null && File.Exists(request.ResultFile))
+                throw new IOException("Result file already exists.");
+            using var sink = request.ProgressFile is null ? null : new CliProgressFileSink(request.ProgressFile, progress);
+            return await ExecuteCoreAsync(factory, request, sink ?? progress, output, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            await WriteOutcomeAsync(request, new(1, "cancelled", null, "CANCELLED", "Pipeline cancelled.", [])).ConfigureAwait(false);
+            return Program.ExitCancelled;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            CliErrorReporter.ReportError(ErrorCode.StageFailed, "Machine output could not be written.");
+            return Program.ExitPipelineFailure;
+        }
+    }
+
+    private static async Task<int> ExecuteCoreAsync(
         TrackdubSessionFactory factory,
         RunPipelineRequest request,
         IProgress<PipelineProgressEvent>? progress,
@@ -49,6 +78,9 @@ internal static class RunPipelineHandler
             SourceLanguageCode = request.SourceLanguageCode,
             TargetLanguageCode = request.TargetLanguageCode,
             ModelPreferences = request.ModelPreferences,
+            ModelVariantPreferences = request.ModelVariantPreferences,
+            ExecutionProviderPreferences = request.ExecutionProviderPreferences,
+            RequireExecutionProviderPreferences = request.ExecutionProviderPreferences is { Count: > 0 },
             ExportFormat = request.ExportFormat,
             StageFilter = request.StageFilter,
             ForceRerun = request.ForceRerun,
@@ -72,8 +104,9 @@ internal static class RunPipelineHandler
         }
         catch (OperationCanceledException)
         {
+            await WriteOutcomeAsync(request, new(1, "cancelled", null, "CANCELLED", "Pipeline cancelled.", [])).ConfigureAwait(false);
             CliErrorReporter.ReportError(ErrorCode.Cancelled, "Pipeline execution was cancelled.");
-            return Program.ExitPipelineFailure;
+            return Program.ExitCancelled;
         }
 
         var manifestWriter = new RunManifestWriter();
@@ -90,6 +123,16 @@ internal static class RunPipelineHandler
             || (result.OverallStatus == DubbingRunStatus.PartialSuccess
                 && IsGoalAchieved(result, request.StageFilter, exportedFilePath)))
         {
+            var artifacts = new List<WorkerArtifact>();
+            if (request.ResultFile is not null)
+            {
+                if (exportedFilePath is not null)
+                    artifacts.Add(await CliMachineResultWriter.DescribeAsync(projectOutputDirectory, exportedFilePath, "video", cancellationToken).ConfigureAwait(false));
+                foreach (string subtitle in result.StageOutcomes.SelectMany(s => s.ArtifactPaths)
+                    .Where(p => Path.GetExtension(p) is ".srt" or ".vtt").Distinct(StringComparer.Ordinal))
+                    artifacts.Add(await CliMachineResultWriter.DescribeAsync(projectOutputDirectory, subtitle, "subtitle", cancellationToken).ConfigureAwait(false));
+                await WriteOutcomeAsync(request, new(1, "succeeded", result, null, null, artifacts)).ConfigureAwait(false);
+            }
             var payload = new RunPipelineOutput
             {
                 ExportedFilePath = exportedFilePath,
@@ -102,6 +145,7 @@ internal static class RunPipelineHandler
             return Program.ExitSuccess;
         }
 
+        await WriteOutcomeAsync(request, new(1, "failed", result, "PIPELINE_FAILED", "Pipeline did not achieve its goal.", [])).ConfigureAwait(false);
         foreach (StageOutcome failedStage in result.StageOutcomes.Where(o => o.Status == StageStatus.Failed))
         {
             CliErrorReporter.ReportStageFailure(
@@ -144,6 +188,10 @@ internal static class RunPipelineHandler
 
     internal sealed record RunPipelineRequest
     {
+        public string? ResultFile { get; init; }
+        public string? ProgressFile { get; init; }
+        public IReadOnlyDictionary<string, string>? ExecutionProviderPreferences { get; init; }
+        public IReadOnlyDictionary<string, string>? ModelVariantPreferences { get; init; }
         public required string SourceMediaPath { get; init; }
         public string? ProjectOutputDirectory { get; init; }
         public string? SourceLanguageCode { get; init; }
@@ -166,6 +214,13 @@ internal static class RunPipelineHandler
         public bool NoTtsRubberbandStretch { get; init; }
         public double? TtsRubberbandThreshold { get; init; }
         public double? TtsAutoStretchMaxOverrun { get; init; }
+    }
+
+    private static async Task WriteOutcomeAsync(RunPipelineRequest request, WorkerRunOutcome outcome)
+    {
+        if (request.ResultFile is null) return;
+        using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await CliMachineResultWriter.WriteAsync(outcome, request.ResultFile, cleanup.Token).ConfigureAwait(false);
     }
 
     private sealed class RunPipelineOutput

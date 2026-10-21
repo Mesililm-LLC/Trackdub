@@ -2342,6 +2342,7 @@ public sealed class DubbingPipelineEngine(
         selections = RuntimeModelRequestFactory.CreateSelectionsFromSettings(
             settings,
             preferences);
+        selections = ApplyModelPreferenceAliases(selections, preferences);
         selections = ApplyPresetVoiceModelSelection(selections, options, state);
         return ApplyExecutionProviderPins(selections, options, preferences);
     }
@@ -2593,6 +2594,11 @@ public sealed class DubbingPipelineEngine(
             TextRefinementModelAlias = preferences.TextRefinementModelAlias ?? selections.TextRefinementModelAlias,
             LipSyncModelAlias = preferences.LipSyncModelAlias ?? selections.LipSyncModelAlias,
             LipSynthesisModelAlias = preferences.LipSynthesisModelAlias ?? selections.LipSynthesisModelAlias,
+            ModelVariantOverrides = requested.ModelVariantOverrides is { Count: > 0 }
+                ? new Dictionary<string, string>(selections.ModelVariantOverrides ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase)
+                    .Concat(requested.ModelVariantOverrides).GroupBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(g => g.Key, g => g.Last().Value, StringComparer.OrdinalIgnoreCase)
+                : selections.ModelVariantOverrides,
         };
     }
 
@@ -2607,7 +2613,7 @@ public sealed class DubbingPipelineEngine(
     {
         bool hasModelOverrides = options.ModelPreferences is { Count: > 0 };
         bool hasProviderPins = options.ExecutionProviderPreferences is { Count: > 0 };
-        if (!hasModelOverrides && !hasProviderPins && !options.EnableAsrTextRefinement)
+        if (!hasModelOverrides && !hasProviderPins && options.ModelVariantPreferences is not { Count: > 0 } && !options.EnableAsrTextRefinement)
         {
             return null;
         }
@@ -2630,6 +2636,8 @@ public sealed class DubbingPipelineEngine(
             LipSynthesisModelAlias: modelPreferences.GetValueOrDefault(StageNames.LipSynthesis),
             EnableAsrTextRefinement: options.EnableAsrTextRefinement,
             PreferredExecutionProviders: providerPins,
+            PreferredModelVariantAliases: options.ModelVariantPreferences?.ToDictionary(
+                pair => MapStageNameToRuntimeStage(pair.Key) ?? throw new ArgumentException("Unknown variant stage."), pair => pair.Value),
             RequiredExecutionProviderStages:
                 providerPins is { Count: > 0 } && options.RequireExecutionProviderPreferences
                     ? new HashSet<RuntimeStage>(providerPins.Keys)

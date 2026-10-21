@@ -38,6 +38,9 @@ public sealed record DubbingSessionOptions
     /// </summary>
     public IReadOnlyDictionary<string, string>? ModelPreferences { get; init; }
 
+    /// <summary>Explicit stage variant aliases; overrides persisted local selection for this run.</summary>
+    public IReadOnlyDictionary<string, string>? ModelVariantPreferences { get; init; }
+
     /// <summary>
     /// Stage-specific execution-provider pins. Keys are canonical stage names
     /// (<see cref="Trackdub.Domain.StageRuns.StageNames"/> members that map to a

@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Runtime.InteropServices;
 
 using Trackdub.Cli.Commands;
 using Trackdub.Contracts.ApplicationContracts;
@@ -22,6 +23,12 @@ internal static class Program
 
     static async Task<int> Main(string[] args)
     {
+        using var shutdown = new CancellationTokenSource();
+        using var termination = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGTERM, context =>
+        {
+            context.Cancel = true;
+            shutdown.Cancel();
+        });
         try
         {
             if (args.Length == 0 && UiCommand.IsInteractiveTerminal())
@@ -45,7 +52,7 @@ internal static class Program
                 return exitCode;
             }
 
-            return await parseResult.InvokeAsync();
+            return await parseResult.InvokeAsync(cancellationToken: shutdown.Token);
         }
         catch (OperationCanceledException)
         {
