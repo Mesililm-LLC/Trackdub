@@ -115,6 +115,26 @@ public sealed class SpeechAudioPreparationProvenanceTests
     }
 
     [Fact]
+    public void GetAcceptedSpeechProcessedAudio_returns_null_when_latest_completed_producer_has_no_output()
+    {
+        Guid projectId = Guid.NewGuid();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        StageRunRecord earlierRun = StageRunRecord
+            .Start(projectId, StageNames.AudioPreparation, now)
+            .Complete(now.AddMinutes(1));
+        StageRunRecord latestRun = StageRunRecord
+            .Start(projectId, StageNames.AudioPreparation, now.AddMinutes(2))
+            .Complete(now.AddMinutes(3));
+        ProjectArtifact earlierArtifact = CreateProcessedArtifact(projectId, earlierRun.Id, now.AddMinutes(1));
+
+        ProjectArtifact? accepted = TranscriptWorkflowUtilities.GetAcceptedSpeechProcessedAudio(
+            [earlierArtifact],
+            [earlierRun, latestRun]);
+
+        Assert.Null(accepted);
+    }
+
+    [Fact]
     public void GetAcceptedSpeechEnhancedAudio_ignores_failed_producer()
     {
         Guid projectId = Guid.NewGuid();

@@ -182,18 +182,25 @@ public static class TranscriptWorkflowUtilities
             return null;
         }
 
-        var completedRunIds = stageRuns
+        // Only the latest completed producer is accepted. An earlier producer's artifact
+        // must not resurface when the newest completed run produced no matching output
+        // (for example, every preparation decision failed a guardrail).
+        StageRunRecord? latestCompletedRun = stageRuns
             .Where(run =>
                 string.Equals(run.StageName, stageName, StringComparison.OrdinalIgnoreCase) &&
                 run.Status == StageRunStatus.Completed)
-            .Select(static run => run.Id)
-            .ToHashSet();
+            .OrderByDescending(static run => run.CompletedAtUtc ?? run.StartedAtUtc)
+            .ThenByDescending(static run => run.Id)
+            .FirstOrDefault();
+        if (latestCompletedRun is null)
+        {
+            return null;
+        }
 
         return artifacts
             .Where(artifact =>
                 artifact.Kind == kind &&
-                artifact.StageRunId is Guid stageRunId &&
-                completedRunIds.Contains(stageRunId))
+                artifact.StageRunId == latestCompletedRun.Id)
             .OrderByDescending(static artifact => artifact.CreatedAtUtc)
             .FirstOrDefault();
     }
