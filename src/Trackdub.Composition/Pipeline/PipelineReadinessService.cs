@@ -262,14 +262,14 @@ public sealed class PipelineReadinessService(
         {
             string target = TranscriptWorkflowUtilities.NormalizeTranslationTargetLanguageCode(targetLanguageCode);
             var model = modelRegistry.Entries.FirstOrDefault(entry =>
-                entry.ModelId.Equals(readiness.ModelId, StringComparison.OrdinalIgnoreCase) ||
-                entry.Aliases.Contains(readiness.ModelAlias ?? modelAlias ?? string.Empty, StringComparer.OrdinalIgnoreCase));
+                (!string.IsNullOrEmpty(readiness.ModelId) && entry.ModelId.Equals(readiness.ModelId, StringComparison.OrdinalIgnoreCase)) ||
+                ((readiness.ModelAlias ?? modelAlias) is { Length: > 0 } alias && entry.Aliases.Contains(alias, StringComparer.OrdinalIgnoreCase)));
             if (model?.LanguageCoverage.TargetLanguages is { Count: > 0 } languages &&
                 !languages.Any(language => language.Equals(target, StringComparison.OrdinalIgnoreCase) || language is "*" or "multi" or "any"))
             {
                 return new StageReadiness(StageNames.Tts, ReadinessState.UnsupportedLanguage,
                     $"The selected speech model does not support '{target}'. Translation is available; choose a compatible speech model to dub this language.",
-                    model.ModelId, readiness.ModelAlias, null);
+                    model?.ModelId ?? readiness.ModelId, readiness.ModelAlias, null);
             }
         }
 

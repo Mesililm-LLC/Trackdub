@@ -767,7 +767,8 @@ public sealed class TranslationOrchestrationService(
             now,
             currentTranslationRevision.TranslationProvider,
             currentTranslationRevision.ModelId,
-            currentTranslationRevision.ExecutionProvider);
+            currentTranslationRevision.ExecutionProvider,
+            modelProvenance: currentTranslationRevision.ModelProvenance);
         HashSet<int> changedSegmentIndices = currentState.TranslatedSegments
             .Where(segment => replacements.TryGetValue(segment.SegmentIndex, out string? replacement) &&
                               !string.Equals(segment.Text, replacement, StringComparison.Ordinal))
@@ -838,7 +839,8 @@ public sealed class TranslationOrchestrationService(
             now,
             sourceRevision?.TranslationProvider,
             sourceRevision?.ModelId,
-            sourceRevision?.ExecutionProvider);
+            sourceRevision?.ExecutionProvider,
+            modelProvenance: sourceRevision?.ModelProvenance);
 
         TranslatedSegment[] restoredSegments = translatedSegments
             .OrderBy(segment => segment.SegmentIndex)

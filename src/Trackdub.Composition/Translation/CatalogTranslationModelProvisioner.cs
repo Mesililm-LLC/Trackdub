@@ -86,6 +86,8 @@ public sealed class CatalogTranslationModelProvisioner(
             pair.SourceLanguage.Equals(sourceLanguage, StringComparison.OrdinalIgnoreCase) && pair.TargetLanguage.Equals(targetLanguage, StringComparison.OrdinalIgnoreCase)) ||
             (Covers(selected.LanguageCoverage.SourceLanguages, sourceLanguage) && Covers(selected.LanguageCoverage.TargetLanguages, targetLanguage));
         if (!coversPair) return preferredModelAlias;
+        // Only catalog OPUS weights are fetched here; the default-variant download below must not replace an explicitly selected variant.
+        if (selected.EngineFamily != "opus-mt") return preferredModelAlias;
         preparationProgress?.Report($"Preparing {selected.ModelId}");
         var result = await downloader.DownloadAsync(selected.ModelId,
             preparationProgress is null ? null : new PreparationDownloadProgress(preparationProgress, selected.ModelId),

@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Trackdub.Contracts.Translation;
 
 namespace Trackdub.Infrastructure.Translation;
@@ -72,7 +73,7 @@ public sealed class HuggingFaceTranslationModelCatalog(HttpClient httpClient, st
         {
             return Snapshot;
         }
-        catch (Exception ex) when (ex is HttpRequestException or IOException or JsonException)
+        catch (Exception ex) when (ex is HttpRequestException or IOException or JsonException or InvalidDataException)
         {
             // Never replace a complete snapshot with a partial network refresh.
             return Snapshot;
@@ -82,15 +83,17 @@ public sealed class HuggingFaceTranslationModelCatalog(HttpClient httpClient, st
 
     private async Task<ImmutableArray<TranslationModelDescriptor>> ResolveAsync(string repository, CancellationToken ct)
     {
-        if (repository.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not ('/' or '-' or '_' or '.')) || repository.Count(character => character == '/') != 1)
+        if (!IsSafeRepositoryId(repository))
             throw new InvalidDataException("Invalid repository identifier.");
         using JsonDocument detail = await GetJsonAsync($"https://huggingface.co/api/models/{repository}?blobs=true", ct).ConfigureAwait(false);
         JsonElement root = detail.RootElement;
         string revision = GetString(root, "sha") ?? throw new InvalidDataException("Missing pinned revision.");
         if (revision.Length != 40 || !revision.All(Uri.IsHexDigit)) throw new InvalidDataException("Invalid pinned revision.");
         string pair = repository[(repository.IndexOf("/opus-mt-", StringComparison.Ordinal) + 9)..];
-        string[] languages = pair.Split('-');
-        if (languages.Length != 2) throw new InvalidDataException("Unresolved language direction.");
+        string[] segments = pair.Split('-');
+        // Multi-part names such as opus-mt-tc-big-de-en carry the direction in their last two segments.
+        if (segments.Length < 2) throw new InvalidDataException("Unresolved language direction.");
+        string[] languages = [segments[^2], segments[^1]];
         using JsonDocument config = await GetJsonAsync($"https://huggingface.co/{repository}/resolve/{revision}/config.json", ct).ConfigureAwait(false);
         if (GetString(config.RootElement, "model_type") != "marian") throw new InvalidDataException("Unsupported model architecture.");
         string license = root.TryGetProperty("cardData", out JsonElement card) ? GetString(card, "license") ?? "" : "";
@@ -103,7 +106,7 @@ public sealed class HuggingFaceTranslationModelCatalog(HttpClient httpClient, st
         }
         upstream ??= GetString(config.RootElement, "_name_or_path");
         string? upstreamReadme = null;
-        if (upstream is not null && upstream.StartsWith("Helsinki-NLP/opus-mt-", StringComparison.Ordinal) && !upstream.Contains("..", StringComparison.Ordinal))
+        if (upstream is not null && IsSafeRepositoryId(upstream) && upstream.StartsWith("Helsinki-NLP/opus-mt-", StringComparison.Ordinal) && !upstream.Contains("..", StringComparison.Ordinal))
         {
             using JsonDocument upstreamDetail = await GetJsonAsync($"https://huggingface.co/api/models/{upstream}", ct).ConfigureAwait(false);
             string upstreamRevision = GetString(upstreamDetail.RootElement, "sha") ?? throw new InvalidDataException("Missing upstream revision.");
@@ -145,6 +148,7 @@ public sealed class HuggingFaceTranslationModelCatalog(HttpClient httpClient, st
         using JsonDocument? targetVocabulary = targets.Length > 1
             ? await GetJsonAsync($"https://huggingface.co/{repository}/resolve/{revision}/vocab.json", ct).ConfigureAwait(false)
             : null;
+        if (targetVocabulary is not null && targetVocabulary.RootElement.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Invalid target vocabulary.");
         foreach (string source in sources)
             foreach (string target in targets)
             {
@@ -218,15 +222,14 @@ public sealed class HuggingFaceTranslationModelCatalog(HttpClient httpClient, st
     private static Uri? GetNext(HttpResponseMessage response)
     {
         if (!response.Headers.TryGetValues("Link", out IEnumerable<string>? values)) return null;
-        foreach (string part in string.Join(",", values).Split(','))
-        {
-            if (!part.Contains("rel=\"next\"", StringComparison.Ordinal)) continue;
-            int start = part.IndexOf('<'); int end = part.IndexOf('>');
-            if (start < 0 || end <= start || !Uri.TryCreate(part[(start + 1)..end], UriKind.Absolute, out Uri? next) || next.Scheme != "https" || next.Host != "huggingface.co" || !next.AbsolutePath.Equals("/api/models", StringComparison.Ordinal)) throw new InvalidDataException("Unsafe catalog pagination URL.");
-            return next;
-        }
-        return null;
+        Match link = Regex.Match(string.Join(",", values), "<([^>]+)>\\s*;\\s*rel=\"next\"");
+        if (!link.Success) return null;
+        if (!Uri.TryCreate(link.Groups[1].Value, UriKind.Absolute, out Uri? next) || next.Scheme != "https" || next.Host != "huggingface.co" || !next.AbsolutePath.Equals("/api/models", StringComparison.Ordinal)) throw new InvalidDataException("Unsafe catalog pagination URL.");
+        return next;
     }
+    private static bool IsSafeRepositoryId(string value) =>
+        value.Length > 0 && value.Count(character => character == '/') == 1 &&
+        value.All(character => char.IsAsciiLetterOrDigit(character) || character is '/' or '-' or '_' or '.');
     private static TranslationModelCatalogSnapshot LoadCache(string path)
     {
         try
