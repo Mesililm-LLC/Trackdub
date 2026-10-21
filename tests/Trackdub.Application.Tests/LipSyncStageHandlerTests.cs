@@ -1,3 +1,4 @@
+using NSubstitute;
 using Trackdub.Domain;
 using Trackdub.Domain.Artifacts;
 using Trackdub.Domain.LipSync;
@@ -386,6 +387,190 @@ public sealed class LipSyncStageHandlerTests
         finally { Directory.Delete(directory, recursive: true); }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task Final_take_extraction_cancellation_records_cancelled(bool cancelCaller)
+        => AssertFinalTakeCancellationAsync(duringExtraction: true, cancelCaller: cancelCaller);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task Final_take_stretch_cancellation_records_cancelled(bool cancelCaller)
+        => AssertFinalTakeCancellationAsync(duringExtraction: false, cancelCaller: cancelCaller);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task Final_take_fallback_after_caller_cancellation_records_cancelled(bool duringExtraction)
+        => AssertFinalTakeCancellationAsync(duringExtraction, cancelCaller: true, throwCancellation: false);
+
+    private static async Task AssertFinalTakeCancellationAsync(
+        bool duringExtraction,
+        bool cancelCaller,
+        bool throwCancellation = true)
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            var mediaAsset = MakeMediaAsset() with { SourceFilePath = Path.Join(directory, "original.mp4") };
+            File.WriteAllBytes(mediaAsset.SourceFilePath, [10, 11, 12]);
+            string sourcePath = Path.Join(directory, "source.wav");
+            File.WriteAllBytes(sourcePath, [3, 4, 5]);
+            var artifactStore = new FakeArtifactStore(directory);
+            var stageRunStore = new FakeProjectStageRunStore();
+            var mediaRepo = new FakeMediaAssetRepository();
+            var aligner = new FakeForcedAligner
+            {
+                PhonesToReturn = [new PhonemeTiming("AH", "arpabet", TimeSpan.Zero, TimeSpan.FromMilliseconds(100), 0.9)]
+            };
+            var takes = Enumerable.Range(0, 2).Select(_ =>
+                TtsTake.CreateStock(mediaAsset.ProjectId, Guid.NewGuid(), Guid.NewGuid()) with
+                { ArtifactId = Guid.NewGuid() }).ToArray();
+            var artifacts = takes.Select(take => new ProjectArtifact(
+                Id: take.ArtifactId!.Value, ProjectId: mediaAsset.ProjectId, MediaAssetId: mediaAsset.Id,
+                Kind: ArtifactKind.TtsTake, RelativePath: $"tts/{take.Id:N}.wav",
+                Sha256: "abc", SizeBytes: 3, DurationSeconds: null,
+                SampleRate: null, ChannelCount: null, CreatedAtUtc: DateTimeOffset.UtcNow)).ToArray();
+            foreach (var artifact in artifacts)
+            {
+                artifactStore.Seed(artifact.RelativePath, [1, 2, 3]);
+            }
+
+            int extractionCalls = 0;
+            int stretchCalls = 0;
+            var extractor = new FakeAudioClipExtractor();
+            var clipExtractor = Substitute.For<IAudioClipExtractor>();
+            clipExtractor.ExtractAsync(Arg.Any<string>(), Arg.Any<double>(), Arg.Any<double>(),
+                Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(call =>
+                {
+                    if (++extractionCalls == 2 && duringExtraction)
+                    {
+                        if (cancelCaller) cts.Cancel();
+                        if (throwCancellation) throw new OperationCanceledException(cts.Token);
+                        throw new InvalidOperationException("Extractor failed after caller cancellation.");
+                    }
+
+                    return extractor.ExtractAsync(call.ArgAt<string>(0), call.ArgAt<double>(1),
+                        call.ArgAt<double>(2), call.ArgAt<string>(3), call.ArgAt<CancellationToken>(4));
+                });
+            var stretcher = new FakePhonemeStretchService();
+            var stretchService = Substitute.For<IPhonemeStretchService>();
+            stretchService.StretchAsync(Arg.Any<string>(), Arg.Any<string>(),
+                Arg.Any<IReadOnlyList<PhonemeStretchPlan>>(), Arg.Any<CancellationToken>()).Returns(call =>
+                {
+                    if (++stretchCalls == 2 && !duringExtraction)
+                    {
+                        if (cancelCaller) cts.Cancel();
+                        if (throwCancellation) throw new OperationCanceledException(cts.Token);
+                        return Task.FromResult<PhonemeStretchResult?>(null);
+                    }
+
+                    var result = stretcher.StretchAsync(call.ArgAt<string>(0), call.ArgAt<string>(1),
+                        call.ArgAt<IReadOnlyList<PhonemeStretchPlan>>(2), call.ArgAt<CancellationToken>(3));
+                    File.WriteAllBytes(call.ArgAt<string>(1), [7, 8, 9]);
+                    return result;
+                });
+            var handler = new LipSyncStageHandler(aligner, new FakePhonemeTimingPlanner(),
+                stretchService, artifactStore, stageRunStore,
+                mediaAssetRepository: mediaRepo, audioClipExtractor: clipExtractor);
+            var request = new LipSyncStageRequest(
+                mediaAsset.ProjectId, mediaAsset, takes, artifacts,
+                SegmentSourceTimingMap: takes.ToDictionary(take => take.TranslatedSegmentId!.Value,
+                    _ => new SegmentSourceTiming(0, 1)),
+                SourceSegmentTranscriptMap: takes.ToDictionary(take => take.TranslatedSegmentId!.Value, _ => "hello"),
+                SourceAudioPath: sourcePath);
+
+            Task<LipSyncStageResult> runTask = handler.HandleAsync(request, cts.Token);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => runTask);
+            Assert.False(runTask.IsCompletedSuccessfully);
+            Assert.Equal(StageRunStatus.Canceled, Assert.Single(stageRunStore.All).Status);
+            Assert.Equal(2, extractionCalls);
+            Assert.Equal(duringExtraction ? 1 : 2, stretchCalls);
+            var accepted = Assert.Single(mediaRepo.Artifacts);
+            Assert.Equal(ArtifactKind.LipSyncTake, accepted.Kind);
+            Assert.Equal($"lipsync:take:{takes[0].Id:N}", accepted.Provenance);
+            Assert.Equal(new byte[] { 7, 8, 9 }, File.ReadAllBytes(artifactStore.GetPath(accepted.RelativePath)));
+            foreach (var artifact in artifacts)
+            {
+                Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(artifactStore.GetPath(artifact.RelativePath)));
+            }
+            Assert.Equal(new byte[] { 3, 4, 5 }, File.ReadAllBytes(sourcePath));
+            Assert.Equal(new byte[] { 10, 11, 12 }, File.ReadAllBytes(mediaAsset.SourceFilePath));
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Failed_extraction_leaves_no_temp_segment_file(bool throwCancellation)
+    {
+        string[] tempBefore = Directory.GetFiles(Path.GetTempPath(), "trackdub-src-seg-*.wav");
+        string directory = CreateTempDirectory();
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            var mediaAsset = MakeMediaAsset() with { SourceFilePath = Path.Join(directory, "original.mp4") };
+            File.WriteAllBytes(mediaAsset.SourceFilePath, [10, 11, 12]);
+            string sourcePath = Path.Join(directory, "source.wav");
+            File.WriteAllBytes(sourcePath, [3, 4, 5]);
+            var artifactStore = new FakeArtifactStore(directory);
+            var stageRunStore = new FakeProjectStageRunStore();
+            var mediaRepo = new FakeMediaAssetRepository();
+            var aligner = new FakeForcedAligner
+            {
+                PhonesToReturn = [new PhonemeTiming("AH", "arpabet", TimeSpan.Zero, TimeSpan.FromMilliseconds(100), 0.9)]
+            };
+            var takes = Enumerable.Range(0, 1).Select(_ =>
+                TtsTake.CreateStock(mediaAsset.ProjectId, Guid.NewGuid(), Guid.NewGuid()) with
+                { ArtifactId = Guid.NewGuid() }).ToArray();
+            var artifacts = takes.Select(take => new ProjectArtifact(
+                Id: take.ArtifactId!.Value, ProjectId: mediaAsset.ProjectId, MediaAssetId: mediaAsset.Id,
+                Kind: ArtifactKind.TtsTake, RelativePath: $"tts/{take.Id:N}.wav",
+                Sha256: "abc", SizeBytes: 3, DurationSeconds: null,
+                SampleRate: null, ChannelCount: null, CreatedAtUtc: DateTimeOffset.UtcNow)).ToArray();
+            foreach (var artifact in artifacts)
+            {
+                artifactStore.Seed(artifact.RelativePath, [1, 2, 3]);
+            }
+            var clipExtractor = Substitute.For<IAudioClipExtractor>();
+            clipExtractor.ExtractAsync(Arg.Any<string>(), Arg.Any<double>(), Arg.Any<double>(),
+                Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns<Task>(call =>
+                {
+                    // Simulate a partially-created extraction, then fail.
+                    File.WriteAllBytes(call.ArgAt<string>(3), [1]);
+                    if (throwCancellation) throw new OperationCanceledException(cts.Token);
+                    throw new InvalidOperationException("Extractor failed.");
+                });
+            var handler = new LipSyncStageHandler(aligner, new FakePhonemeTimingPlanner(),
+                new FakePhonemeStretchService(), artifactStore, stageRunStore,
+                mediaAssetRepository: mediaRepo, audioClipExtractor: clipExtractor);
+            var request = new LipSyncStageRequest(
+                mediaAsset.ProjectId, mediaAsset, takes, artifacts,
+                SegmentSourceTimingMap: takes.ToDictionary(take => take.TranslatedSegmentId!.Value,
+                    _ => new SegmentSourceTiming(0, 1)),
+                SourceSegmentTranscriptMap: takes.ToDictionary(take => take.TranslatedSegmentId!.Value, _ => "hello"),
+                SourceAudioPath: sourcePath);
+
+            if (throwCancellation)
+            {
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => handler.HandleAsync(request, cts.Token));
+            }
+            else
+            {
+                await handler.HandleAsync(request, cts.Token);
+            }
+
+            string[] leaked = Directory.GetFiles(Path.GetTempPath(), "trackdub-src-seg-*.wav")
+                .Except(tempBefore).ToArray();
+            Assert.Empty(leaked);
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
     // ---------------------------------------------------------------------------
     // Artifact preservation: original TTS artifact not modified on skip
     // ---------------------------------------------------------------------------
@@ -541,7 +726,7 @@ public sealed class LipSyncStageHandlerTests
     // ---------------------------------------------------------------------------
 
     [Fact]
-    public async Task HandleAsync_WhenClipExtractionFails_SegmentIsPartialWithSkipReason()
+    public async Task Noncancellation_extraction_error_keeps_partial_fallback()
     {
         string directory = CreateTempDirectory();
         try
@@ -602,8 +787,10 @@ public sealed class LipSyncStageHandlerTests
 
             var seg = result.Segments[0];
             Assert.Equal(LipSyncSegmentStatus.Partial, seg.Status);
+            Assert.Equal(StageRunStatus.PartiallyCompleted, result.StageRun.Status);
             Assert.NotNull(seg.SkipReason);
             Assert.Contains("extraction failed", seg.SkipReason, StringComparison.OrdinalIgnoreCase);
+            Assert.True(File.Exists(artifactStore.GetPath(relPath)));
         }
         finally { Directory.Delete(directory, recursive: true); }
     }
