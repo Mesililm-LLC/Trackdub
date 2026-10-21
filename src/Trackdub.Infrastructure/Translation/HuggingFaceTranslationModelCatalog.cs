@@ -37,9 +37,11 @@ public sealed class HuggingFaceTranslationModelCatalog(HttpClient httpClient, st
                     using HttpResponseMessage response = await httpClient.GetAsync(next, cancellationToken).ConfigureAwait(false);
                     response.EnsureSuccessStatusCode();
                     using JsonDocument page = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false), cancellationToken: cancellationToken).ConfigureAwait(false);
-                    foreach (string? repository in page.RootElement.EnumerateArray().Select(item => GetString(item, "id")))
+                    foreach (string repository in page.RootElement.EnumerateArray()
+                        .Select(item => GetString(item, "id"))
+                        .Where(repository => repository is not null && repository.StartsWith(publisher + "/opus-mt-", StringComparison.Ordinal))
+                        .Select(repository => repository!))
                     {
-                        if (repository is null || !repository.StartsWith(publisher + "/opus-mt-", StringComparison.Ordinal)) continue;
                         try
                         {
                             models.AddRange(await ResolveAsync(repository, cancellationToken).ConfigureAwait(false));
