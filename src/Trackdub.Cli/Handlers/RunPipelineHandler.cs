@@ -37,7 +37,7 @@ internal static class RunPipelineHandler
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            CliErrorReporter.ReportError(ErrorCode.StageFailed, "Machine output could not be written.");
+            CliErrorReporter.ReportError(ErrorCode.StageFailed, $"Machine output could not be written: {ex.Message}");
             return Program.ExitPipelineFailure;
         }
     }

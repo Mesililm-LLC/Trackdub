@@ -35,7 +35,8 @@ public sealed class JobController(IJobStore store, JobService jobs, IJobSchedule
                 await jobs.MutateAsync(job.Id, current => current.IsTerminal || current.AttemptId != job.AttemptId || current.Generation != job.Generation ? current : current with
                 {
                     State = current.CancelRequestedAt is not null ? JobState.Cancelled : timedOut ? JobState.TimedOut : JobState.Failed,
-                    CompletedAt = now, Phase = null,
+                    CompletedAt = now,
+                    Phase = null,
                     Error = new(current.CancelRequestedAt is not null ? "CANCELLED" : timedOut ? job.StartedAt is null ? "QUEUE_TIMEOUT" : "EXECUTION_TIMEOUT" : "LEASE_LOST",
                         "Execution stopped before completion.", false, null, current.Id.ToString()),
                 }, token).ConfigureAwait(false);
@@ -56,8 +57,11 @@ public sealed class JobController(IJobStore store, JobService jobs, IJobSchedule
                 ?? await scheduler.SubmitAsync(new(job.Id, job.AttemptId, job.DispatchId), token).ConfigureAwait(false);
             // The worker's conditional start claim owns execution identity, including a submit/claim race.
             await jobs.MutateAsync(job.Id, current => current.IsTerminal || current.ExecutionId is not null ? current
-                : current with { State = current.CancelRequestedAt is null ? JobState.Queued : JobState.CancelRequested,
-                    Phase = "starting" }, token).ConfigureAwait(false);
+                : current with
+                {
+                    State = current.CancelRequestedAt is null ? JobState.Queued : JobState.CancelRequested,
+                    Phase = "starting"
+                }, token).ConfigureAwait(false);
             _ = execution;
             return;
         }
@@ -113,7 +117,10 @@ public sealed class JobController(IJobStore store, JobService jobs, IJobSchedule
             || current.AttemptId != job.AttemptId || current.Generation != job.Generation || current.Candidate?.ResultObject != job.Candidate.ResultObject
             ? current : current with
             {
-                State = JobState.Succeeded, Phase = null, CompletedAt = clock.GetUtcNow(), Artifacts = job.Candidate.Artifacts,
+                State = JobState.Succeeded,
+                Phase = null,
+                CompletedAt = clock.GetUtcNow(),
+                Artifacts = job.Candidate.Artifacts,
                 Result = new(1, outcome.Result!.RunId, outcome.Result.OverallStatus == DubbingRunStatus.Succeeded ? "succeeded" : "partialSuccess",
                     outcome.Result.StageOutcomes.SelectMany(s => s.DegradationRecords ?? []).Take(16).Select(w => "Stage degradation recorded; inspect the authorized run result.").ToArray(),
                     job.Candidate.Artifacts.Select(a => new ArtifactDto(a.Id, a.Kind, a.FileName, a.ContentType, a.Object.SizeBytes, a.Object.Sha256, true)).ToArray()),
@@ -122,8 +129,13 @@ public sealed class JobController(IJobStore store, JobService jobs, IJobSchedule
 
     private Task<JobRecord> FailAsync(JobRecord job, string code, CancellationToken token) => jobs.MutateAsync(job.Id,
         current => current.IsTerminal || current.CancelRequestedAt is not null || current.AttemptId != job.AttemptId
-            ? current : current with { State = JobState.Failed, Phase = null, CompletedAt = clock.GetUtcNow(),
-                Error = new(code, "Execution did not produce a verified result.", false, null, current.Id.ToString()) }, token);
+            ? current : current with
+            {
+                State = JobState.Failed,
+                Phase = null,
+                CompletedAt = clock.GetUtcNow(),
+                Error = new(code, "Execution did not produce a verified result.", false, null, current.Id.ToString())
+            }, token);
 
     public static bool OutcomeIsSuccessful(WorkerRunOutcome outcome, AttemptOutcome candidate)
     {

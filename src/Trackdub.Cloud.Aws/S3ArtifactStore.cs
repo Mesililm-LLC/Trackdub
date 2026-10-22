@@ -57,7 +57,10 @@ public sealed class S3ArtifactStore(IAmazonS3 client, string bucket, TimeProvide
         Validate(reference);
         return client.GetPreSignedURLAsync(new GetPreSignedUrlRequest
         {
-            BucketName = bucket, Key = reference.Key, VersionId = reference.VersionId, Verb = HttpVerb.GET,
+            BucketName = bucket,
+            Key = reference.Key,
+            VersionId = reference.VersionId,
+            Verb = HttpVerb.GET,
             Expires = clock.GetUtcNow().AddMinutes(5).UtcDateTime,
         });
     }
@@ -66,7 +69,10 @@ public sealed class S3ArtifactStore(IAmazonS3 client, string bucket, TimeProvide
     {
         var request = new GetPreSignedUrlRequest
         {
-            BucketName = bucket, Key = upload.Key, Verb = HttpVerb.PUT, ContentType = upload.ContentType,
+            BucketName = bucket,
+            Key = upload.Key,
+            Verb = HttpVerb.PUT,
+            ContentType = upload.ContentType,
             Expires = upload.ExpiresAt.UtcDateTime,
         };
         request.Headers["x-amz-checksum-sha256"] = Convert.ToBase64String(Convert.FromHexString(upload.Sha256));
@@ -100,13 +106,16 @@ public sealed class S3ArtifactStore(IAmazonS3 client, string bucket, TimeProvide
         stream.Position = 0;
         var response = await client.PutObjectAsync(new PutObjectRequest
         {
-            BucketName = bucket, Key = key, InputStream = stream, AutoCloseStream = false,
+            BucketName = bucket,
+            Key = key,
+            InputStream = stream,
+            AutoCloseStream = false,
             ChecksumAlgorithm = ChecksumAlgorithm.SHA256,
             ChecksumSHA256 = Convert.ToBase64String(Convert.FromHexString(hash)),
         }, token).ConfigureAwait(false);
+        // S3 validates ChecksumSHA256 on PUT; re-downloading large outputs would spend the attempt deadline.
         var reference = new ObjectReference(key, response.VersionId, stream.Length, hash);
         Validate(reference);
-        await VerifyAsync(reference, token).ConfigureAwait(false);
         return reference;
     }
 

@@ -24,7 +24,7 @@ builder.Services.AddSingleton<IAmazonDynamoDB>(_ => new AmazonDynamoDBClient());
 builder.Services.AddSingleton<IAmazonS3>(_ => new AmazonS3Client());
 string table = Required("Cloud:TableName");
 string bucket = Required("Cloud:BucketName");
-builder.Services.AddSingleton<IJobStore>(services => new DynamoDbJobStore(services.GetRequiredService<IAmazonDynamoDB>(), table));
+builder.Services.AddSingleton<IJobStore>(services => new DynamoDbJobStore(services.GetRequiredService<IAmazonDynamoDB>(), table, services.GetRequiredService<TimeProvider>()));
 builder.Services.AddSingleton<IArtifactStore>(services => new S3ArtifactStore(services.GetRequiredService<IAmazonS3>(), bucket, services.GetRequiredService<TimeProvider>()));
 builder.Services.AddSingleton<JobService>();
 builder.Services.AddSingleton<UploadService>();
@@ -36,9 +36,15 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
     options.RequireHttpsMetadata = true;
     options.TokenValidationParameters = new TokenValidationParameters
     {
-        ValidateIssuer = true, ValidIssuer = issuer, ValidateAudience = true, ValidAudience = audience,
-        ValidateLifetime = true, RequireExpirationTime = true, RequireSignedTokens = true,
-        ValidateIssuerSigningKey = true, ClockSkew = TimeSpan.FromSeconds(30),
+        ValidateIssuer = true,
+        ValidIssuer = issuer,
+        ValidateAudience = true,
+        ValidAudience = audience,
+        ValidateLifetime = true,
+        RequireExpirationTime = true,
+        RequireSignedTokens = true,
+        ValidateIssuerSigningKey = true,
+        ClockSkew = TimeSpan.FromSeconds(30),
         ValidAlgorithms = [SecurityAlgorithms.RsaSha256],
         AudienceValidator = (audiences, securityToken, _) =>
         {
@@ -94,8 +100,11 @@ app.Use(async (context, next) =>
 });
 app.UseCors();
 app.UseStatusCodePages(async status =>
-    await status.HttpContext.Response.WriteAsJsonAsync(new { error = new
-    { code = status.HttpContext.Response.StatusCode == 401 ? "UNAUTHORIZED" : "REQUEST_REJECTED", message = "Request rejected.", requestId = status.HttpContext.TraceIdentifier } }));
+    await status.HttpContext.Response.WriteAsJsonAsync(new
+    {
+        error = new
+        { code = status.HttpContext.Response.StatusCode == 401 ? "UNAUTHORIZED" : "REQUEST_REJECTED", message = "Request rejected.", requestId = status.HttpContext.TraceIdentifier }
+    }));
 app.UseAuthentication();
 app.UseAuthorization();
 static string Owner(ClaimsPrincipal user) => user.FindFirstValue("sub") is { Length: > 0 } subject
@@ -128,8 +137,18 @@ api.MapGet("/jobs/{id:guid}/artifacts", async (Guid id, HttpContext context, Job
     var job = await jobs.GetOwnedAsync(Owner(context.User), id, token);
     var items = new List<object>();
     foreach (var artifact in job.Artifacts)
-        items.Add(new { artifact.Id, artifact.Kind, artifact.FileName, artifact.ContentType, artifact.Object.SizeBytes,
-            artifact.Object.Sha256, available = true, downloadUrl = await store.SignDownloadAsync(artifact.Object, token), expiresAt = DateTimeOffset.UtcNow.AddMinutes(5) });
+        items.Add(new
+        {
+            artifact.Id,
+            artifact.Kind,
+            artifact.FileName,
+            artifact.ContentType,
+            artifact.Object.SizeBytes,
+            artifact.Object.Sha256,
+            available = true,
+            downloadUrl = await store.SignDownloadAsync(artifact.Object, token),
+            expiresAt = DateTimeOffset.UtcNow.AddMinutes(5)
+        });
     return Results.Ok(new { items });
 });
 api.MapPost("/uploads", async (UploadRequest request, HttpContext context, UploadService uploads, CancellationToken token) =>
@@ -139,6 +158,7 @@ api.MapPost("/uploads", async (UploadRequest request, HttpContext context, Uploa
 });
 api.MapPost("/uploads/{id:guid}/complete", async (Guid id, UploadCompletion request, HttpContext context, UploadService uploads, CancellationToken token) =>
 {
+    if (string.IsNullOrWhiteSpace(request.VersionId)) throw new JobException("INVALID_INPUT", 400, "Version id is required.");
     var upload = await uploads.CompleteAsync(Owner(context.User), id, request.VersionId, token);
     return Results.Ok(new { uploadId = upload.Id, ready = true });
 });

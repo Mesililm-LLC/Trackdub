@@ -27,7 +27,7 @@ public sealed class UploadService(IJobStore store, IArtifactStore artifacts, Tim
     public async Task<UploadRecord> CompleteAsync(string owner, Guid id, string versionId, CancellationToken token)
     {
         var upload = await store.GetUploadAsync(id, token).ConfigureAwait(false);
-        if (upload?.OwnerId != owner) throw new JobException("NOT_FOUND", 404, "Upload not found.");
+        if (upload is null || upload.OwnerId != owner) throw new JobException("NOT_FOUND", 404, "Upload not found.");
         if (upload.Object is not null)
         {
             if (upload.Object.VersionId != versionId) throw new JobException("INPUT_CHANGED", 409, "Upload is already bound to another version.");
@@ -38,7 +38,7 @@ public sealed class UploadService(IJobStore store, IArtifactStore artifacts, Tim
         var ready = upload with { Object = reference };
         if (await store.PutUploadAsync(ready, true, token).ConfigureAwait(false)) return ready;
         var current = await store.GetUploadAsync(id, token).ConfigureAwait(false);
-        if (current?.OwnerId == owner && current.Object == reference) return current;
+        if (current is not null && current.OwnerId == owner && current.Object == reference) return current;
         throw new JobException("INPUT_CHANGED", 409, "Upload completion changed concurrently.");
     }
 }

@@ -65,11 +65,11 @@ public sealed class CliMachineBoundaryTests
             }
             var lines = File.ReadAllLines(path);
             Assert.Equal(100, lines.Length);
-            foreach (var line in lines)
+            Assert.All(lines, line =>
             {
                 using var parsed = JsonDocument.Parse(line);
                 Assert.Equal(JsonValueKind.Null, parsed.RootElement.GetProperty("percentComplete").ValueKind);
-            }
+            });
         }
         finally { File.Delete(path); }
     }

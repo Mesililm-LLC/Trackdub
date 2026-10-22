@@ -51,8 +51,8 @@ public sealed class JobAdapter(IJobStore store, JobService jobs, IArtifactStore 
                 var published = await RetryAsync(() => objects.UploadAsync(key, path, deadline.Token), deadline.Token).ConfigureAwait(false);
                 inventory.Add(new(artifact.Path, artifact.Kind, Path.GetFileName(path), artifact.Kind == "video" ? "video/mp4" : "text/plain", published));
             }
+            // result.json is tracked as the candidate's ResultObject, not published as a deliverable artifact.
             var resultObject = await RetryAsync(() => objects.UploadAsync(JobService.AttemptPrefix(job) + "result.json", result, deadline.Token), deadline.Token).ConfigureAwait(false);
-            inventory.Add(new("runResult", "runResult", "result.json", "application/json", resultObject));
             var candidate = new AttemptOutcome(claim, resultObject, exit.ExitCode, inventory);
             if (!JobController.OutcomeIsSuccessful(exit.Outcome, candidate)) return 2;
             // Keep the candidate itself durable before control-plane publication. Retrying publication never reruns CLI.
@@ -69,7 +69,7 @@ public sealed class JobAdapter(IJobStore store, JobService jobs, IArtifactStore 
         finally
         {
             deadline.Cancel();
-            try { await heartbeat.ConfigureAwait(false); } catch (OperationCanceledException) { }
+            try { await heartbeat.ConfigureAwait(false); } catch (OperationCanceledException) { /* Heartbeat stops by the same deadline; nothing to report. */ }
             await watchdog.ConfigureAwait(false);
         }
     }
@@ -119,7 +119,7 @@ public sealed class JobAdapter(IJobStore store, JobService jobs, IArtifactStore 
                 }
             }
         }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { /* Cancellation requested by the job or deadline; the caller reconciles. */ }
         catch { lifetime.Cancel(); throw; }
     }
 

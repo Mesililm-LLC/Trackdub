@@ -33,7 +33,7 @@ public static class MediaValidator
                     || s.TryGetProperty("width", out var w) && w.GetInt32() > 1920))
                 throw new JobException("INVALID_INPUT", 400, "Expected MP4 audio/video up to five minutes and 1920x1080.");
         }
-        catch (Exception ex) when (ex is JsonException or KeyNotFoundException or FormatException)
+        catch (Exception ex) when (ex is JsonException or KeyNotFoundException or FormatException or IOException)
         { throw new JobException("INVALID_INPUT", 400, "Input metadata is invalid."); }
         finally
         {

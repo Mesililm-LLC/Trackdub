@@ -174,6 +174,9 @@ jobs:
             **/packages.lock.json
             NuGet.config
 
+      - name: Install FFmpeg
+        run: choco install ffmpeg --no-progress -y
+
       - name: Restore Dependencies
         shell: bash
         run: dotnet restore Trackdub.slnx -m:1
@@ -205,6 +208,9 @@ jobs:
             **/packages.lock.json
             NuGet.config
 
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: Restore Dependencies
         shell: bash
         run: dotnet restore Trackdub.slnx -m:1
@@ -235,6 +241,9 @@ jobs:
           cache-dependency-path: |
             **/packages.lock.json
             NuGet.config
+
+      - name: Install FFmpeg
+        run: brew install ffmpeg
 
       - name: Restore Dependencies
         shell: bash

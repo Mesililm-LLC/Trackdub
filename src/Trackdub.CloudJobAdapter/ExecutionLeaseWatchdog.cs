@@ -19,6 +19,6 @@ public sealed class ExecutionLeaseWatchdog(TimeProvider clock)
                 Check(lifetime);
             }
         }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { /* Lifetime end is the watchdog's normal shutdown. */ }
     }
 }

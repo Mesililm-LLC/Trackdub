@@ -14,8 +14,11 @@ public sealed partial class CliProcessRunner
     {
         var start = new ProcessStartInfo(OperatingSystem.IsLinux() ? "/usr/bin/setsid" : spec.Executable)
         {
-            WorkingDirectory = spec.Workspace, UseShellExecute = false,
-            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+            WorkingDirectory = spec.Workspace,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
         };
         if (OperatingSystem.IsLinux()) start.ArgumentList.Add(spec.Executable);
         foreach (string arg in spec.Arguments) start.ArgumentList.Add(arg);
@@ -51,7 +54,9 @@ public sealed partial class CliProcessRunner
                 }
                 await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
             }
-            await Task.WhenAll(output, error).ConfigureAwait(false);
+            // A descendant that ignored SIGTERM can keep the inherited pipes open; reap the group before draining them.
+            if (OperatingSystem.IsLinux()) _ = Kill(-process.Id, 9);
+            await DrainAsync(output, error).ConfigureAwait(false);
             throw;
         }
         finally
@@ -72,6 +77,12 @@ public sealed partial class CliProcessRunner
             catch (JsonException) { /* Invalid structured evidence never becomes success. */ }
         }
         return new(process.ExitCode, outcome);
+    }
+
+    private static async Task DrainAsync(Task output, Task error)
+    {
+        try { await Task.WhenAll(output, error).WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false); }
+        catch (TimeoutException) { /* Captured logs are diagnostic only; cancellation must not hang on them. */ }
     }
 
     private static async Task CopyBoundedAsync(Stream source, Stream destination)

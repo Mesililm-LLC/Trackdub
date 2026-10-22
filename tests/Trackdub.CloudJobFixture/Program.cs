@@ -14,7 +14,10 @@ if (args.Contains("--result-file"))
     var now = DateTimeOffset.UtcNow;
     var run = new DubbingRunResult
     {
-        RunId = Guid.NewGuid(), StartTime = now, EndTime = now, OverallStatus = DubbingRunStatus.Succeeded,
+        RunId = Guid.NewGuid(),
+        StartTime = now,
+        EndTime = now,
+        OverallStatus = DubbingRunStatus.Succeeded,
         StageOutcomes = new[] { "asr", "translation", "tts", "export" }.Select(stage => new StageOutcome
         { StageName = stage, Status = StageStatus.Succeeded, StartTime = now, EndTime = now, ArtifactPaths = stage == "export" ? [video] : [] }).ToArray(),
     };

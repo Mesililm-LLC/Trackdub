@@ -9,8 +9,9 @@ using Trackdub.Cloud.Jobs;
 namespace Trackdub.Cloud.Aws;
 
 /// <summary>Single-table durable authority. Discovery is advisory; base-table CAS controls every mutation.</summary>
-public sealed class DynamoDbJobStore(IAmazonDynamoDB client, string tableName) : IJobStore
+public sealed class DynamoDbJobStore(IAmazonDynamoDB client, string tableName, TimeProvider clock) : IJobStore
 {
+    private readonly SemaphoreSlim _discovery = new(1, 1);
     private Dictionary<string, AttributeValue>? _cursor;
     private static Dictionary<string, AttributeValue> Key(string id) => new() { ["pk"] = new() { S = id } };
     private static string JobKey(Guid id) => $"job#{id}";
@@ -80,12 +81,14 @@ public sealed class DynamoDbJobStore(IAmazonDynamoDB client, string tableName) :
         {
             ConditionCheck = new ConditionCheck
             {
-                TableName = tableName, Key = Key(UploadKey(uploadId)),
+                TableName = tableName,
+                Key = Key(UploadKey(uploadId)),
                 ConditionExpression = "#ready = :ready AND #owner = :owner AND #identity = :identity",
                 ExpressionAttributeNames = new() { ["#ready"] = "ready", ["#owner"] = "owner", ["#identity"] = "identity" },
                 ExpressionAttributeValues = new()
                 {
-                    [":ready"] = new() { BOOL = true }, [":owner"] = new() { S = job.OwnerId },
+                    [":ready"] = new() { BOOL = true },
+                    [":owner"] = new() { S = job.OwnerId },
                     [":identity"] = new() { S = JsonSerializer.Serialize(job.Input, CloudJson.Options) },
                 },
             },
@@ -108,13 +111,15 @@ public sealed class DynamoDbJobStore(IAmazonDynamoDB client, string tableName) :
             values[":execution"] = new() { S = claim.ExecutionId };
             values[":attempt"] = new() { S = claim.AttemptId.ToString() };
             values[":generation"] = new() { N = claim.Generation.ToString(CultureInfo.InvariantCulture) };
-            values[":now"] = new() { N = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture) };
+            values[":now"] = new() { N = clock.GetUtcNow().ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture) };
         }
         try
         {
             await client.PutItemAsync(new PutItemRequest
             {
-                TableName = tableName, Item = EncodeJob(next), ConditionExpression = condition,
+                TableName = tableName,
+                Item = EncodeJob(next),
+                ConditionExpression = condition,
                 ExpressionAttributeValues = values,
             }, token).ConfigureAwait(false);
             return true;
@@ -124,15 +129,23 @@ public sealed class DynamoDbJobStore(IAmazonDynamoDB client, string tableName) :
     // Called by one bounded host loop. Continue across pages so a slow old job cannot starve newer work.
     public async Task<IReadOnlyList<Guid>> DiscoverAsync(int limit, CancellationToken token)
     {
-        var response = await client.QueryAsync(new QueryRequest
+        await _discovery.WaitAsync(token).ConfigureAwait(false);
+        try
         {
-            TableName = tableName, IndexName = "pending-work", KeyConditionExpression = "#work = :active",
-            ExpressionAttributeNames = new() { ["#work"] = "work" },
-            ExpressionAttributeValues = new() { [":active"] = new() { S = "active" } },
-            Limit = Math.Clamp(limit, 1, 100), ExclusiveStartKey = _cursor,
-        }, token).ConfigureAwait(false);
-        _cursor = response.LastEvaluatedKey is { Count: > 0 } ? response.LastEvaluatedKey : null;
-        return (response.Items ?? []).Select(i => Guid.Parse(i["pk"].S[4..])).ToArray();
+            var response = await client.QueryAsync(new QueryRequest
+            {
+                TableName = tableName,
+                IndexName = "pending-work",
+                KeyConditionExpression = "#work = :active",
+                ExpressionAttributeNames = new() { ["#work"] = "work" },
+                ExpressionAttributeValues = new() { [":active"] = new() { S = "active" } },
+                Limit = Math.Clamp(limit, 1, 100),
+                ExclusiveStartKey = _cursor,
+            }, token).ConfigureAwait(false);
+            _cursor = response.LastEvaluatedKey is { Count: > 0 } ? response.LastEvaluatedKey : null;
+            return (response.Items ?? []).Select(i => Guid.Parse(i["pk"].S[4..])).ToArray();
+        }
+        finally { _discovery.Release(); }
     }
     public async Task<UploadRecord?> GetUploadAsync(Guid id, CancellationToken token)
     {
@@ -149,7 +162,8 @@ public sealed class DynamoDbJobStore(IAmazonDynamoDB client, string tableName) :
         {
             await client.PutItemAsync(new PutItemRequest
             {
-                TableName = tableName, Item = item,
+                TableName = tableName,
+                Item = item,
                 ConditionExpression = complete ? "#ready = :false AND #owner = :owner" : "attribute_not_exists(pk)",
                 ExpressionAttributeNames = complete ? new() { ["#ready"] = "ready", ["#owner"] = "owner" } : null,
                 ExpressionAttributeValues = complete ? new() { [":false"] = new() { BOOL = false }, [":owner"] = new() { S = record.OwnerId } } : null,

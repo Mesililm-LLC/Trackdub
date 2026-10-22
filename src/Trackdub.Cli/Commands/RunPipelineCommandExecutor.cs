@@ -653,11 +653,12 @@ internal static class RunPipelineCommandExecutor
                     state.BurnInSubtitles, state.VideoEncoderKey, stageFilter, state.ForceRerun,
                     state.TtsRubberbandStretch, state.NoTtsRubberbandStretch, state.TtsRubberbandThreshold,
                     state.TtsAutoStretchMaxOverrun) with
-                    {
-                        ResultFile = state.ResultFile, ProgressFile = state.ProgressFile,
-                        ExecutionProviderPreferences = state.PresetName == PocServerPreset.Name ? PocServerPreset.Providers : null,
-                        ModelVariantPreferences = state.PresetName == PocServerPreset.Name ? PocServerPreset.Variants : null,
-                    },
+                {
+                    ResultFile = state.ResultFile,
+                    ProgressFile = state.ProgressFile,
+                    ExecutionProviderPreferences = state.PresetName == PocServerPreset.Name ? PocServerPreset.Providers : null,
+                    ModelVariantPreferences = state.PresetName == PocServerPreset.Name ? PocServerPreset.Variants : null,
+                },
                 progress, Console.Out, ct),
             cancellationToken);
     }

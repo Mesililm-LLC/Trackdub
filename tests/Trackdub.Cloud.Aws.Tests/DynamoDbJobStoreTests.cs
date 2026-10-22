@@ -21,19 +21,28 @@ public sealed class DynamoDbJobStoreTests
         string table = "snapsoft-tests-" + Guid.NewGuid().ToString("N");
         await client.CreateTableAsync(new CreateTableRequest
         {
-            TableName = table, BillingMode = BillingMode.PAY_PER_REQUEST,
+            TableName = table,
+            BillingMode = BillingMode.PAY_PER_REQUEST,
             KeySchema = [new("pk", KeyType.HASH)],
             AttributeDefinitions = [new("pk", ScalarAttributeType.S), new("work", ScalarAttributeType.S), new("created", ScalarAttributeType.N)],
             GlobalSecondaryIndexes = [new() { IndexName = "pending-work", KeySchema = [new("work", KeyType.HASH), new("created", KeyType.RANGE)], Projection = new() { ProjectionType = ProjectionType.KEYS_ONLY } }],
         }, token);
         try
         {
-            var store = new DynamoDbJobStore(client, table);
+            var store = new DynamoDbJobStore(client, table, TimeProvider.System);
             var id = Guid.NewGuid(); var now = DateTimeOffset.UtcNow;
             var input = new ObjectReference("input", "v1", 10, new string('a', 64));
-            var job = new JobRecord { Id = Guid.NewGuid(), OwnerId = "owner", RequestHash = "hash",
-                Request = new(1, "P", new(id), "en", "es", "poc-server-v1"), Input = input,
-                CreatedAt = now, UpdatedAt = now, QueueDeadlineAt = now.AddHours(1) };
+            var job = new JobRecord
+            {
+                Id = Guid.NewGuid(),
+                OwnerId = "owner",
+                RequestHash = "hash",
+                Request = new(1, "P", new(id), "en", "es", "poc-server-v1"),
+                Input = input,
+                CreatedAt = now,
+                UpdatedAt = now,
+                QueueDeadlineAt = now.AddHours(1)
+            };
             // The upload condition fails: all three creates must roll back in the actual local service.
             Assert.False(await store.AcceptAsync(job, "key", id, token));
             Assert.Null(await store.GetAsync(job.Id, token));
@@ -43,7 +52,7 @@ public sealed class DynamoDbJobStoreTests
             Assert.True(await store.PutUploadAsync(new(id, "owner", input, "input", 10, new string('a', 64), "video/mp4", now.AddMinutes(15)), true, token));
             Assert.True(await store.AcceptAsync(job, "key", id, token));
             Assert.False(await store.AcceptAsync(job with { Id = Guid.NewGuid() }, "key", id, token));
-            var restarted = new DynamoDbJobStore(client, table);
+            var restarted = new DynamoDbJobStore(client, table, TimeProvider.System);
             Assert.Equal(job.Id, (await restarted.FindSubmissionAsync("owner", "key", "hash", token))!.Id);
             Assert.Equal(409, (await Assert.ThrowsAsync<JobException>(() => restarted.FindSubmissionAsync("owner", "key", "changed", token))).StatusCode);
             var mutations = await Task.WhenAll(Enumerable.Range(0, 10).Select(_ => store.CompareExchangeAsync(job with { Version = 1, State = JobState.Running }, 0, token)));

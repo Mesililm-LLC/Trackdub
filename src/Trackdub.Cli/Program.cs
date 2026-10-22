@@ -33,7 +33,7 @@ internal static class Program
         {
             if (args.Length == 0 && UiCommand.IsInteractiveTerminal())
             {
-                return await UiCommand.RunFromMainAsync(modelDirectory: null, CancellationToken.None).ConfigureAwait(false);
+                return await UiCommand.RunFromMainAsync(modelDirectory: null, shutdown.Token).ConfigureAwait(false);
             }
 
             var rootCommand = BuildRootCommand();

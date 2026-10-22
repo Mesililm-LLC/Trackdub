@@ -12,12 +12,22 @@ public sealed class JobReconciliationTests
         var store = new FakeJobStore(); var objects = new FakeCloudArtifactStore(); var scheduler = new FakeJobScheduler();
         var jobs = new JobService(store, objects, TimeProvider.System);
         var now = DateTimeOffset.UtcNow;
-        var job = JobRulesTests.NewJob() with { State = JobState.Running, ExecutionId = "execution", Generation = 1,
-            QueueDeadlineAt = now.AddHours(1), ExecutionDeadlineAt = now.AddHours(2), LeaseExpiresAt = now.AddSeconds(90) };
+        var job = JobRulesTests.NewJob() with
+        {
+            State = JobState.Running,
+            ExecutionId = "execution",
+            Generation = 1,
+            QueueDeadlineAt = now.AddHours(1),
+            ExecutionDeadlineAt = now.AddHours(2),
+            LeaseExpiresAt = now.AddSeconds(90)
+        };
         var artifact = new WorkerArtifact("export.mp4", "video", 10, new string('b', 64));
         var result = new DubbingRunResult
         {
-            RunId = Guid.NewGuid(), StartTime = now, EndTime = now, OverallStatus = DubbingRunStatus.Succeeded,
+            RunId = Guid.NewGuid(),
+            StartTime = now,
+            EndTime = now,
+            OverallStatus = DubbingRunStatus.Succeeded,
             StageOutcomes = new[] { "asr", "translation", "tts", "export" }.Select(s => new StageOutcome
             { StageName = s, Status = StageStatus.Succeeded, StartTime = now, EndTime = now, ArtifactPaths = s == "export" ? ["export.mp4"] : [] }).ToArray(),
         };
@@ -30,7 +40,9 @@ public sealed class JobReconciliationTests
         return (store, objects, scheduler, jobs, job, new(store, jobs, scheduler, objects, TimeProvider.System));
     }
     [Theory]
-    [InlineData(139)][InlineData(137)][InlineData(2)]
+    [InlineData(139)]
+    [InlineData(137)]
+    [InlineData(2)]
     public async Task PrintedAndWrittenSuccessCannotOverrideAbnormalExit(int exit)
     {
         var s = Setup(exit); await s.Controller.TickAsync(TestContext.Current.CancellationToken);
@@ -86,8 +98,11 @@ public sealed class JobReconciliationTests
     [Fact]
     public async Task SkippedRequiredTtsCannotSucceed()
     {
-        var s = Setup(); s.Objects.Outcome = s.Objects.Outcome! with { Result = s.Objects.Outcome.Result! with
-            { StageOutcomes = s.Objects.Outcome.Result.StageOutcomes.Where(o => o.StageName != "tts").ToArray() } };
+        var s = Setup(); s.Objects.Outcome = s.Objects.Outcome! with
+        {
+            Result = s.Objects.Outcome.Result! with
+            { StageOutcomes = s.Objects.Outcome.Result.StageOutcomes.Where(o => o.StageName != "tts").ToArray() }
+        };
         await s.Controller.TickAsync(TestContext.Current.CancellationToken);
         Assert.Equal(JobState.Failed, s.Store.Jobs[s.Job.Id].State);
     }

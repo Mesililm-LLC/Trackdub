@@ -72,7 +72,9 @@ Reproduction commands:
 ```sh
 dotnet test tests/Trackdub.Cloud.Tests -c Release -m:1
 dotnet test tests/Trackdub.Api.Tests -c Release -m:1
+docker run -d --rm --name trackdub-dynamodb-local -p 18000:8000 amazon/dynamodb-local
 TRACKDUB_DYNAMODB_LOCAL=http://127.0.0.1:18000 dotnet test tests/Trackdub.Cloud.Aws.Tests -c Release -m:1
+docker stop trackdub-dynamodb-local
 dotnet test tests/Trackdub.CloudJobAdapter.Tests -c Release -m:1
 dotnet test tests/Trackdub.Architecture.Tests -m:1
 dotnet test tests/Trackdub.Application.Tests -m:1 --filter 'FullyQualifiedName~DubbingPipelineEngineTests|FullyQualifiedName~RuntimeModelRequestFactory'

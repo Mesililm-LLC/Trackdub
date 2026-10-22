@@ -16,8 +16,17 @@ public sealed class JobAdapterTests
         var store = new FakeJobStore(); var objects = new LocalObjects(); var jobs = new JobService(store, objects, TimeProvider.System);
         var now = DateTimeOffset.UtcNow; var upload = Guid.NewGuid();
         var input = new ObjectReference("input.mp4", "input-version", objects.Input.Length, Convert.ToHexStringLower(SHA256.HashData(objects.Input)));
-        var job = new JobRecord { Id = Guid.NewGuid(), OwnerId = "owner", RequestHash = "hash", Input = input,
-            Request = new(1, "Fixture", new(upload), "en", "es", "poc-server-v1"), CreatedAt = now, UpdatedAt = now, QueueDeadlineAt = now.AddHours(1) };
+        var job = new JobRecord
+        {
+            Id = Guid.NewGuid(),
+            OwnerId = "owner",
+            RequestHash = "hash",
+            Input = input,
+            Request = new(1, "Fixture", new(upload), "en", "es", "poc-server-v1"),
+            CreatedAt = now,
+            UpdatedAt = now,
+            QueueDeadlineAt = now.AddHours(1)
+        };
         store.Jobs[job.Id] = job;
         try
         {
@@ -28,7 +37,8 @@ public sealed class JobAdapterTests
             Assert.Single(await File.ReadAllLinesAsync(Path.Join(project, "fake-pipeline-invocations.txt"), TestContext.Current.CancellationToken));
             Assert.Equal(1, objects.InjectedFailures);
             Assert.NotNull(store.Jobs[job.Id].Candidate);
-            Assert.Contains(store.Jobs[job.Id].Candidate!.Artifacts, a => a.Kind == "runResult");
+            Assert.NotNull(store.Jobs[job.Id].Candidate!.ResultObject);
+            Assert.DoesNotContain(store.Jobs[job.Id].Candidate!.Artifacts, a => a.Kind == "runResult");
             Assert.Equal(JobState.Running, store.Jobs[job.Id].State); // Scheduler cessation and final CAS are still required.
             string attempt = Path.GetDirectoryName(project)!;
             string checkRoot = Path.Join(root, "artifact-check"); Directory.CreateDirectory(checkRoot);

@@ -10,9 +10,14 @@ public static class JobRules
             || string.IsNullOrWhiteSpace(identity.ExecutionId)) return null;
         return job with
         {
-            State = JobState.Running, Phase = "staging", ExecutionId = identity.ExecutionId,
-            Generation = job.Generation + 1, LeaseExpiresAt = now.AddSeconds(90),
-            StartedAt = now, ExecutionDeadlineAt = now.AddHours(2), UpdatedAt = now,
+            State = JobState.Running,
+            Phase = "staging",
+            ExecutionId = identity.ExecutionId,
+            Generation = job.Generation + 1,
+            LeaseExpiresAt = now.AddSeconds(90),
+            StartedAt = now,
+            ExecutionDeadlineAt = now.AddHours(2),
+            UpdatedAt = now,
         };
     }
 
@@ -25,7 +30,9 @@ public static class JobRules
         return job with
         {
             State = unlaunched ? JobState.Cancelled : JobState.CancelRequested,
-            Phase = unlaunched ? null : job.Phase, CancelRequestedAt = now, UpdatedAt = now,
+            Phase = unlaunched ? null : job.Phase,
+            CancelRequestedAt = now,
+            UpdatedAt = now,
             CompletedAt = unlaunched ? now : null,
         };
     }

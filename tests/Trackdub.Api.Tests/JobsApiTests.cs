@@ -24,6 +24,11 @@ public sealed class JobsApiTests
     {
         public FakeJobStore Store { get; } = new();
         public RsaSecurityKey Key { get; } = new(RSA.Create(2048)) { KeyId = "test-key" };
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) Key.Rsa?.Dispose();
+            base.Dispose(disposing);
+        }
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseSetting("Cloud:JwtIssuer", "https://issuer.example");
@@ -48,9 +53,10 @@ public sealed class JobsApiTests
         public string Token(string owner = "owner", string issuer = "https://issuer.example", string audience = "test-api", bool expired = false, bool forged = false,
             string tokenUse = "access", string clientId = "poc-client")
         {
+            using var forgedRsa = forged ? RSA.Create(2048) : null;
             var jwt = new JwtSecurityToken(issuer, audience, [new Claim("sub", owner), new Claim("token_use", tokenUse), new Claim("client_id", clientId)], DateTime.UtcNow.AddHours(-2),
                 expired ? DateTime.UtcNow.AddHours(-1) : DateTime.UtcNow.AddHours(1),
-                new SigningCredentials(forged ? new RsaSecurityKey(RSA.Create(2048)) { KeyId = Key.KeyId } : Key, SecurityAlgorithms.RsaSha256));
+                new SigningCredentials(forgedRsa is null ? Key : new RsaSecurityKey(forgedRsa) { KeyId = Key.KeyId }, SecurityAlgorithms.RsaSha256));
             return new JwtSecurityTokenHandler().WriteToken(jwt);
         }
     }
@@ -67,7 +73,11 @@ public sealed class JobsApiTests
     }
 
     [Theory]
-    [InlineData("missing")][InlineData("expired")][InlineData("forged")][InlineData("issuer")][InlineData("audience")]
+    [InlineData("missing")]
+    [InlineData("expired")]
+    [InlineData("forged")]
+    [InlineData("issuer")]
+    [InlineData("audience")]
     public async Task InvalidJwtCannotReadJobs(string mode)
     {
         await using var factory = new Factory(); using var client = factory.CreateClient();

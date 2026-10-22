@@ -15,7 +15,7 @@ public sealed class JobService(IJobStore store, IArtifactStore artifacts, TimePr
             || string.IsNullOrWhiteSpace(key) || key.Length > 128 || key.Any(char.IsControl))
             throw new JobException("INVALID_INPUT", 400, "Invalid job request or idempotency key.");
         var upload = await store.GetUploadAsync(request.Input.UploadId, token).ConfigureAwait(false);
-        if (upload?.OwnerId != owner || upload.Object is null)
+        if (upload is null || upload.OwnerId != owner || upload.Object is null)
             throw new JobException("INVALID_INPUT", 400, "Upload is not ready.");
         request = request with { ProjectName = request.ProjectName.Trim() };
         string hash = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(
@@ -26,8 +26,14 @@ public sealed class JobService(IJobStore store, IArtifactStore artifacts, TimePr
         var now = clock.GetUtcNow();
         var job = new JobRecord
         {
-            Id = Guid.NewGuid(), OwnerId = owner, Request = request, Input = upload.Object, RequestHash = hash,
-            CreatedAt = now, UpdatedAt = now, QueueDeadlineAt = now.AddHours(1),
+            Id = Guid.NewGuid(),
+            OwnerId = owner,
+            Request = request,
+            Input = upload.Object,
+            RequestHash = hash,
+            CreatedAt = now,
+            UpdatedAt = now,
+            QueueDeadlineAt = now.AddHours(1),
         };
         if (await store.AcceptAsync(job, key, upload.Id, token).ConfigureAwait(false)) return job;
         return await store.FindSubmissionAsync(owner, key, hash, token).ConfigureAwait(false)
@@ -69,8 +75,12 @@ public sealed class JobService(IJobStore store, IArtifactStore artifacts, TimePr
         {
             EnsureLease(job, claim);
             if (job.Progress is not null && progress.SequenceNumber <= job.Progress.Sequence) return job;
-            return job with { Progress = new(job.AttemptId, progress.RunId?.ToString(), progress.SequenceNumber, progress.StageKey,
-                progress.Phase, progress.PercentComplete, clock.GetUtcNow()), Phase = "pipeline" };
+            return job with
+            {
+                Progress = new(job.AttemptId, progress.RunId?.ToString(), progress.SequenceNumber, progress.StageKey,
+                progress.Phase, progress.PercentComplete, clock.GetUtcNow()),
+                Phase = "pipeline"
+            };
         }, token, claim);
 
     public Task<JobRecord> ReportCandidateAsync(ExecutionClaim claim, AttemptOutcome candidate, CancellationToken token) =>
