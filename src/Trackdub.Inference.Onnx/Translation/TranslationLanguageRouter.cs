@@ -533,13 +533,17 @@ public sealed class TranslationLanguageRouter(
     // files come from tonythethompson/madlad400-3b-mt-onnx.
     internal static string ResolveProvenanceRepository(BundledModelManifestEntry entry)
     {
-        const string huggingFacePrefix = "https://huggingface.co/";
-        if (entry.SourceUrl.StartsWith(huggingFacePrefix, StringComparison.OrdinalIgnoreCase))
+        if (Uri.TryCreate(entry.SourceUrl, UriKind.Absolute, out Uri? uri)
+            && uri.Scheme == Uri.UriSchemeHttps
+            && string.Equals(uri.Host, "huggingface.co", StringComparison.OrdinalIgnoreCase))
         {
-            string repository = entry.SourceUrl[huggingFacePrefix.Length..].TrimEnd('/');
-            if (repository.Count(static character => character == '/') == 1)
+            // AbsolutePath already excludes any query string or fragment.
+            string[] segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            bool isRepositoryPage = segments.Length == 2
+                || (segments.Length > 2 && segments[2] is "tree" or "blob" or "resolve");
+            if (isRepositoryPage)
             {
-                return repository;
+                return segments[0] + "/" + segments[1];
             }
         }
 

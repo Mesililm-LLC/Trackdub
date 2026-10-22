@@ -641,11 +641,16 @@ public sealed class TranslationLanguageRouterTests
     [InlineData("https://huggingface.co/onnx-community/opus-mt-en-es/", "onnx-community/opus-mt-en-es")]
     [InlineData("https://example.invalid/test-model", "test/model")]
     [InlineData("https://huggingface.co/datasets/org/name", "test/model")]
+    [InlineData("https://huggingface.co/org/name?download=true", "org/name")]
+    [InlineData("https://huggingface.co/org/name#readme", "org/name")]
+    [InlineData("https://huggingface.co/org/name/tree/main", "org/name")]
+    [InlineData("http://huggingface.co/org/name", "test/model")]
     public void ResolveProvenanceRepository_ReturnsRepoIdFromSourceUrl(string sourceUrl, string expected)
     {
         using var workspace = new TranslationRouterTestWorkspace();
         BundledModelManifestEntry entry = workspace.WriteManifest(
-            CreateTranslationSpec("test/model", ["model"], "manifest-models/model")).Entries.Single() with { SourceUrl = sourceUrl };
+            CreateTranslationSpec("test/model", ["model"], "manifest-models/model")).Entries.Single() with
+        { SourceUrl = sourceUrl };
 
         Assert.Equal(expected, TranslationLanguageRouter.ResolveProvenanceRepository(entry));
     }
