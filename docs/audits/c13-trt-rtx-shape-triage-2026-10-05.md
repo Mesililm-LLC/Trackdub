@@ -4,7 +4,7 @@ Date: 2026-10-06. **Status: shape error RESOLVED; `Dispose` crash mitigated, fol
 
 ## 1. Executive Summary & Root Cause Provenance
 
-- **Target Issue:** [Trackdub #329](https://github.com/trackdubllc/Trackdub/issues/329), "Investigate: TensorRT RTX build-time shape error on TTS under `--prefer-gpu` — does the EP fallback cover it?"
+- **Target Issue:** [Trackdub #329](https://github.com/mesalimllc/Trackdub/issues/329), "Investigate: TensorRT RTX build-time shape error on TTS under `--prefer-gpu` — does the EP fallback cover it?"
 - **Reported Error Signature:**
   ```text
   ITensor::getDimensions: Error Code 4: Shape Error
@@ -26,8 +26,8 @@ Date: 2026-10-06. **Status: shape error RESOLVED; `Dispose` crash mitigated, fol
 
 - **Host GPU:** NVIDIA GeForce RTX 5070 (12,227 MiB VRAM), Driver version 617.14, CUDA UMD 13.4.
 - **OS Platform:** Windows 11 (TFM `net10.0-windows10.0.19041.0`).
-- **Core Repository:** `trackdubllc/Trackdub` at commit `9dd44d11147ac61c731b1ab06e8d907edd05f8a0`.
-- **Gated Submodule:** `trackdubllc/Trackdub-gated` submodule `external/Trackdub` cleanly pinned at `9dd44d11147ac61c731b1ab06e8d907edd05f8a0`.
+- **Core Repository:** `mesalimllc/Trackdub` at commit `9dd44d11147ac61c731b1ab06e8d907edd05f8a0`.
+- **Gated Submodule:** `mesalimllc/Trackdub-gated` submodule `external/Trackdub` cleanly pinned at `9dd44d11147ac61c731b1ab06e8d907edd05f8a0`.
 - **EP Plugin Configuration:**
   - ABI Version: `0.4.2/cu13`.
   - TensorRT RTX DLL Version: `1.6.1.120`.

@@ -1,8 +1,8 @@
 # Trackdub core — `.opencode` system index
 
-Scope: **`trackdubllc/Trackdub` public core only.** This index covers library, inference, media, benchmarks, tooling, and CI for the core repo.
+Scope: **`mesalimllc/Trackdub` public core only.** This index covers library, inference, media, benchmarks, tooling, and CI for the core repo.
 
-**Desktop/Avalonia shell work is NOT in scope here.** That belongs to the separate `trackdubllc/Trackdub-gated` repository, which carries its own `.opencode` system. Find a sibling checkout with `git rev-parse --show-toplevel` on that repo, then read `<gated-root>/.opencode/navigation.md`. Desktop-shell context is deliberately not duplicated in core.
+**Desktop/Avalonia shell work is NOT in scope here.** That belongs to the separate `mesalimllc/Trackdub-gated` repository, which carries its own `.opencode` system. Find a sibling checkout with `git rev-parse --show-toplevel` on that repo, then read `<gated-root>/.opencode/navigation.md`. Desktop-shell context is deliberately not duplicated in core.
 
 Design rationale for every choice below: [ARCHITECTURE.md](ARCHITECTURE.md).
 

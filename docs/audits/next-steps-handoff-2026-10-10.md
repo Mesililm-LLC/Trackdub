@@ -127,7 +127,7 @@ Optional but cheap, and it would have caught #100. In gated CI, compare the PR's
 
 ## 8. Flaky headless startup in the UI tests
 
-CI fails intermittently with `[Test Case Cleanup Failure (<test>)]: The calling thread cannot access this object because a different thread owns it`, thrown from `HeadlessUnitTestSession.EnsureIsolatedApplication` → `AvaloniaHeadlessPlatform.Initialize`. Seen on gated PR #104 (run 38106345134, `BatchQueueLiveSmokeTests`) and on `main` at `eb71a6c2` (a different test class). A fix is being worked in a separate session; check `gh pr list -R trackdubllc/Trackdub-gated` before starting. If it hits an unrelated PR, re-run the failed job.
+CI fails intermittently with `[Test Case Cleanup Failure (<test>)]: The calling thread cannot access this object because a different thread owns it`, thrown from `HeadlessUnitTestSession.EnsureIsolatedApplication` → `AvaloniaHeadlessPlatform.Initialize`. Seen on gated PR #104 (run 38106345134, `BatchQueueLiveSmokeTests`) and on `main` at `eb71a6c2` (a different test class). A fix is being worked in a separate session; check `gh pr list -R mesalimllc/Trackdub-gated` before starting. If it hits an unrelated PR, re-run the failed job.
 
 ## 9. Doc hygiene
 
@@ -170,7 +170,7 @@ grep -rn --include=*.cs "ResolveEffectiveConcurrency" external/Trackdub/src
 nslookup releases.trackdub.ai 1.1.1.1
 
 # issue 397 still open
-gh issue view 397 -R trackdubllc/Trackdub --json state
+gh issue view 397 -R mesalimllc/Trackdub --json state
 ```
 
 Always scope greps to `src` with `--include=*.cs`: stale DLLs under `bin/` produce false "already implemented" hits.

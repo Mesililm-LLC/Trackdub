@@ -10,8 +10,8 @@
     <Authors>Trackdub</Authors>
     <Description>Trackdub command-line interface for the local-first AI dubbing pipeline.</Description>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
-    <RepositoryUrl>https://github.com/trackdubllc/Trackdub</RepositoryUrl>
-    <PackageProjectUrl>https://github.com/trackdubllc/Trackdub</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/mesalimllc/Trackdub</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/mesalimllc/Trackdub</PackageProjectUrl>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041.0'">

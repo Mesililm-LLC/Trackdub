@@ -1,26 +1,26 @@
 # GitHub CODEOWNERS - Automatic PR review assignment
 
 # Default owners for all changes
-* @trackdubllc/maintainers
+* @tonythethompson
 
 # Core
-src/Trackdub.Application/** @trackdubllc/maintainers
-src/Trackdub.Infrastructure/** @trackdubllc/maintainers
-src/Trackdub.Composition/** @trackdubllc/maintainers
+src/Trackdub.Application/** @tonythethompson
+src/Trackdub.Infrastructure/** @tonythethompson
+src/Trackdub.Composition/** @tonythethompson
 
 # Inference & Models
-src/Trackdub.Inference/** @trackdubllc/maintainers
-src/Trackdub.Inference.Onnx/** @trackdubllc/maintainers
+src/Trackdub.Inference/** @tonythethompson
+src/Trackdub.Inference.Onnx/** @tonythethompson
 
 # Media Processing
-src/Trackdub.Media/** @trackdubllc/maintainers
-src/Trackdub.Media.Playback/** @trackdubllc/maintainers
+src/Trackdub.Media/** @tonythethompson
+src/Trackdub.Media.Playback/** @tonythethompson
 
 # Domain & Contracts
-src/Trackdub.Domain/** @trackdubllc/maintainers
-src/Trackdub.Contracts/** @trackdubllc/maintainers
+src/Trackdub.Domain/** @tonythethompson
+src/Trackdub.Contracts/** @tonythethompson
 
 # Build & Dependencies
-Directory.Build.* @trackdubllc/maintainers
-Directory.Packages.props @trackdubllc/maintainers
-.github/** @trackdubllc/maintainers
+Directory.Build.* @tonythethompson
+Directory.Packages.props @tonythethompson
+.github/** @tonythethompson

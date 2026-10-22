@@ -18,24 +18,24 @@ Running both wastes Actions minutes and produces weaker C# results (no compiled 
 
 ```powershell
 # Repo default-setup flag (want: state = not-configured)
-gh api repos/trackdubllc/Trackdub/code-scanning/default-setup --jq '{state, query_suite}'
+gh api repos/mesalimllc/Trackdub/code-scanning/default-setup --jq '{state, query_suite}'
 
 # Applied org security configuration (default setup should be disabled when advanced-only)
-gh api repos/trackdubllc/Trackdub/code-security-configuration --jq '.configuration | {name, code_scanning_default_setup, code_scanning_options}'
+gh api repos/mesalimllc/Trackdub/code-security-configuration --jq '.configuration | {name, code_scanning_default_setup, code_scanning_options}'
 
 # Recent Advanced runs
-gh run list --repo trackdubllc/Trackdub --workflow=codeql.yml --limit 5
+gh run list --repo mesalimllc/Trackdub --workflow=codeql.yml --limit 5
 ```
 
 If you see **both** `CodeQL` and `CodeQL Advanced` on the same push, default setup is still enabled at org or repo level.
 
 ## One-time org fix (requires org admin)
 
-The `trackdubllc` org applies enforced configuration **`trackdubllc-org-config-1`**, which currently enables **Code scanning default setup**. That spawns the dynamic `CodeQL` workflow even when the repo workflow file is advanced.
+The `mesalimllc` org applies enforced configuration **`mesalimllc-org-config-1`**, which currently enables **Code scanning default setup**. That spawns the dynamic `CodeQL` workflow even when the repo workflow file is advanced.
 
 **UI (recommended):**
 
-1. Open [trackdubllc org security configuration](https://github.com/organizations/trackdubllc/settings/security_products/configurations/edit/259214).
+1. Open [mesalimllc org security configuration](https://github.com/organizations/mesalimllc/settings/security_products/configurations/edit/259214).
 2. Under **Code scanning**, set **Default setup** to **Disabled**.
 3. Keep **Allow advanced setup** enabled.
 4. Save.
@@ -52,7 +52,7 @@ gh auth refresh -h github.com -s admin:org
     "allow_advanced": true
   }
 }
-'@ | gh api -X PATCH orgs/trackdubllc/code-security/configurations/259214 --input -
+'@ | gh api -X PATCH orgs/mesalimllc/code-security/configurations/259214 --input -
 ```
 
 **Repo-level backup:**
@@ -64,14 +64,14 @@ gh auth refresh -h github.com -s admin:org
 Then confirm repo default setup:
 
 ```powershell
-gh api repos/trackdubllc/Trackdub/code-scanning/default-setup -X PATCH -f state=not-configured
+gh api repos/mesalimllc/Trackdub/code-scanning/default-setup -X PATCH -f state=not-configured
 ```
 
 ## Verify Advanced
 
 ```powershell
-gh workflow run codeql.yml --repo trackdubllc/Trackdub
-gh run list --repo trackdubllc/Trackdub --workflow=codeql.yml --limit 1
+gh workflow run codeql.yml --repo mesalimllc/Trackdub
+gh run list --repo mesalimllc/Trackdub --workflow=codeql.yml --limit 1
 ```
 
 Expect three matrix jobs: `actions`, `csharp` (Windows), `python`. The workflow file is currently

@@ -11,18 +11,18 @@ Status: **AWS-only API/storage required by Michael; implementation remains propo
 
 **Verified from the current checkout:** `/workspace/Trackdub`, branch `work`, commit `20b432e553956d570c45d96efd3915f8a2569da0`. The working tree was clean before these planning documents. GitHub `main` matched that commit at inspection. The supplied Windows workspace `D:\Dev\Trackdub_Workspace\Trackdub` is not attached here; its branch and uncommitted changes cannot be certified. Other attached Trackdub checkouts were not modified. Trackdub is the canonical name.
 
-**Verified remotely:** the related private repository `trackdubllc/api.trackdub` exists. Its source was inspected read-only at commit `12ba3b519e3c8e83e54269d2a987a23723094e24`; this is a separate Cloudflare API, not an ASP.NET project in the core repository. See the pinned [API README](https://github.com/trackdubllc/api.trackdub/blob/12ba3b519e3c8e83e54269d2a987a23723094e24/README.md) and [job routes](https://github.com/trackdubllc/api.trackdub/blob/12ba3b519e3c8e83e54269d2a987a23723094e24/src/routes/dubs.ts). Deployed configuration, live job intake, D1 contents, R2 access, and production processing were not tested.
+**Verified remotely:** the related private repository `mesalimllc/api.trackdub` exists. Its source was inspected read-only at commit `12ba3b519e3c8e83e54269d2a987a23723094e24`; this is a separate Cloudflare API, not an ASP.NET project in the core repository. See the pinned [API README](https://github.com/mesalimllc/api.trackdub/blob/12ba3b519e3c8e83e54269d2a987a23723094e24/README.md) and [job routes](https://github.com/mesalimllc/api.trackdub/blob/12ba3b519e3c8e83e54269d2a987a23723094e24/src/routes/dubs.ts). Deployed configuration, live job intake, D1 contents, R2 access, and production processing were not tested.
 
-**Verified CI evidence, not independently rebuilt:** [Container Image run 39558417628](https://github.com/trackdubllc/Trackdub/actions/runs/39558417628) succeeded for both `rtx` and `server` at source commit `563ece3eca0dec7fb1889e879aa5ac09e9bb6492`. Each profile's build/publish, authenticated pull, and runtime verification steps succeeded. The server log records:
+**Verified CI evidence, not independently rebuilt:** [Container Image run 39558417628](https://github.com/mesalimllc/Trackdub/actions/runs/39558417628) succeeded for both `rtx` and `server` at source commit `563ece3eca0dec7fb1889e879aa5ac09e9bb6492`. Each profile's build/publish, authenticated pull, and runtime verification steps succeeded. The server log records:
 
 ```text
-ghcr.io/trackdubllc/trackdub:sha-563ece3eca0dec7fb1889e879aa5ac09e9bb6492-server
+ghcr.io/mesalimllc/trackdub:sha-563ece3eca0dec7fb1889e879aa5ac09e9bb6492-server
 sha256:792793923533bb7660b057eda44d01c77d04a1bf66d9133683fab2d8ab78d3f7
 ```
 
 There is no diff from that image source to the inspected HEAD in `Dockerfile`, `src`, `docker`, `scripts/docker`, or the container workflow. This does not relabel the published image as HEAD or prove a HEAD-tagged image exists. CI deliberately expects `doctor` exit `2` with no seeded weights; it proves packaging/tools and a writable model cache, not GPU or pipeline success.
 
-**Observed registry limitation:** an anonymous GHCR pull-token request for `repository:trackdubllc/trackdub:pull` returned HTTP `401` from this environment. No layers were downloaded. CI's authenticated pull works; anonymous/AWS-host pullability is unresolved. This response does not prove that any requested tag is missing. SnapSoft must validate the agreed authentication or ECR mirror from the actual execution environment.
+**Observed registry limitation:** an anonymous GHCR pull-token request for `repository:mesalimllc/trackdub:pull` returned HTTP `401` from this environment. No layers were downloaded. CI's authenticated pull works; anonymous/AWS-host pullability is unresolved. This response does not prove that any requested tag is missing. SnapSoft must validate the agreed authentication or ECR mirror from the actual execution environment.
 
 **Documented but not independently rerun:** `docs/operations/cloud-gpu-container.md` records local RTX 5070 provider probes, classic TensorRT cache fixes, and cache reuse across fresh containers. It also records process crashes and smoke limitations. Raw evidence is described as local and uncommitted. No target AWS GPU end-to-end or persistence acceptance was established here. No local build/test was run for this read-only assessment; `dotnet` is not on PATH in this environment. No GPU/model downloads or containers were run.
 
@@ -54,7 +54,7 @@ All core paths below are relative to `/workspace/Trackdub`.
 
 ### Existing cloud API: verified context, superseded for this POC
 
-In `trackdubllc/api.trackdub` at the pinned ref:
+In `mesalimllc/api.trackdub` at the pinned ref:
 
 | Exact file / symbol | What exists | What is missing |
 |---|---|---|

@@ -108,7 +108,7 @@ gh workflow run opencode.yml -f prompt="Summarize recent pipeline changes"
 - **Trigger:** Push to `main`, any pull request, weekly schedule (Mon 01:42 UTC), manual (`workflow_dispatch`)
 - **Runs:** `ubuntu-latest` (`actions`, `python` — `build-mode: none`); `windows-latest` (C# manual `Trackdub.slnx` build)
 - **Tasks:** Advanced CodeQL with `security-extended,security-and-quality`; path config in `.github/codeql/codeql-config.yml`
-- **Important:** Only canonical CodeQL workflow for this repo, but it is currently disabled at the repository level (`disabled_manually`) while GitHub's default code scanning setup is enabled. Disable GitHub default CodeQL (org `trackdubllc-org-config-1` or repo settings) and re-enable this workflow to avoid duplicate dynamic `CodeQL` runs. See `docs/operations/codeql-advanced-setup.md`.
+- **Important:** Only canonical CodeQL workflow for this repo, but it is currently disabled at the repository level (`disabled_manually`) while GitHub's default code scanning setup is enabled. Disable GitHub default CodeQL (org `mesalimllc-org-config-1` or repo settings) and re-enable this workflow to avoid duplicate dynamic `CodeQL` runs. See `docs/operations/codeql-advanced-setup.md`.
 
 ```powershell
 gh workflow run codeql.yml

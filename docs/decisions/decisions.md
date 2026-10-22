@@ -1311,7 +1311,7 @@ is insufficient to catch future omissions; the analyzer is the safety net.
 - `docs/adr/README.md` — directory purpose + ADR conventions.
 - Commit `685776f3` — wave-pcm16 cherry-pick (3 files: writer + 2 test files).
 - Commit `912ae905` — call-site opt-in fix (1 file: `PreviewRangeRenderer.cs`).
-- PR #535 — `https://github.com/trackdubllc/Trackdub/pull/535`
+- PR #535 — `https://github.com/mesalimllc/Trackdub/pull/535`
   (branch `chore/wave-pcm16-normalization`, base `main`).
 - `AGENTS.md` — "Touch waves, not ripples" rule; preview-vs-final-mix
   loudness separation; "Encounter defects while working" remediation law.

@@ -103,7 +103,7 @@ Add a LibVLC-backed playback path for the Avalonia shell so cross-platform video
 # Trackdub Open-Core Split Continuation Plan
 
 Status: active execution plan  
-Canonical planning repository: `trackdubllc/Trackdub`  
+Canonical planning repository: `mesalimllc/Trackdub`
 Last verified core commit: `d590533b3220edf5211ce773b7620487c29eb1e7`  
 Scope: finish the public-core release gates, rebuild the private desktop repository with fresh history, then validate the cross-repository boundary.
 
@@ -113,12 +113,12 @@ Trackdub is moving from a mixed historical monorepo to a deliberate repository m
 
 | Repository | Visibility | Role |
 |---|---|---|
-| `trackdubllc/Trackdub` | Public after release gates pass | Apache-2.0 reusable engine, SDK, CLI, pipeline, inference, media, neutral licensing mechanisms, tooling, and tests |
-| `trackdubllc/Trackdub-gated` | Private | Proprietary desktop product, product policy, activation client, packaging, signing, and releases |
-| `trackdubllc/Trackdub-Monorepo-Archive` | Private, archived | Full historical monorepo; never an active development target |
-| `trackdubllc/api.trackdub` | Private | Future server-side activation and product API |
-| `trackdubllc/portal.trackdub` | Private | Portal product |
-| `trackdubllc/trackdub.com` | Private | Marketing site |
+| `mesalimllc/Trackdub` | Public after release gates pass | Apache-2.0 reusable engine, SDK, CLI, pipeline, inference, media, neutral licensing mechanisms, tooling, and tests |
+| `mesalimllc/Trackdub-gated` | Private | Proprietary desktop product, product policy, activation client, packaging, signing, and releases |
+| `mesalimllc/Trackdub-Monorepo-Archive` | Private, archived | Full historical monorepo; never an active development target |
+| `mesalimllc/api.trackdub` | Private | Future server-side activation and product API |
+| `mesalimllc/portal.trackdub` | Private | Portal product |
+| `mesalimllc/trackdub.com` | Private | Marketing site |
 
 This plan preserves the actual technical boundary. It is not a license-text-only cleanup.
 
@@ -126,7 +126,7 @@ This plan preserves the actual technical boundary. It is not a license-text-only
 
 ### Public core
 
-`trackdubllc/Trackdub` is private, unarchived, and has a fresh-root history. Its root commit was `8bac38a8fa3e0343c5d10c558b64d269d15e7828`; follow-up commits have added CI and cross-platform fixes. The current inspected head is `d590533b3220edf5211ce773b7620487c29eb1e7`.
+`mesalimllc/Trackdub` is private, unarchived, and has a fresh-root history. Its root commit was `8bac38a8fa3e0343c5d10c558b64d269d15e7828`; follow-up commits have added CI and cross-platform fixes. The current inspected head is `d590533b3220edf5211ce773b7620487c29eb1e7`.
 
 The core contains:
 
@@ -158,13 +158,13 @@ The split is not release-ready yet:
 
 ### Desktop staging repository
 
-`trackdubllc/Trackdub-gated` is private but is explicitly a staging repository, not the final product repository. Its README confirms that it contains desktop code plus cloud and activation quarantine material. Its existing history begins with a private import and includes staging/quarantine commits. It must not become the final desktop history unchanged.
+`mesalimllc/Trackdub-gated` is private but is explicitly a staging repository, not the final product repository. Its README confirms that it contains desktop code plus cloud and activation quarantine material. Its existing history begins with a private import and includes staging/quarantine commits. It must not become the final desktop history unchanged.
 
 The final `Trackdub-gated` repository must receive a new fresh root. Preserve the existing staging repository separately for recovery, then reuse `Trackdub-gated` as the canonical private product repository.
 
 ### Archive and service repositories
 
-`trackdubllc/Trackdub-Monorepo-Archive` is private and archived. Do not modify it.
+`mesalimllc/Trackdub-Monorepo-Archive` is private and archived. Do not modify it.
 
 `api.trackdub`, `portal.trackdub`, and `trackdub.com` exist as private repositories. They are not sources to copy into the core or desktop repository.
 
@@ -279,7 +279,7 @@ Create an annotated, immutable core pin only after these checks pass. The gated 
 1. Record the current staging repository's full SHA and repository settings.
 2. Rename or mirror it to a private staging archive such as `Trackdub-gated-Staging-Archive`.
 3. Preserve it for recovery only; do not continue active work there.
-4. Recreate `trackdubllc/Trackdub-gated` as a private fresh-root repository with no imported branches, tags, commits, or Git metadata.
+4. Recreate `mesalimllc/Trackdub-gated` as a private fresh-root repository with no imported branches, tags, commits, or Git metadata.
 
 The canonical `Trackdub-gated` URL is intentionally reused for the final private product repository.
 
@@ -350,7 +350,7 @@ Gate: a clean clone of the fresh gated repository builds through the pinned core
 2. Scan both repositories for duplicate core implementations, old monorepo project references, stale repository URLs, unapproved license claims, untracked binary payloads, and accidentally retained cloud code.
 3. Validate package metadata and generated artifacts, not only source trees.
 4. Configure branch protection and required checks for both repositories.
-5. Keep the core repository private until its release gates pass. Then make only `trackdubllc/Trackdub` public.
+5. Keep the core repository private until its release gates pass. Then make only `mesalimllc/Trackdub` public.
 6. Keep `Trackdub-gated` private.
 7. Recreate only current, relevant issues in their new canonical repositories. Historical issues and PRs remain in the archive unless they contain context not captured elsewhere.
 
@@ -391,12 +391,12 @@ Do not treat the current state as complete. The core is structurally separated b
 
 | Repository | Current role | Rule |
 |---|---|---|
-| `trackdubllc/Trackdub` | Private public-core candidate | Work here first; do not make public until gates pass |
-| `trackdubllc/Trackdub-gated` | Private staging lane | Read-only source until the fresh-root rebuild phase |
-| `trackdubllc/Trackdub-Monorepo-Archive` | Private archived history | Never modify |
-| `trackdubllc/api.trackdub` | Private future server activation/API | Do not change during Phase 1 |
-| `trackdubllc/portal.trackdub` | Private portal | Out of scope |
-| `trackdubllc/trackdub.com` | Private marketing site | Out of scope |
+| `mesalimllc/Trackdub` | Private public-core candidate | Work here first; do not make public until gates pass |
+| `mesalimllc/Trackdub-gated` | Private staging lane | Read-only source until the fresh-root rebuild phase |
+| `mesalimllc/Trackdub-Monorepo-Archive` | Private archived history | Never modify |
+| `mesalimllc/api.trackdub` | Private future server activation/API | Do not change during Phase 1 |
+| `mesalimllc/portal.trackdub` | Private portal | Out of scope |
+| `mesalimllc/trackdub.com` | Private marketing site | Out of scope |
 
 ## Facts Already Verified
 

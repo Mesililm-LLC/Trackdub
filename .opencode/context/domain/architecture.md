@@ -134,7 +134,7 @@ dotnet run --project src/Trackdub.Benchmarks.Micro -c Release -- --list flat
 
 ## Cross-repo relationship
 
-The desktop application is **not** in this repo. It lives in the sibling `Trackdub-gated` checkout (`trackdubllc/Trackdub-gated`) and consumes this repo as a **pinned, read-only git submodule** at `external/Trackdub` (`.gitmodules`: `url = https://github.com/trackdubllc/Trackdub.git`, `branch = main`). The gated shell references `Application`, `Composition`, `Domain`, `Licensing`, `Media.Playback`, and `Sdk` from the submodule; nothing may be edited inside `external/Trackdub`.
+The desktop application is **not** in this repo. It lives in the sibling `Trackdub-gated` checkout (`mesalimllc/Trackdub-gated`) and consumes this repo as a **pinned, read-only git submodule** at `external/Trackdub` (`.gitmodules`: `url = https://github.com/mesalimllc/Trackdub.git`, `branch = main`). The gated shell references `Application`, `Composition`, `Domain`, `Licensing`, `Media.Playback`, and `Sdk` from the submodule; nothing may be edited inside `external/Trackdub`.
 
 - Gated-side agent system and desktop boundary: `../Trackdub-gated/.opencode/navigation.md`
 - Gated-side pin bump procedure: `context/processes/submodule-pin-bump.md` in this file's sibling location under `../Trackdub-gated/.opencode/`
