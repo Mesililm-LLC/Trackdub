@@ -26,46 +26,58 @@ public sealed class JobController(IJobStore store, JobService jobs, IJobSchedule
         var executions = await scheduler.DescribeAsync(job.DispatchId, token).ConfigureAwait(false);
         bool leaseLost = job.ExecutionId is not null && job.LeaseExpiresAt <= now && executions.Any(e => !e.Stopped);
         if (job.CancelRequestedAt is not null || timedOut || leaseLost)
+            await StopAndTerminateAsync(job, executions, timedOut, now, token).ConfigureAwait(false);
+        else if (job.ExecutionId is null)
+            await DispatchAsync(job, executions, now, token).ConfigureAwait(false);
+        else
+            await PublishAsync(job, executions, token).ConfigureAwait(false);
+    }
+
+    private async Task StopAndTerminateAsync(JobRecord job, IReadOnlyList<SchedulerExecution> executions, bool timedOut, DateTimeOffset now, CancellationToken token)
+    {
+        foreach (var execution in executions.Where(e => !e.Stopped))
+            await scheduler.StopAsync(execution.Id, job.CancelRequestedAt is not null ? "Cancelled" : "Deadline or lease expired", token).ConfigureAwait(false);
+        // An ambiguous submit with no visible execution is not evidence of cessation.
+        bool stopped = executions.Count > 0 && executions.All(e => e.Stopped);
+        bool neverDispatched = job.ExecutionId is null && job.DispatchLeaseExpiresAt is null;
+        if (!stopped && !neverDispatched) return;
+        await jobs.MutateAsync(job.Id, current => current.IsTerminal || current.AttemptId != job.AttemptId || current.Generation != job.Generation ? current : current with
         {
-            foreach (var execution in executions.Where(e => !e.Stopped))
-                await scheduler.StopAsync(execution.Id, job.CancelRequestedAt is not null ? "Cancelled" : "Deadline or lease expired", token).ConfigureAwait(false);
-            // An ambiguous submit with no visible execution is not evidence of cessation.
-            bool stopped = executions.Count > 0 && executions.All(e => e.Stopped);
-            if (stopped || (job.ExecutionId is null && job.DispatchLeaseExpiresAt is null))
-                await jobs.MutateAsync(job.Id, current => current.IsTerminal || current.AttemptId != job.AttemptId || current.Generation != job.Generation ? current : current with
-                {
-                    State = current.CancelRequestedAt is not null ? JobState.Cancelled : timedOut ? JobState.TimedOut : JobState.Failed,
-                    CompletedAt = now,
-                    Phase = null,
-                    Error = new(current.CancelRequestedAt is not null ? "CANCELLED" : timedOut ? job.StartedAt is null ? "QUEUE_TIMEOUT" : "EXECUTION_TIMEOUT" : "LEASE_LOST",
-                        "Execution stopped before completion.", false, null, current.Id.ToString()),
-                }, token).ConfigureAwait(false);
+            State = current.CancelRequestedAt is not null ? JobState.Cancelled : timedOut ? JobState.TimedOut : JobState.Failed,
+            CompletedAt = now,
+            Phase = null,
+            Error = new(TerminalCode(current, timedOut, job.StartedAt is null), "Execution stopped before completion.", false, null, current.Id.ToString()),
+        }, token).ConfigureAwait(false);
+    }
+
+    private static string TerminalCode(JobRecord current, bool timedOut, bool neverStarted) =>
+        current.CancelRequestedAt is not null ? "CANCELLED"
+        : timedOut ? neverStarted ? "QUEUE_TIMEOUT" : "EXECUTION_TIMEOUT"
+        : "LEASE_LOST";
+
+    private async Task DispatchAsync(JobRecord job, IReadOnlyList<SchedulerExecution> executions, DateTimeOffset now, CancellationToken token)
+    {
+        if (executions.Count > 0 && executions.All(e => e.Stopped))
+        {
+            await FailAsync(job, "WORKER_CRASHED", token).ConfigureAwait(false);
             return;
         }
-
-        if (job.ExecutionId is null)
-        {
-            if (executions.Count > 0 && executions.All(e => e.Stopped))
+        if (job.DispatchLeaseExpiresAt > now) return;
+        var leased = job with { DispatchLeaseExpiresAt = now.AddSeconds(90), Version = job.Version + 1, UpdatedAt = now };
+        if (!await store.CompareExchangeAsync(leased, job.Version, token).ConfigureAwait(false)) return;
+        if (!executions.Any(e => !e.Stopped))
+            await scheduler.SubmitAsync(new(job.Id, job.AttemptId, job.DispatchId), token).ConfigureAwait(false);
+        // The conditional start claim made by the worker owns execution identity, including a submit/claim race.
+        await jobs.MutateAsync(job.Id, current => current.IsTerminal || current.ExecutionId is not null ? current
+            : current with
             {
-                await FailAsync(job, "WORKER_CRASHED", token).ConfigureAwait(false);
-                return;
-            }
-            if (job.DispatchLeaseExpiresAt > now) return;
-            var leased = job with { DispatchLeaseExpiresAt = now.AddSeconds(90), Version = job.Version + 1, UpdatedAt = now };
-            if (!await store.CompareExchangeAsync(leased, job.Version, token).ConfigureAwait(false)) return;
-            var execution = executions.FirstOrDefault(e => !e.Stopped)
-                ?? await scheduler.SubmitAsync(new(job.Id, job.AttemptId, job.DispatchId), token).ConfigureAwait(false);
-            // The worker's conditional start claim owns execution identity, including a submit/claim race.
-            await jobs.MutateAsync(job.Id, current => current.IsTerminal || current.ExecutionId is not null ? current
-                : current with
-                {
-                    State = current.CancelRequestedAt is null ? JobState.Queued : JobState.CancelRequested,
-                    Phase = "starting"
-                }, token).ConfigureAwait(false);
-            _ = execution;
-            return;
-        }
+                State = current.CancelRequestedAt is null ? JobState.Queued : JobState.CancelRequested,
+                Phase = "starting"
+            }, token).ConfigureAwait(false);
+    }
 
+    private async Task PublishAsync(JobRecord job, IReadOnlyList<SchedulerExecution> executions, CancellationToken token)
+    {
         foreach (var duplicate in executions.Where(e => e.Id != job.ExecutionId && !e.Stopped))
             await scheduler.StopAsync(duplicate.Id, "Duplicate execution", token).ConfigureAwait(false);
         var active = executions.SingleOrDefault(e => e.Id == job.ExecutionId);
@@ -73,59 +85,74 @@ public sealed class JobController(IJobStore store, JobService jobs, IJobSchedule
         // Every execution sharing the dispatch must cease before publication.
         if (executions.Any(e => !e.Stopped)) return;
         if (active.ExitCode == 0 && job.Candidate is null)
-        {
-            var recovered = await artifacts.RecoverCandidateAsync(job, token).ConfigureAwait(false);
-            if (recovered is not null && recovered.Claim == new ExecutionClaim(job.Id, job.AttemptId, job.DispatchId, job.ExecutionId, job.Generation))
-            {
-                string prefix = JobService.AttemptPrefix(job);
-                if (!recovered.ResultObject.Key.StartsWith(prefix, StringComparison.Ordinal)
-                    || recovered.Artifacts.Any(a => !a.Object.Key.StartsWith(prefix, StringComparison.Ordinal)))
-                    throw new JobException("RESULT_INVALID", 409, "Recovered candidate escaped its attempt.");
-                job = await jobs.MutateAsync(job.Id, current => current.IsTerminal || current.CancelRequestedAt is not null
-                    || current.Generation != job.Generation ? current : current with { Candidate = recovered }, token).ConfigureAwait(false);
-            }
-        }
+            job = await RecoverCandidateAsync(job, token).ConfigureAwait(false);
         if (active.ExitCode != 0 || job.Candidate is null || job.Candidate.CliExitCode != 0)
         {
             await FailAsync(job, active.ExitCode != 0 ? "WORKER_CRASHED" : "RESULT_MISSING", token).ConfigureAwait(false);
             return;
         }
-        WorkerRunOutcome outcome;
-        try { outcome = await artifacts.ReadOutcomeAsync(job.Candidate.ResultObject, token).ConfigureAwait(false); }
-        catch (Exception ex) when (ex is System.Text.Json.JsonException or JobException)
+        var candidate = job.Candidate;
+        var outcome = await TryReadOutcomeAsync(candidate, token).ConfigureAwait(false);
+        if (outcome is null || !OutcomeIsSuccessful(outcome, candidate))
         {
             await FailAsync(job, "RESULT_INVALID", token).ConfigureAwait(false);
             return;
         }
-        if (!OutcomeIsSuccessful(outcome, job.Candidate))
-        {
-            await FailAsync(job, "RESULT_INVALID", token).ConfigureAwait(false);
-            return;
-        }
-        try
-        {
-            foreach (var artifact in job.Candidate.Artifacts)
-                await artifacts.VerifyAsync(artifact.Object, token).ConfigureAwait(false);
-        }
-        catch (JobException)
+        if (!await TryVerifyArtifactsAsync(candidate, token).ConfigureAwait(false))
         {
             await FailAsync(job, "ARTIFACT_UPLOAD_FAILED", token).ConfigureAwait(false);
             return;
         }
-        // Final CAS includes fresh cancellation and attempt identity checks. No late writer wins.
-        await jobs.MutateAsync(job.Id, current => current.IsTerminal || current.CancelRequestedAt is not null
-            || current.AttemptId != job.AttemptId || current.Generation != job.Generation || current.Candidate?.ResultObject != job.Candidate.ResultObject
+        await SucceedAsync(job, candidate, outcome, token).ConfigureAwait(false);
+    }
+
+    private async Task<JobRecord> RecoverCandidateAsync(JobRecord job, CancellationToken token)
+    {
+        var recovered = await artifacts.RecoverCandidateAsync(job, token).ConfigureAwait(false);
+        if (recovered is null || recovered.Claim != new ExecutionClaim(job.Id, job.AttemptId, job.DispatchId, job.ExecutionId!, job.Generation))
+            return job;
+        string prefix = JobService.AttemptPrefix(job);
+        if (!recovered.ResultObject.Key.StartsWith(prefix, StringComparison.Ordinal)
+            || recovered.Artifacts.Any(a => !a.Object.Key.StartsWith(prefix, StringComparison.Ordinal)))
+            throw new JobException("RESULT_INVALID", 409, "Recovered candidate escaped its attempt.");
+        return await jobs.MutateAsync(job.Id, current => current.IsTerminal || current.CancelRequestedAt is not null
+            || current.Generation != job.Generation ? current : current with { Candidate = recovered }, token).ConfigureAwait(false);
+    }
+
+    private async Task<WorkerRunOutcome?> TryReadOutcomeAsync(AttemptOutcome candidate, CancellationToken token)
+    {
+        try { return await artifacts.ReadOutcomeAsync(candidate.ResultObject, token).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or JobException) { return null; }
+    }
+
+    private async Task<bool> TryVerifyArtifactsAsync(AttemptOutcome candidate, CancellationToken token)
+    {
+        try
+        {
+            foreach (var artifact in candidate.Artifacts)
+                await artifacts.VerifyAsync(artifact.Object, token).ConfigureAwait(false);
+            return true;
+        }
+        catch (JobException) { return false; }
+    }
+
+    // Final CAS includes fresh cancellation and attempt identity checks. No late writer wins.
+    private Task<JobRecord> SucceedAsync(JobRecord job, AttemptOutcome candidate, WorkerRunOutcome outcome, CancellationToken token) =>
+        jobs.MutateAsync(job.Id, current => current.IsTerminal || current.CancelRequestedAt is not null
+            || current.AttemptId != job.AttemptId || current.Generation != job.Generation || current.Candidate?.ResultObject != candidate.ResultObject
             ? current : current with
             {
                 State = JobState.Succeeded,
                 Phase = null,
                 CompletedAt = clock.GetUtcNow(),
-                Artifacts = job.Candidate.Artifacts,
-                Result = new(1, outcome.Result!.RunId, outcome.Result.OverallStatus == DubbingRunStatus.Succeeded ? "succeeded" : "partialSuccess",
-                    outcome.Result.StageOutcomes.SelectMany(s => s.DegradationRecords ?? []).Take(16).Select(w => "Stage degradation recorded; inspect the authorized run result.").ToArray(),
-                    job.Candidate.Artifacts.Select(a => new ArtifactDto(a.Id, a.Kind, a.FileName, a.ContentType, a.Object.SizeBytes, a.Object.Sha256, true)).ToArray()),
-            }, token).ConfigureAwait(false);
-    }
+                Artifacts = candidate.Artifacts,
+                Result = BuildResult(outcome, candidate),
+            }, token);
+
+    private static JobResult BuildResult(WorkerRunOutcome outcome, AttemptOutcome candidate) => new(1, outcome.Result!.RunId,
+        outcome.Result.OverallStatus == DubbingRunStatus.Succeeded ? "succeeded" : "partialSuccess",
+        outcome.Result.StageOutcomes.SelectMany(s => s.DegradationRecords ?? []).Take(16).Select(_ => "Stage degradation recorded; inspect the authorized run result.").ToArray(),
+        candidate.Artifacts.Select(a => new ArtifactDto(a.Id, a.Kind, a.FileName, a.ContentType, a.Object.SizeBytes, a.Object.Sha256, true)).ToArray());
 
     private Task<JobRecord> FailAsync(JobRecord job, string code, CancellationToken token) => jobs.MutateAsync(job.Id,
         current => current.IsTerminal || current.CancelRequestedAt is not null || current.AttemptId != job.AttemptId
