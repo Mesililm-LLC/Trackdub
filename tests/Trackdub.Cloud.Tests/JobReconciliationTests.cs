@@ -72,6 +72,15 @@ public sealed class JobReconciliationTests
         Assert.Equal(JobState.Failed, job.State); Assert.Equal("RESULT_INVALID", job.Error?.Code);
     }
     [Fact]
+    public async Task StaleDispatchSnapshotCannotFailJobAlreadyClaimedByWorker()
+    {
+        var s = Setup(exit: 2);
+        var stale = s.Job with { ExecutionId = null, LeaseExpiresAt = null, Generation = s.Job.Generation - 1 };
+        await s.Controller.ReconcileAsync(stale, TestContext.Current.CancellationToken);
+        var current = s.Store.Jobs[s.Job.Id];
+        Assert.Equal(JobState.Running, current.State); Assert.Null(current.Error);
+    }
+    [Fact]
     public async Task InterruptedArtifactVerificationRetriesWithoutResubmitting()
     {
         var s = Setup(); s.Objects.FailVerification = true;

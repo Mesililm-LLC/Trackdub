@@ -167,6 +167,7 @@ public sealed class JobController(IJobStore store, JobService jobs, IJobSchedule
 
     private Task<JobRecord> FailAsync(JobRecord job, string code, CancellationToken token) => jobs.MutateAsync(job.Id,
         current => current.IsTerminal || current.CancelRequestedAt is not null || current.AttemptId != job.AttemptId
+            || current.Generation != job.Generation
             ? current : current with
             {
                 State = JobState.Failed,
