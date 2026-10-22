@@ -122,6 +122,75 @@ public sealed class HuggingFaceTranslationModelCatalogTests
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
     }
 
+    [Theory]
+    [InlineData("{\"sha\":\"REV\",\"cardData\":{\"license\":\"apache-2.0\"}}", "Missing model file list.")]
+    [InlineData("{\"sha\":\"REV\",\"cardData\":{\"license\":\"apache-2.0\"},\"siblings\":\"x\"}", "Missing model file list.")]
+    [InlineData("{\"sha\":\"REV\",\"cardData\":{\"license\":\"apache-2.0\"},\"siblings\":[\"x\"]}", "Invalid model file entry.")]
+    [InlineData("{\"sha\":\"REV\",\"cardData\":{\"license\":\"apache-2.0\"},\"siblings\":[{\"rfilename\":\"config.json\",\"size\":\"big\"}]}", "Invalid file size: config.json")]
+    [InlineData("{\"sha\":\"REV\",\"cardData\":{\"license\":\"apache-2.0\"},\"siblings\":[{\"rfilename\":\"config.json\",\"size\":1e30}]}", "Invalid file size: config.json")]
+    public async Task MalformedModelMetadataExcludesOnlyThatCandidate(string malformedDetail, string expectedReason)
+    {
+        string directory = Path.Join(Path.GetTempPath(), Guid.NewGuid().ToString());
+        string revision = new('a', 40);
+        string hash = new('b', 64);
+        string[] paths = ["onnx/encoder_model.onnx", "onnx/decoder_model_merged.onnx", "config.json", "tokenizer_config.json", "vocab.json", "source.spm", "target.spm"];
+        using var client = new HttpClient(new Handler(request =>
+        {
+            string url = request.RequestUri!.AbsoluteUri;
+            string json;
+            if (url.Contains("author=onnx-community", StringComparison.Ordinal))
+                json = "[{\"id\":\"onnx-community/opus-mt-en-de\"},{\"id\":\"onnx-community/opus-mt-en-fr\"}]";
+            else if (url.Contains("author=Xenova", StringComparison.Ordinal)) json = "[]";
+            else if (url.Contains("/api/models/onnx-community/opus-mt-en-de", StringComparison.Ordinal))
+                json = malformedDetail.Replace("REV", revision, StringComparison.Ordinal);
+            else if (url.Contains("/api/models/", StringComparison.Ordinal)) json = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                sha = revision,
+                cardData = new { license = "apache-2.0" },
+                siblings = paths.Select(path => new { rfilename = path, size = 123, lfs = path.EndsWith(".onnx", StringComparison.Ordinal) ? new { sha256 = hash } : null })
+            });
+            else json = System.Text.Json.JsonSerializer.Serialize(new { model_type = "marian" });
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) };
+        }));
+        try
+        {
+            var catalog = new HuggingFaceTranslationModelCatalog(client, Path.Join(directory, "catalog.json"));
+            var snapshot = await catalog.RefreshAsync(false, TestContext.Current.CancellationToken);
+
+            Assert.Equal("onnx-community/opus-mt-en-fr", Assert.Single(snapshot.Models).Repository);
+            var exclusion = Assert.Single(snapshot.Exclusions);
+            Assert.Equal("onnx-community/opus-mt-en-de", exclusion.Repository);
+            Assert.Equal(expectedReason, exclusion.Reason);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData("onnx-community/opus-mt-en-fr", true)]
+    [InlineData("onnx-community/opus-mt-en-fr/../../escape", false)]
+    [InlineData("onnx-community/opus-mt-en fr", false)]
+    public void CachedSnapshotRejectsUnsafeRepositoryIds(string repository, bool loads)
+    {
+        string directory = Path.Join(Path.GetTempPath(), Guid.NewGuid().ToString());
+        Directory.CreateDirectory(directory);
+        string cachePath = Path.Join(directory, "catalog.json");
+        var cached = new Trackdub.Contracts.Translation.TranslationModelCatalogSnapshot(
+            DateTimeOffset.UtcNow,
+            Trackdub.Contracts.Translation.TranslationModelCatalogSnapshot.Empty.PolicyVersion,
+            [new(repository, repository, new string('a', 40), "en", "fr", null, false, "apache-2.0", "evidence",
+                [new("config.json", 1, new string('b', 64))])],
+            []);
+        File.WriteAllText(cachePath, System.Text.Json.JsonSerializer.Serialize(cached));
+        try
+        {
+            using var client = new HttpClient(new Handler(_ => throw new InvalidOperationException("Unexpected network")));
+            var catalog = new HuggingFaceTranslationModelCatalog(client, cachePath);
+
+            Assert.Equal(loads ? 1 : 0, catalog.Snapshot.Models.Length);
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
     private sealed class Handler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => Task.FromResult(respond(request));
