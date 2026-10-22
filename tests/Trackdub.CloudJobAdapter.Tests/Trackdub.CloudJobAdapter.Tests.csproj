@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><IsTestProject>true</IsTestProject><IsPackable>false</IsPackable></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../../src/Trackdub.CloudJobAdapter/Trackdub.CloudJobAdapter.csproj" /><ProjectReference Include="../Trackdub.CloudJobFixture/Trackdub.CloudJobFixture.csproj" /></ItemGroup>
+  <ItemGroup><PackageReference Include="Microsoft.NET.Test.Sdk" /><PackageReference Include="xunit.v3" /><PackageReference Include="xunit.runner.visualstudio" /></ItemGroup>
+  <ItemGroup><Using Include="Xunit" /></ItemGroup>
+  <ItemGroup><Compile Include="../Trackdub.TestDoubles/FakeJobStore.cs" Link="Fakes/FakeJobStore.cs" /></ItemGroup>
+  <ItemGroup><None Include="../Fixtures/cloud-poc/en-speech.mp4" Link="Fixtures/en-speech.mp4" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+</Project>

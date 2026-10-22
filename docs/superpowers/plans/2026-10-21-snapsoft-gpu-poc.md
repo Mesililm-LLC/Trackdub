@@ -1,5 +1,10 @@
 # Trackdub SnapSoft GPU POC Implementation Plan
 
+> Application scope approved by Michael on 2026-10-21. Implementation and local validation
+> are recorded in [the acceptance/handoff contract](../../operations/snapsoft-poc-acceptance.md).
+> Batch/ECS selection, infrastructure responsibilities and AWS execution remain pending.
+> The publication status below is historical; it is not the current application approval status.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task after approval. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the existing Trackdub GPU CLI usable through a durable asynchronous job interface without duplicating pipeline logic.

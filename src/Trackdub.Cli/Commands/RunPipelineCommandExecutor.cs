@@ -37,6 +37,8 @@ internal sealed class PipelineRunState
     public string? InputGlob;
     public bool Recursive;
     public bool ContinueOnError;
+    public string? ResultFile;
+    public string? ProgressFile;
     public Dictionary<string, string>? VoiceOverrides;
     public IReadOnlyList<string>? SubtitleFormats;
     public bool IsBatchMode;
@@ -61,6 +63,11 @@ internal static class RunPipelineCommandExecutor
         CancellationToken cancellationToken)
     {
         PipelineRunState state = ParseInputs(parseResult, options);
+        if (state.IsBatchMode && (state.ResultFile is not null || state.ProgressFile is not null))
+        {
+            CliErrorReporter.ReportValidationError(ErrorCode.InvalidArgument, "Machine files require a single pipeline run.", "--result-file");
+            return Task.FromResult(Program.ExitArgumentError);
+        }
         if (!TryValidateInputs(state, out int validationExitCode))
         {
             return Task.FromResult(validationExitCode);
@@ -80,6 +87,8 @@ internal static class RunPipelineCommandExecutor
         state.VoiceOverrides = CliModelOverrides.ParseVoiceOverrides(state.VoiceOverrideTokens);
         state.SubtitleFormats = ResolveSubtitleFormats(state.SubtitleFormatTokens);
         state.IsBatchMode = state.InputDir is not null || state.InputGlob is not null;
+        state.ResultFile = parseResult.GetValue(options.ResultFile);
+        state.ProgressFile = parseResult.GetValue(options.ProgressFile);
         return state;
     }
 
@@ -348,8 +357,9 @@ internal static class RunPipelineCommandExecutor
             return (true, null);
         }
 
-        (PipelinePreset? preset, int exitCode) = await CliBatchCommandHelpers.TryLoadPresetAsync(
-            state.PresetName, parseResult, cancellationToken).ConfigureAwait(false);
+        (PipelinePreset? preset, int exitCode) = state.PresetName == PocServerPreset.Name
+            ? (PocServerPreset.Create(), Program.ExitSuccess)
+            : await CliBatchCommandHelpers.TryLoadPresetAsync(state.PresetName, parseResult, cancellationToken).ConfigureAwait(false);
         if (exitCode != Program.ExitSuccess)
         {
             return (false, null);
@@ -642,7 +652,13 @@ internal static class RunPipelineCommandExecutor
                     state.VoiceOverrides, state.SubtitleFormats, state.SubtitleSource,
                     state.BurnInSubtitles, state.VideoEncoderKey, stageFilter, state.ForceRerun,
                     state.TtsRubberbandStretch, state.NoTtsRubberbandStretch, state.TtsRubberbandThreshold,
-                    state.TtsAutoStretchMaxOverrun),
+                    state.TtsAutoStretchMaxOverrun) with
+                {
+                    ResultFile = state.ResultFile,
+                    ProgressFile = state.ProgressFile,
+                    ExecutionProviderPreferences = state.PresetName == PocServerPreset.Name ? PocServerPreset.Providers : null,
+                    ModelVariantPreferences = state.PresetName == PocServerPreset.Name ? PocServerPreset.Variants : null,
+                },
                 progress, Console.Out, ct),
             cancellationToken);
     }

@@ -34,7 +34,9 @@ internal sealed record PipelineCommandOptions(
     Option<bool?> TtsRubberbandStretch,
     Option<bool> NoTtsRubberbandStretch,
     Option<double?> TtsRubberbandThreshold,
-    Option<double?> TtsAutoStretchMaxOverrun);
+    Option<double?> TtsAutoStretchMaxOverrun,
+    Option<string?> ResultFile,
+    Option<string?> ProgressFile);
 
 internal static class RunPipelineCommandOptions
 {
@@ -76,11 +78,15 @@ internal static class RunPipelineCommandOptions
             fromStage, only, lipSync, repairLips, forceRerun, refinement, voiceClone, timbre, noTimbre,
             restorePan, matchLoudness, voice, subtitleFormat, subtitleSource,
             burnIn, videoEncoder, preset, batch, inputGlob, recursive, continueOnError,
-            ttsRubberband, noTtsRubberband, ttsRubberbandThreshold, ttsAutoStretchMaxOverrun);
+            ttsRubberband, noTtsRubberband, ttsRubberbandThreshold, ttsAutoStretchMaxOverrun,
+            new Option<string?>("--result-file") { Description = "Write a strict atomic machine result to a new file" },
+            new Option<string?>("--progress-file") { Description = "Write dedicated JSONL progress to a new file" });
     }
 
     public static void AddTo(Command command, PipelineCommandOptions options)
     {
+        command.Add(options.ResultFile);
+        command.Add(options.ProgressFile);
         command.Add(options.Media);
         command.Add(options.TargetLanguage);
         command.Add(options.SourceLanguage);

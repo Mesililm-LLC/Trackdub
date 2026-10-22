@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "projectName": "EN to ES functional fixture",
+  "input": { "uploadId": "00000000-0000-4000-8000-000000000001" },
+  "sourceLanguage": "en",
+  "targetLanguage": "es",
+  "preset": "poc-server-v1"
+}

@@ -1,5 +1,11 @@
 # Cloud GPU container: publish, seed, and warm
 
+For the asynchronous AWS API/supervisor, use the [SnapSoft application acceptance contract](snapsoft-poc-acceptance.md).
+That path adds a CPU API and derived supervisor image; the CLI image below remains one-shot.
+`poc-server-v1` uses `docker/poc-server-models.txt` (MADLAD quantized/CUDA), distinct from
+the historical TRT warm list. Seed with `TRACKDUB_MODEL_SET=docker/poc-server-models.txt`.
+No target AWS GPU readiness is established by packaging or local protocol tests.
+
 Trackdub's Linux GPU worker is a one-shot CLI container. The image contains the application/runtime; model weights, the engine cache, and LinML provider downloads live in persistent Docker volumes. Do not copy TensorRT engine cache files between GPU families, GPU models, or driver versions.
 
 ## Published images

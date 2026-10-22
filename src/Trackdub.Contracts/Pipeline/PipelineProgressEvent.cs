@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Trackdub.Contracts.Pipeline;
 
 /// <summary>
@@ -63,6 +65,7 @@ public sealed record PipelineProgressEvent
     {
     }
 
+    [JsonConstructor]
     public PipelineProgressEvent(
         string StageName,
         PipelineProgressEventKind EventKind,

@@ -597,6 +597,64 @@ public sealed class TranslationLanguageRouterTests
         Assert.Equal(TranslationRoutingKind.Pivot, route.RoutingKind);
     }
 
+    [Fact]
+    public async Task ResolveRouteAsync_WhenUncachedSinglePairSortsFirst_UsesInstalledMultiPairModel()
+    {
+        using var workspace = new TranslationRouterTestWorkspace();
+        BundledModelManifestRegistry registry = workspace.WriteManifest(
+            CreateTranslationSpec("test/opus-mt-en-ROMANCE", ["en-romance"], "manifest-models/romance") with
+            {
+                LanguagePairs = [new ManifestLanguagePairSpec("en", "es"), new ManifestLanguagePairSpec("en", "fr")]
+            });
+        BundledModelManifestEntry multiPair = registry.Entries.Single();
+        registry.AddCatalogEntries([multiPair with
+        {
+            ModelId = "test/opus-mt-en-es",
+            Aliases = ["en-es"],
+            LanguageCoverage = new ModelLanguageCoverage([], [], [new ModelLanguagePair("en", "es")]),
+            CommercialAllowed = true,
+            CommercialUseVerified = true,
+            DownloadFiles = ["onnx/encoder_model.onnx"]
+        }]);
+        string romanceCacheRoot = workspace.CreateCacheRoot("test/opus-mt-en-ROMANCE");
+        workspace.WriteOpusCacheFiles(romanceCacheRoot);
+        var router = new TranslationLanguageRouter(
+            registry,
+            new InMemoryModelCacheInventory(
+            [
+                new LocalModelCacheRecord("test/opus-mt-en-ROMANCE", romanceCacheRoot, "main", ValidSha256, DateTimeOffset.UtcNow)
+            ]),
+            settingsService: new RouterSettings(StudioSettings.Default with { OfflineMode = false, AutoDownloadTranslationModels = true }));
+
+        TranslationRouteSelection route = await router.ResolveRouteAsync("en", "es", CancellationToken.None);
+        TranslationRouteSelection explicitAlias = await router.ResolveRouteAsync("en", "es", CancellationToken.None, preferredModelAlias: "en-es");
+
+        Assert.True(route.IsAvailable);
+        Assert.Equal("test/opus-mt-en-ROMANCE", route.ModelId);
+        Assert.NotEqual(TranslationPreparationStatus.DownloadRequired, route.Status);
+        Assert.Equal(TranslationPreparationStatus.DownloadRequired, explicitAlias.Status);
+        Assert.Equal("test/opus-mt-en-es", explicitAlias.ModelId);
+    }
+
+    [Theory]
+    [InlineData("https://huggingface.co/tonythethompson/madlad400-3b-mt-onnx", "tonythethompson/madlad400-3b-mt-onnx")]
+    [InlineData("https://huggingface.co/onnx-community/opus-mt-en-es/", "onnx-community/opus-mt-en-es")]
+    [InlineData("https://example.invalid/test-model", "test/model")]
+    [InlineData("https://huggingface.co/datasets/org/name", "test/model")]
+    [InlineData("https://huggingface.co/org/name?download=true", "org/name")]
+    [InlineData("https://huggingface.co/org/name#readme", "org/name")]
+    [InlineData("https://huggingface.co/org/name/tree/main", "org/name")]
+    [InlineData("http://huggingface.co/org/name", "test/model")]
+    public void ResolveProvenanceRepository_ReturnsRepoIdFromSourceUrl(string sourceUrl, string expected)
+    {
+        using var workspace = new TranslationRouterTestWorkspace();
+        BundledModelManifestEntry entry = workspace.WriteManifest(
+            CreateTranslationSpec("test/model", ["model"], "manifest-models/model")).Entries.Single() with
+        { SourceUrl = sourceUrl };
+
+        Assert.Equal(expected, TranslationLanguageRouter.ResolveProvenanceRepository(entry));
+    }
+
     private static ManifestSpec CreateTranslationSpec(
         string modelId,
         IReadOnlyList<string> aliases,

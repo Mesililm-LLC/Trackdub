@@ -10,6 +10,17 @@ namespace Trackdub.Application.Tests;
 public sealed class DubbingPipelineEngineTests
 {
     [Fact]
+    public void ExplicitVariantWinsOverPersistedSelection()
+    {
+        var selections = new RuntimeModelSelections(AsrModelOverride.Auto, false, new Dictionary<string, ExecutionProviderKind>(),
+            ModelVariantOverrides: new Dictionary<string, string> { ["translation"] = "int4-kv", [ModelVariantOverrideKeys.Build("translation", "madlad400")] = "int4-kv" });
+        var preferences = new InferenceModelPreferences(PreferredModelVariantAliases:
+            new Dictionary<RuntimeStage, string> { [RuntimeStage.Translation] = "quantized" });
+        var merged = DubbingPipelineEngine.ApplyModelPreferenceAliases(selections, preferences);
+        Assert.Equal("quantized", merged.ModelVariantOverrides!["translation"]);
+        Assert.False(merged.ModelVariantOverrides.ContainsKey(ModelVariantOverrideKeys.Build("translation", "madlad400")));
+    }
+    [Fact]
     public async Task RunStageWorkflowAsync_unknown_stage_fails_with_unsupported_reason()
     {
         var session = new FakeSession();

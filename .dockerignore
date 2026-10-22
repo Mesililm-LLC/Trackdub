@@ -13,6 +13,7 @@
 # Local caches and tooling state
 .pytest_cache/
 .serena/
+.superpowers/
 .remember/
 .qoder/
 .claude/

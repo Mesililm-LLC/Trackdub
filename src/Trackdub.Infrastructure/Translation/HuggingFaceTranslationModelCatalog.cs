@@ -37,6 +37,7 @@ public sealed class HuggingFaceTranslationModelCatalog(HttpClient httpClient, st
                     using HttpResponseMessage response = await httpClient.GetAsync(next, cancellationToken).ConfigureAwait(false);
                     response.EnsureSuccessStatusCode();
                     using JsonDocument page = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false), cancellationToken: cancellationToken).ConfigureAwait(false);
+                    if (page.RootElement.ValueKind != JsonValueKind.Array) throw new InvalidDataException("Invalid catalog page.");
                     foreach (string repository in page.RootElement.EnumerateArray()
                         .Select(item => GetString(item, "id"))
                         .Where(repository => repository is not null && repository.StartsWith(publisher + "/opus-mt-", StringComparison.Ordinal))
@@ -49,6 +50,13 @@ public sealed class HuggingFaceTranslationModelCatalog(HttpClient httpClient, st
                         catch (InvalidDataException ex)
                         {
                             exclusions.Add(new(repository, ex.Message));
+                        }
+                        catch (Exception ex) when (ex is InvalidOperationException or KeyNotFoundException or FormatException)
+                        {
+                            // A well-formed but wrongly shaped per-model payload the explicit checks missed must
+                            // exclude only that candidate. Unparseable JSON (JsonException) still aborts the refresh
+                            // so a truncated response never replaces the complete snapshot.
+                            exclusions.Add(new(repository, "Malformed repository metadata."));
                         }
                         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
                         {
@@ -88,6 +96,7 @@ public sealed class HuggingFaceTranslationModelCatalog(HttpClient httpClient, st
             throw new InvalidDataException("Invalid repository identifier.");
         using JsonDocument detail = await GetJsonAsync($"https://huggingface.co/api/models/{repository}?blobs=true", ct).ConfigureAwait(false);
         JsonElement root = detail.RootElement;
+        if (root.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Invalid model metadata.");
         string revision = GetString(root, "sha") ?? throw new InvalidDataException("Missing pinned revision.");
         if (revision.Length != 40 || !revision.All(Uri.IsHexDigit)) throw new InvalidDataException("Invalid pinned revision.");
         string pair = repository[(repository.IndexOf("/opus-mt-", StringComparison.Ordinal) + 9)..];
@@ -141,13 +150,19 @@ public sealed class HuggingFaceTranslationModelCatalog(HttpClient httpClient, st
     private async Task<ImmutableArray<TranslationModelFile>> CollectFilesAsync(string repository, string revision, JsonElement root, CancellationToken ct)
     {
         var files = ImmutableArray.CreateBuilder<TranslationModelFile>();
-        foreach (JsonElement file in root.GetProperty("siblings").EnumerateArray())
+        if (!root.TryGetProperty("siblings", out JsonElement siblings) || siblings.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException("Missing model file list.");
+        foreach (JsonElement file in siblings.EnumerateArray())
         {
+            if (file.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Invalid model file entry.");
             string path = GetString(file, "rfilename") ?? "";
             if (!IsRequiredFile(path)) continue;
             if (path.Split('/').Any(segment => segment is ".." or "." or "") || path.Contains('\\') || path.Contains(':')) throw new InvalidDataException("Unsafe artifact path.");
             string? hash = file.TryGetProperty("lfs", out JsonElement lfs) ? GetString(lfs, "sha256") : null;
-            long size = file.TryGetProperty("size", out JsonElement sizeElement) ? sizeElement.GetInt64() : 0;
+            long size = 0;
+            if (file.TryGetProperty("size", out JsonElement sizeElement) &&
+                (sizeElement.ValueKind != JsonValueKind.Number || !sizeElement.TryGetInt64(out size) || size < 0))
+                throw new InvalidDataException($"Invalid file size: {path}");
             if (hash is null && !path.EndsWith(".onnx", StringComparison.Ordinal))
             {
                 byte[] metadata = await ReadMetadataAsync($"https://huggingface.co/{repository}/resolve/{revision}/{path}", ct).ConfigureAwait(false);
@@ -255,6 +270,7 @@ public sealed class HuggingFaceTranslationModelCatalog(HttpClient httpClient, st
             TranslationModelCatalogSnapshot? cached = File.Exists(path) ? JsonSerializer.Deserialize<TranslationModelCatalogSnapshot>(File.ReadAllText(path)) : null;
             if (cached is null || cached.PolicyVersion != Policy || cached.Models.IsDefault || cached.Exclusions.IsDefault) return TranslationModelCatalogSnapshot.Empty;
             if (cached.Models.Any(model => model.Files.IsDefaultOrEmpty ||
+                !IsSafeRepositoryId(model.Repository) ||
                 !Publishers.Any(publisher => model.Repository.StartsWith(publisher + "/opus-mt-", StringComparison.Ordinal)) ||
                 model.Revision.Length != 40 || !model.Revision.All(Uri.IsHexDigit) ||
                 model.License is not ("apache-2.0" or "mit" or "cc-by-4.0") ||

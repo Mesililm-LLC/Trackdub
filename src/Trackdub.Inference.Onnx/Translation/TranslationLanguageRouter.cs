@@ -225,6 +225,14 @@ public sealed class TranslationLanguageRouter(
             return preferredRoute!;
         }
 
+        // An installed direct model (e.g. a multi-pair opus-mt-en-ROMANCE) must win over an uninstalled
+        // single-pair entry that sorts ahead of it; only an explicit alias forces that alias's download.
+        if (string.IsNullOrWhiteSpace(preferredModelAlias) &&
+            TryResolveDirectRoute(context, normalizedSourceLanguage, normalizedTargetLanguage, out TranslationRouteSelection? directRoute))
+        {
+            return directRoute!;
+        }
+
         var downloadable = GetDirectEntriesForPair(context, normalizedSourceLanguage, normalizedTargetLanguage)
             .FirstOrDefault(entry => entry.CommercialAllowed && entry.CommercialUseVerified && entry.DownloadFiles.Count > 0 &&
                 (string.IsNullOrWhiteSpace(preferredModelAlias) || HasAlias(entry, preferredModelAlias)));
@@ -239,11 +247,6 @@ public sealed class TranslationLanguageRouter(
             return new TranslationRouteSelection(normalizedSourceLanguage, normalizedTargetLanguage,
                 TranslationRoutingKind.Unavailable, false, "none", "Unavailable",
                 UnavailableReason: $"Selected translation model '{preferredModelAlias}' is not available for this language pair.");
-
-        if (TryResolveDirectRoute(context, normalizedSourceLanguage, normalizedTargetLanguage, out TranslationRouteSelection? directRoute))
-        {
-            return directRoute!;
-        }
 
         if (TryResolveMadladPivotRoute(context, normalizedSourceLanguage, normalizedTargetLanguage, out TranslationRouteSelection? madladRoute))
         {
@@ -387,7 +390,7 @@ public sealed class TranslationLanguageRouter(
                 ResolvedModelEntryPath: entryPath,
                 EngineFamily: entry.EngineFamily,
                 ModelProvenance: new Trackdub.Domain.Translation.TranslationModelProvenance(
-                    entry.SourceUrl, entry.Revision, entry.Sha256,
+                    ResolveProvenanceRepository(entry), entry.Revision, entry.Sha256,
                     new Dictionary<string, string>(entry.DownloadFileHashes),
                     entry.TargetPrefixes?.GetValueOrDefault(targetLanguage), entry.CatalogPolicyVersion));
             return true;
@@ -452,7 +455,7 @@ public sealed class TranslationLanguageRouter(
                 ResolvedModelEntryPath: entryPath,
                 EngineFamily: entry.EngineFamily,
                 ModelProvenance: new Trackdub.Domain.Translation.TranslationModelProvenance(
-                    entry.SourceUrl, entry.Revision, entry.Sha256,
+                    ResolveProvenanceRepository(entry), entry.Revision, entry.Sha256,
                     new Dictionary<string, string>(entry.DownloadFileHashes),
                     entry.TargetPrefixes?.GetValueOrDefault(targetLanguage), entry.CatalogPolicyVersion));
             return true;
@@ -513,7 +516,7 @@ public sealed class TranslationLanguageRouter(
                 ResolvedModelEntryPath: entryPath,
                 EngineFamily: entry.EngineFamily,
                 ModelProvenance: new Trackdub.Domain.Translation.TranslationModelProvenance(
-                    entry.SourceUrl, entry.Revision, entry.Sha256,
+                    ResolveProvenanceRepository(entry), entry.Revision, entry.Sha256,
                     new Dictionary<string, string>(entry.DownloadFileHashes),
                     entry.TargetPrefixes?.GetValueOrDefault(targetLanguage), entry.CatalogPolicyVersion));
             return true;
@@ -524,6 +527,28 @@ public sealed class TranslationLanguageRouter(
 
     private static bool HasGenAiSupportingFiles(string modelRootPath) =>
         File.Exists(Path.Join(modelRootPath, "genai_config.json"));
+
+    // Provenance records a Hugging Face repo id, not a URL. The source URL's repo (not ModelId) is the one
+    // the recorded revision and hashes belong to; MADLAD's ModelId is google/madlad400-3b-mt but its
+    // files come from tonythethompson/madlad400-3b-mt-onnx.
+    internal static string ResolveProvenanceRepository(BundledModelManifestEntry entry)
+    {
+        if (Uri.TryCreate(entry.SourceUrl, UriKind.Absolute, out Uri? uri)
+            && uri.Scheme == Uri.UriSchemeHttps
+            && string.Equals(uri.Host, "huggingface.co", StringComparison.OrdinalIgnoreCase))
+        {
+            // AbsolutePath already excludes any query string or fragment.
+            string[] segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            bool isRepositoryPage = segments.Length == 2
+                || (segments.Length > 2 && segments[2] is "tree" or "blob" or "resolve");
+            if (isRepositoryPage)
+            {
+                return segments[0] + "/" + segments[1];
+            }
+        }
+
+        return entry.ModelId;
+    }
 
     private static IReadOnlyList<BundledModelManifestEntry> GetDirectEntriesForPair(
         TranslationRoutingContext context,

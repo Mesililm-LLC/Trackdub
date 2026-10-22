@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup><ProjectReference Include="../Trackdub.Cloud/Trackdub.Cloud.csproj" /></ItemGroup>
+  <ItemGroup><PackageReference Include="AWSSDK.DynamoDBv2" /><PackageReference Include="AWSSDK.S3" /></ItemGroup>
+</Project>
