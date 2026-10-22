@@ -63,6 +63,15 @@ public sealed class JobReconciliationTests
         Assert.Equal(JobState.Succeeded, s.Store.Jobs[s.Job.Id].State); Assert.Equal(0, s.Scheduler.Submissions);
     }
     [Fact]
+    public async Task RecoveredCandidateEscapingItsAttemptFailsWithResultInvalid()
+    {
+        var s = Setup(recover: true);
+        s.Objects.Candidate = s.Objects.Candidate! with { ResultObject = s.Objects.Candidate.ResultObject with { Key = "other-attempt/result.json" } };
+        await s.Controller.TickAsync(TestContext.Current.CancellationToken);
+        var job = s.Store.Jobs[s.Job.Id];
+        Assert.Equal(JobState.Failed, job.State); Assert.Equal("RESULT_INVALID", job.Error?.Code);
+    }
+    [Fact]
     public async Task InterruptedArtifactVerificationRetriesWithoutResubmitting()
     {
         var s = Setup(); s.Objects.FailVerification = true;

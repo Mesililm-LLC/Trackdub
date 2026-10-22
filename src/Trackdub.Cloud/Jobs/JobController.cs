@@ -85,7 +85,15 @@ public sealed class JobController(IJobStore store, JobService jobs, IJobSchedule
         // Every execution sharing the dispatch must cease before publication.
         if (executions.Any(e => !e.Stopped)) return;
         if (active.ExitCode == 0 && job.Candidate is null)
-            job = await RecoverCandidateAsync(job, token).ConfigureAwait(false);
+        {
+            var recoveredJob = await RecoverCandidateAsync(job, token).ConfigureAwait(false);
+            if (recoveredJob is null)
+            {
+                await FailAsync(job, "RESULT_INVALID", token).ConfigureAwait(false);
+                return;
+            }
+            job = recoveredJob;
+        }
         if (active.ExitCode != 0 || job.Candidate is null || job.Candidate.CliExitCode != 0)
         {
             await FailAsync(job, active.ExitCode != 0 ? "WORKER_CRASHED" : "RESULT_MISSING", token).ConfigureAwait(false);
@@ -106,15 +114,18 @@ public sealed class JobController(IJobStore store, JobService jobs, IJobSchedule
         await SucceedAsync(job, candidate, outcome, token).ConfigureAwait(false);
     }
 
-    private async Task<JobRecord> RecoverCandidateAsync(JobRecord job, CancellationToken token)
+    // Returns the job with the recovered candidate, the unchanged job when nothing usable was recovered, or null when the stored candidate is invalid.
+    private async Task<JobRecord?> RecoverCandidateAsync(JobRecord job, CancellationToken token)
     {
-        var recovered = await artifacts.RecoverCandidateAsync(job, token).ConfigureAwait(false);
+        AttemptOutcome? recovered;
+        try { recovered = await artifacts.RecoverCandidateAsync(job, token).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or JobException) { return null; }
         if (recovered is null || recovered.Claim != new ExecutionClaim(job.Id, job.AttemptId, job.DispatchId, job.ExecutionId!, job.Generation))
             return job;
         string prefix = JobService.AttemptPrefix(job);
         if (!recovered.ResultObject.Key.StartsWith(prefix, StringComparison.Ordinal)
             || recovered.Artifacts.Any(a => !a.Object.Key.StartsWith(prefix, StringComparison.Ordinal)))
-            throw new JobException("RESULT_INVALID", 409, "Recovered candidate escaped its attempt.");
+            return null;
         return await jobs.MutateAsync(job.Id, current => current.IsTerminal || current.CancelRequestedAt is not null
             || current.Generation != job.Generation ? current : current with { Candidate = recovered }, token).ConfigureAwait(false);
     }
