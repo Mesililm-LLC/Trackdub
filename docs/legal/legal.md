@@ -236,8 +236,8 @@ Each entry should include:
 ## NvTensorRTRTXExecutionProvider (NVIDIA TensorRT RTX EP ABI plugin)
 
 - name: NvTensorRTRTXExecutionProvider (NVIDIA TensorRT RTX execution provider via ONNX Runtime EP ABI plugin bundle)
-- version / revision: pinned bundle `0.4.2` (win-x64) / `0.4.0` (linux-x64), CUDA `cu13`, vendoring TensorRT-RTX `1.6.1`, per `runtime/trt-rtx-ep.manifest.json` (NVIDIA TensorRT-RTX-EP-ABI releases v0.4.2 and v0.4.0)
-- source URL: https://onnxruntime.ai/docs/execution-providers/TensorRTRTX-ExecutionProvider.html (upstream EP docs); bundle archives from https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/tag/v0.4.2 (win-x64) and https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/tag/v0.4.0 (linux-x64)
+- version / revision: pinned bundle `0.5.0` (win-x64 and linux-x64), CUDA `cu13`, vendoring TensorRT-RTX `1.7.1`, per `runtime/trt-rtx-ep.manifest.json` (NVIDIA TensorRT-RTX-EP-ABI release v0.5.0)
+- source URL: https://onnxruntime.ai/docs/execution-providers/TensorRTRTX-ExecutionProvider.html (upstream EP docs); bundle archives from https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/tag/v0.5.0 (win-x64 and linux-x64)
 - license: NVIDIA SOFTWARE LICENSE AGREEMENT (TensorRT-RTX) and NVIDIA CUDA EULA (see https://docs.nvidia.com/deeplearning/tensorrt-rtx/latest/reference/sla.html and https://docs.nvidia.com/cuda/eula/index.html)
 - commercial use allowed? yes, subject to NVIDIA TensorRT-RTX and CUDA license terms
 - redistribution allowed? yes, via Trackdub’s manifest-driven download/install of the EP ABI plugin bundle into the user data directory; not via Windows ML catalog

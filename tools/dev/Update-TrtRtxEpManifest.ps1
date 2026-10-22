@@ -7,10 +7,10 @@
   Downloads win-x64 and linux-x64 archives from the NVIDIA GitHub release tag(s), computes
   SHA-256 and size, and patches runtime/trt-rtx-ep.manifest.json.
 
-  NVIDIA does not publish every platform on every tag (v0.4.2 is Windows-only); pass
+  NVIDIA does not publish every platform on every tag (v0.4.2 was Windows-only); pass
   -LinuxVersion to pin the linux-x64 package to an older tag. It is recorded as a per-package
   "version" and drives that platform's install directory. -TrtRtxRuntimeVersion is the
-  TensorRT-RTX runtime the bundle vendors (e.g. tensorrt_rtx_1_6.dll -> 1.6.x); it must match
+  TensorRT-RTX runtime the bundle vendors (e.g. tensorrt_rtx_1_7.dll -> 1.7.x); it must match
   TensorRtRtxProviderConstants.BundledTrtRtxRuntimeVersion because it feeds the smoke-verdict
   and EP-context invalidation fingerprints.
 

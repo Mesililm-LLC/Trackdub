@@ -15,8 +15,8 @@ internal static class TrtRtxEpRequiredFiles
     private static readonly IReadOnlyList<string> s_windowsFiles =
     [
         "onnxruntime_providers_nv_tensorrt_rtx.dll",
-        "tensorrt_rtx_1_6.dll",
-        "tensorrt_onnxparser_rtx_1_6.dll",
+        "tensorrt_rtx_1_7.dll",
+        "tensorrt_onnxparser_rtx_1_7.dll",
     ];
 
     public static IReadOnlyList<string> RequiredFileNames =>

@@ -10,11 +10,11 @@ public static class TensorRtRtxProviderConstants
 
     public const string PluginLibraryFileNameLinux = "libonnxruntime_providers_nv_tensorrt_rtx.so";
 
-    public const string TensorRtRuntimeFileNameWindows = "tensorrt_rtx_1_6.dll";
+    public const string TensorRtRuntimeFileNameWindows = "tensorrt_rtx_1_7.dll";
 
     public const string TensorRtRuntimeFileNameLinux = "libtensorrt_rtx.so";
 
-    public const string TensorRtOnnxParserFileNameWindows = "tensorrt_onnxparser_rtx_1_6.dll";
+    public const string TensorRtOnnxParserFileNameWindows = "tensorrt_onnxparser_rtx_1_7.dll";
 
     public const string TensorRtOnnxParserFileNameLinux = "libtensorrt_onnxparser_rtx.so";
 
@@ -22,11 +22,11 @@ public static class TensorRtRtxProviderConstants
 
     public const string CudaRuntimeBinDirectoryEnvironmentVariable = "TRACKDUB_CUDA_BIN_DIR";
 
-    // NVIDIA publishes EP ABI assets per platform on different tags: v0.4.2 is Windows-only,
-    // v0.4.0 is the newest linux-x86_64 cu13 asset. Both vendor TensorRT-RTX 1.6.1.
-    public const string BundledVersionWindows = "0.4.2";
+    // NVIDIA does not publish every platform on every EP ABI tag (v0.4.2 was Windows-only), so the
+    // pin stays per-platform. v0.5.0 ships both win-x64 and linux-x86_64 cu13, vendoring TensorRT-RTX 1.7.1.
+    public const string BundledVersionWindows = "0.5.0";
 
-    public const string BundledVersionLinux = "0.4.0";
+    public const string BundledVersionLinux = "0.5.0";
 
     public const string BundledCudaVariant = "cu13";
 
@@ -34,7 +34,7 @@ public static class TensorRtRtxProviderConstants
     /// TensorRT-RTX runtime vendored by the pinned EP ABI bundle. Tracked separately from the EP ABI
     /// version because the runtime lineage can move without the plugin version moving.
     /// </summary>
-    public const string BundledTrtRtxRuntimeVersion = "1.6.1";
+    public const string BundledTrtRtxRuntimeVersion = "1.7.1";
 
     public static string BundledVersion =>
         OperatingSystem.IsLinux() ? BundledVersionLinux : BundledVersionWindows;
@@ -83,7 +83,7 @@ public static class TensorRtRtxProviderConstants
     public const string WindowsInstallHint =
         "Use Install in Model Manager to download TensorRT-RTX-EP-ABI v" + BundledVersionWindows + " " + BundledCudaVariant
         + " for win-x64, or run tools/dev/Fetch-TrtRtxEp.ps1, then refresh readiness. "
-        + "No CUDA Toolkit is required: the CUDA runtime is statically linked into the TensorRT-RTX 1.6 bundle.";
+        + "No CUDA Toolkit is required: the CUDA runtime is statically linked into the TensorRT-RTX 1.7 bundle.";
 
     public static string GetDefaultInstallDirectory(string userDataRoot, string runtimeIdentifier) =>
         Path.Join(

@@ -49,8 +49,9 @@
       "id": "nvidia",
       "prefix": "vendor/nvidia",
       "sources": [
-        ["ep-abi-v042", "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/tag/v0.4.2"],
-        ["ep-abi-v040", "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/tag/v0.4.0"],
+        ["ep-abi-v050", "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/tag/v0.5.0"],
+        ["ep-abi-v050-technical-notes", "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/blob/v0.5.0/docs/technical-notes.md"],
+        ["trt-rtx-release-notes-1-7", "https://docs.nvidia.com/deeplearning/tensorrt-rtx/latest/getting-started/release-notes-1/1.7.html"],
         ["ep-abi-readme", "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI"],
         ["trt-rtx-index", "https://docs.nvidia.com/deeplearning/tensorrt-rtx/latest/index.html"],
         ["trt-rtx-arch", "https://docs.nvidia.com/deeplearning/tensorrt-rtx/latest/architecture/architecture-overview.html"],

@@ -63,7 +63,7 @@ public sealed class TensorRtRtxCudaRuntimeBootstrapTests
             return;
         }
 
-        // The Windows cu13 TensorRT-RTX 1.6 binaries import no cudart DLL (static CUDA runtime).
+        // The Windows cu13 TensorRT-RTX binaries (1.6, and 1.7 in EP ABI 0.5.0) import no cudart DLL (static CUDA runtime).
         Assert.Null(TensorRtRtxCudaRuntimeBootstrap.RequiredCudaRuntimeFileName);
         TensorRtRtxCudaRuntimeEnsureResult result = TensorRtRtxCudaRuntimeBootstrap.TryEnsureLoadedResult();
 

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Trackdub.Inference.Onnx;
 using Trackdub.Inference.Onnx.TensorRtRtx;
 using Trackdub.Inference.Runtime.TensorRtRtx;
 using Trackdub.Infrastructure.Runtime.TrtRtxEp;
@@ -142,14 +143,25 @@ public sealed class TrtRtxBundlePinTests
         Assert.Equal(userChosen, resolution.DirectoryPath);
     }
 
+    [Fact]
+    public void Runtime_cache_path_is_scoped_to_the_bundled_fingerprint()
+    {
+        string path = OnnxExecutionSessionFactory.ResolveTensorRtRtxRuntimeCachePath();
+
+        Assert.Equal(TensorRtRtxProviderConstants.BundledFingerprintVersion, Path.GetFileName(path));
+        Assert.Equal("trt-rtx", Path.GetFileName(Path.GetDirectoryName(path)));
+    }
+
     [Theory]
     [InlineData(@"0.3.0\cu12\win-x64", true)]
     [InlineData(@"0.4.2\cu12\win-x64", true)]
+    [InlineData(@"0.4.2\cu13\win-x64", true)]
+    [InlineData(@"0.4.0\cu13\linux-x64", true)]
     [InlineData(@"CURRENT", false)]
     public void IsSupersededManagedInstallDirectory_detects_other_versions_under_the_managed_root(string relative, bool expected)
     {
         string root = Path.GetFullPath(Path.Join(Path.GetTempPath(), "trackdub-pin", "Providers", "trt-rtx"));
-        string current = Path.Join(root, "0.4.2", "cu13", "win-x64");
+        string current = Path.Join(root, "0.5.0", "cu13", "win-x64");
         string candidate = relative == "CURRENT"
             ? current
             : Path.Join(root, relative.Replace('\\', Path.DirectorySeparatorChar));

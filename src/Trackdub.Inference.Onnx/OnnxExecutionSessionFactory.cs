@@ -2301,14 +2301,28 @@ internal static class OnnxExecutionSessionFactory
         // true, so omitting it leaves capture on rather than off.
         trtOptions["enable_cuda_graph"] = enableCudaGraph ? "1" : "0";
 
-        if (additionalTrtOptions is null)
+        if (additionalTrtOptions is not null)
         {
-            return trtOptions;
+            MergeAdditionalTensorRtRtxOptions(trtOptions, additionalTrtOptions);
         }
 
+        TensorRtRtxDriverWorkarounds.Apply(
+            trtOptions,
+            EpContextLoadPathResolver.CurrentHardware.DriverVersion,
+            OperatingSystem.IsWindows());
+        return trtOptions;
+    }
+
+    private static void MergeAdditionalTensorRtRtxOptions(
+        Dictionary<string, string> trtOptions,
+        IReadOnlyDictionary<string, string> additionalTrtOptions)
+    {
         foreach ((string key, string value) in additionalTrtOptions)
         {
-            if (ClassicTrtProfileKeysToNvRtx.ContainsKey(key))
+            // EP ABI 0.5.0 removed device_id (the device comes from the selected OrtEpDevice);
+            // passing it through would fail session creation on an unknown option.
+            if (ClassicTrtProfileKeysToNvRtx.ContainsKey(key) ||
+                string.Equals(key, "device_id", StringComparison.Ordinal))
             {
                 continue;
             }
@@ -2328,8 +2342,6 @@ internal static class OnnxExecutionSessionFactory
                 trtOptions[nvKey] = shapes;
             }
         }
-
-        return trtOptions;
     }
 
     /// <summary>
@@ -2416,7 +2428,7 @@ internal static class OnnxExecutionSessionFactory
 
     internal static string ResolveClassicTensorRtEngineCacheDirectory(string environmentFingerprint) =>
         Path.Join(
-            ResolveTensorRtRtxRuntimeCachePath(),
+            ResolveEngineCacheRoot(),
             "classic-trt",
             SanitizeClassicTensorRtCacheKey(environmentFingerprint));
 
@@ -2574,7 +2586,12 @@ internal static class OnnxExecutionSessionFactory
         return merged;
     }
 
-    private static string ResolveTensorRtRtxRuntimeCachePath()
+    // TensorRT-RTX runtime caches are not portable across runtime versions, so each pinned
+    // EP ABI + runtime lineage gets its own directory and an upgrade never feeds old kernels in.
+    internal static string ResolveTensorRtRtxRuntimeCachePath() =>
+        Path.Join(ResolveEngineCacheRoot(), "trt-rtx", TensorRtRtxProviderConstants.BundledFingerprintVersion);
+
+    private static string ResolveEngineCacheRoot()
     {
         string? engineCacheRoot = Environment.GetEnvironmentVariable(EngineCacheRootEnvironmentVariable);
         if (!string.IsNullOrWhiteSpace(engineCacheRoot))
