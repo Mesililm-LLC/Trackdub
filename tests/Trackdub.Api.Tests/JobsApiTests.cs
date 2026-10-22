@@ -20,13 +20,21 @@ namespace Trackdub.Api.Tests;
 
 public sealed class JobsApiTests
 {
-    private sealed class Factory(bool processing = true) : WebApplicationFactory<Program>
+    private sealed class Factory : WebApplicationFactory<Program>
     {
+        private readonly bool _processing;
+        private readonly RSA _rsa;
         public FakeJobStore Store { get; } = new();
-        public RsaSecurityKey Key { get; } = new(RSA.Create(2048)) { KeyId = "test-key" };
+        public RsaSecurityKey Key { get; }
+        public Factory(bool processing = true)
+        {
+            _processing = processing;
+            _rsa = RSA.Create(2048);
+            Key = new RsaSecurityKey(_rsa) { KeyId = "test-key" };
+        }
         protected override void Dispose(bool disposing)
         {
-            if (disposing) Key.Rsa?.Dispose();
+            if (disposing) _rsa.Dispose();
             base.Dispose(disposing);
         }
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -36,7 +44,7 @@ public sealed class JobsApiTests
             builder.UseSetting("Cloud:JwtClientId", "poc-client");
             builder.UseSetting("Cloud:TableName", "unused");
             builder.UseSetting("Cloud:BucketName", "unused");
-            builder.UseSetting("Cloud:ProcessingEnabled", processing.ToString());
+            builder.UseSetting("Cloud:ProcessingEnabled", _processing.ToString());
             builder.ConfigureTestServices(services =>
             {
                 services.RemoveAll<IJobStore>(); services.RemoveAll<IArtifactStore>();
