@@ -2,6 +2,7 @@ using Trackdub.Application.Pipeline;
 using Trackdub.Application.Projects;
 using Trackdub.Application.Transcripts.Pipeline;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Translation;
 using Trackdub.Contracts.ApplicationContracts;
 using Trackdub.Contracts.Projects;
 using Trackdub.Contracts.Pipeline;
@@ -31,7 +32,8 @@ public sealed class TranslationOrchestrationService(
     ILogger<TranslationOrchestrationService>? logger = null,
     IApplicationLogger? applicationLogger = null,
     IRuntimePlanningPreferences? runtimePlanningPreferences = null,
-    IAtomicRevisionCommitBoundary? commitBoundary = null)
+    IAtomicRevisionCommitBoundary? commitBoundary = null,
+    ITranslationModelProvisioner? modelProvisioner = null)
 {
     // Sentinel language code meaning "follow the transcript's persisted or detected language".
     private const string AutoLanguageCode = "auto";
@@ -221,11 +223,15 @@ public sealed class TranslationOrchestrationService(
         string targetLanguage = TranscriptWorkflowUtilities.NormalizeTranslationTargetLanguageCode(request.TargetLanguage);
 
         PipelineProgressReporter.Phase(progress, StageNames.Translation, "Resolving model");
+        string? provisionedAlias = modelProvisioner is null ? request.PreferredModelAlias :
+            await modelProvisioner.EnsureAsync(sourceLanguage, targetLanguage, request.PreferredModelAlias, cancellationToken,
+                new TranslationPreparationProgress(progress)).ConfigureAwait(false);
+        PipelineProgressReporter.Phase(progress, StageNames.Translation, "Initializing translation model");
         TranslationRouteSelection route = await translationLanguageRouter.ResolveRouteAsync(
             sourceLanguage,
             targetLanguage,
             cancellationToken,
-            request.PreferredModelAlias).ConfigureAwait(false);
+            provisionedAlias).ConfigureAwait(false);
         if (!route.IsAvailable)
         {
             throw new InvalidOperationException(
@@ -308,7 +314,8 @@ public sealed class TranslationOrchestrationService(
                 now,
                 translationProvider: executionMetadata?.ProviderName ?? route.ProviderName,
                 modelId: executionMetadata?.ModelId ?? route.ModelId,
-                executionProvider: executionMetadata?.SelectedExecutionProvider);
+                executionProvider: executionMetadata?.SelectedExecutionProvider,
+                modelProvenance: executionMetadata?.ModelProvenance ?? route.ModelProvenance);
             Dictionary<int, TranscriptSegment> sourceSegmentsByIndex = currentState.TranscriptSegments
                 .OrderBy(segment => segment.SegmentIndex)
                 .ToDictionary(segment => segment.SegmentIndex);
@@ -563,11 +570,13 @@ public sealed class TranslationOrchestrationService(
             .FirstOrDefault(segment => segment.Id == request.SegmentId)
             ?? throw new InvalidOperationException("The selected transcript segment is no longer available.");
 
+        string? provisionedAlias = modelProvisioner is null ? request.PreferredModelAlias :
+            await modelProvisioner.EnsureAsync(sourceLanguage, targetLanguage, request.PreferredModelAlias, cancellationToken).ConfigureAwait(false);
         TranslationRouteSelection route = await translationLanguageRouter.ResolveRouteAsync(
             sourceLanguage,
             targetLanguage,
             cancellationToken,
-            request.PreferredModelAlias).ConfigureAwait(false);
+            provisionedAlias).ConfigureAwait(false);
         if (!route.IsAvailable)
         {
             throw new InvalidOperationException(
@@ -620,7 +629,8 @@ public sealed class TranslationOrchestrationService(
                 now,
                 translationProvider: executionMetadata?.ProviderName ?? route.ProviderName,
                 modelId: executionMetadata?.ModelId ?? route.ModelId,
-                executionProvider: executionMetadata?.SelectedExecutionProvider);
+                executionProvider: executionMetadata?.SelectedExecutionProvider,
+                modelProvenance: executionMetadata?.ModelProvenance ?? route.ModelProvenance);
 
             TranslatedSegment replacementSegment = TranslatedSegment.Create(
                 translationRevision.Id,
@@ -757,7 +767,8 @@ public sealed class TranslationOrchestrationService(
             now,
             currentTranslationRevision.TranslationProvider,
             currentTranslationRevision.ModelId,
-            currentTranslationRevision.ExecutionProvider);
+            currentTranslationRevision.ExecutionProvider,
+            modelProvenance: currentTranslationRevision.ModelProvenance);
         HashSet<int> changedSegmentIndices = currentState.TranslatedSegments
             .Where(segment => replacements.TryGetValue(segment.SegmentIndex, out string? replacement) &&
                               !string.Equals(segment.Text, replacement, StringComparison.Ordinal))
@@ -828,7 +839,8 @@ public sealed class TranslationOrchestrationService(
             now,
             sourceRevision?.TranslationProvider,
             sourceRevision?.ModelId,
-            sourceRevision?.ExecutionProvider);
+            sourceRevision?.ExecutionProvider,
+            modelProvenance: sourceRevision?.ModelProvenance);
 
         TranslatedSegment[] restoredSegments = translatedSegments
             .OrderBy(segment => segment.SegmentIndex)
@@ -898,6 +910,11 @@ public sealed class TranslationOrchestrationService(
             }, cancellationToken).ConfigureAwait(false);
         return new TranslationStreamCommit(runId, snapshotId, sourceRevisionId,
             translationRequest.Segments.Select(segment => segment.Index).ToArray(), collected);
+    }
+
+    private sealed class TranslationPreparationProgress(IProgress<PipelineProgressEvent>? progress) : IProgress<string>
+    {
+        public void Report(string value) => PipelineProgressReporter.Phase(progress, StageNames.Translation, value);
     }
 
     private static TranslationExecutionMetadata? GetTranslationExecutionMetadata(object stageEngine) =>

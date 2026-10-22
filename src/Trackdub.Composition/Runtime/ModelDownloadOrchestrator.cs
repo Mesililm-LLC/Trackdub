@@ -15,7 +15,8 @@ public sealed class ModelDownloadOrchestrator(
     IModelDownloaderContract downloader,
     TrackdubStoragePaths storagePaths,
     IModelHashVerifier? hashVerifier = null,
-    IApplicationLogger? logger = null)
+    IApplicationLogger? logger = null,
+    IStudioSettingsService? settingsService = null)
     : IModelDownloadOrchestrator, IModelCacheVerifier, IDisposable
 {
     private readonly BundledModelManifestRegistry manifestRegistry = manifestRegistry ?? throw new ArgumentNullException(nameof(manifestRegistry));
@@ -126,6 +127,15 @@ public sealed class ModelDownloadOrchestrator(
                     if (LocalModelCacheRecordStore.RootsEqual(installedRootDirectory, modelRootDirectory))
                         deltaFiles = missingFiles;
                 }
+            }
+
+            // Cached verification remains available offline, but no UI or headless
+            // caller may start a network download while offline mode is enabled.
+            if (settingsService is not null &&
+                (await settingsService.LoadAsync(cancellationToken).ConfigureAwait(false)).OfflineMode)
+            {
+                return new ModelDownloadResult(modelId, false, gatedState,
+                    "Offline mode prevents downloading model files. Install the model while online first.");
             }
 
             EmitStateChange(modelId, gatedState, ModelCacheState.Downloading);

@@ -39,6 +39,9 @@ public enum ReadinessState
     /// <summary>A cloud engine would egress data to an external provider without recorded user consent.</summary>
     CloudEgressConsentRequired = 9,
 
+    /// <summary>The selected speech model does not support the requested dubbed language.</summary>
+    UnsupportedLanguage = 10,
+
     // ── Non-blocking states ────────────────────────────────────────────────────
 
     /// <summary>Stage is fully ready to execute.</summary>
@@ -57,6 +60,9 @@ public enum ReadinessState
     /// <see cref="PipelineReadinessReport"/>.
     /// </summary>
     Unverified = 103,
+
+    /// <summary>Translation pair selection and provisioning will be checked after source resolution.</summary>
+    PendingTranslationResolution = 104,
 }
 
 public static class ReadinessStateExtensions
@@ -72,5 +78,6 @@ public static class ReadinessStateExtensions
             or ReadinessState.CommercialBlocked
             or ReadinessState.CloudKeyMissing
             or ReadinessState.ConsentRequired
-            or ReadinessState.CloudEgressConsentRequired;
+            or ReadinessState.CloudEgressConsentRequired
+            or ReadinessState.UnsupportedLanguage;
 }

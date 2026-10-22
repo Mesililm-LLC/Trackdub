@@ -15,10 +15,10 @@ namespace Trackdub.Composition.Tests.Pipeline;
 public sealed class ReadinessResolveActionTests
 {
     [Theory]
-    [InlineData("auto", "bundle-needed")]
-    [InlineData("shipped-default", "bundle-needed")]
-    [InlineData("serialized-default", "bundle-needed")]
-    [InlineData("generated-alias", "bundle-needed")]
+    [InlineData("auto", null)]
+    [InlineData("shipped-default", null)]
+    [InlineData("serialized-default", null)]
+    [InlineData("generated-alias", null)]
     [InlineData("caller", "download")]
     [InlineData("caller-default", "download")]
     [InlineData("saved", "download")]
@@ -26,8 +26,8 @@ public sealed class ReadinessResolveActionTests
     [InlineData("pack", "download")]
     [InlineData("override", "download")]
     [InlineData("legacy-configured-default", "download")]
-    [InlineData("provider-only", "bundle-needed")]
-    public async Task EvaluateAsync_uses_request_provenance_even_when_planner_resolves_a_different_alias(string origin, string action)
+    [InlineData("provider-only", null)]
+    public async Task EvaluateAsync_uses_request_provenance_even_when_planner_resolves_a_different_alias(string origin, string? action)
     {
         var settings = StudioSettings.Default with { TranslationModelOverride = TranslationModelOverride.Auto };
         var selections = origin switch
@@ -50,6 +50,14 @@ public sealed class ReadinessResolveActionTests
         var report = await service.EvaluateAsync([RuntimeStage.Translation], selections, state: null, cancellationToken: TestContext.Current.CancellationToken);
         StageReadiness stage = Assert.Single(report.Stages);
         Assert.Equal(action, stage.ResolveAction);
+        if (action is null)
+        {
+            Assert.Equal(ReadinessState.PendingTranslationResolution, stage.Status);
+            Assert.Null(stage.ModelId);
+            Assert.Null(stage.ModelAlias);
+            Assert.Equal(0, planner.Calls);
+            return;
+        }
         Assert.Equal(ReadinessState.DownloadRequired, stage.Status);
         Assert.Equal("resolved-model", stage.ModelId);
         Assert.Equal("planner-fallback", stage.ModelAlias);
@@ -64,9 +72,9 @@ public sealed class ReadinessResolveActionTests
         var explicitSelection = automatic with { SelectionIntents = new Dictionary<RuntimeStage, RuntimeModelSelectionIntent> { [RuntimeStage.Translation] = RuntimeModelSelectionIntent.Explicit } };
         var first = await service.EvaluateAsync([RuntimeStage.Translation], automatic, null, TestContext.Current.CancellationToken);
         var second = await service.EvaluateAsync([RuntimeStage.Translation], explicitSelection, null, TestContext.Current.CancellationToken);
-        Assert.Equal("bundle-needed", Assert.Single(first.Stages).ResolveAction);
+        Assert.Equal(ReadinessState.PendingTranslationResolution, Assert.Single(first.Stages).Status);
         Assert.Equal("download", Assert.Single(second.Stages).ResolveAction);
-        Assert.Equal(2, planner.Calls);
+        Assert.Equal(1, planner.Calls);
     }
 
     [Fact]
@@ -97,7 +105,7 @@ public sealed class ReadinessResolveActionTests
     public async Task Integrity_repair_remains_download_for_automatic_selection(StageRuntimePlanStatus status)
     {
         var planner = new Planner { Status = status, Code = RuntimePlanFallbackCode.ModelIntegrityMismatch };
-        var report = await Service(planner).EvaluateAsync([RuntimeStage.Translation], Automatic(), null, TestContext.Current.CancellationToken);
+        var report = await Service(planner).EvaluateAsync([RuntimeStage.Asr], Automatic(), null, TestContext.Current.CancellationToken);
         Assert.Equal("download", Assert.Single(report.Stages).ResolveAction);
     }
 

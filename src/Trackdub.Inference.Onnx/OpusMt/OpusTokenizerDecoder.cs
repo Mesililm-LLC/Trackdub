@@ -139,10 +139,12 @@ internal sealed class OpusTokenizerDecoder
     /// or <see langword="null"/> if no prefix piece is defined. The returned piece is
     /// resolved to a token id at encode time by <see cref="EncodeSourceText"/>.
     /// </summary>
-    public string? ResolveTargetLanguagePrefix(string isoLanguageCode)
+    public string? ResolveTargetLanguagePrefix(string isoLanguageCode, string? catalogPrefix = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(isoLanguageCode);
-        string prefix = $">>{isoLanguageCode}<<";
+        // A verified catalog may map ISO-639-1 targets to the model's ISO-639-3 token.
+        // Only an exact vocabulary member can be used; never synthesize an unverified token.
+        string prefix = catalogPrefix ?? $">>{isoLanguageCode}<<";
         return modelIdByPiece.ContainsKey(prefix) ? prefix : null;
     }
 

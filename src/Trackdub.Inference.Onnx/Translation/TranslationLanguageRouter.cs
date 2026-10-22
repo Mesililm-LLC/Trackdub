@@ -1,4 +1,6 @@
 using Trackdub.Contracts.Pipeline;
+using Trackdub.Contracts;
+using Trackdub.Contracts.Translation;
 using Trackdub.Domain;
 using Trackdub.Inference.Runtime.ModelManifest;
 using Trackdub.Inference.Runtime.Planning;
@@ -8,7 +10,9 @@ namespace Trackdub.Inference.Onnx.Translation;
 public sealed class TranslationLanguageRouter(
     BundledModelManifestRegistry manifestRegistry,
     IModelCacheInventory modelCacheInventory,
-    IRuntimePlanner? runtimePlanner = null)
+    IRuntimePlanner? runtimePlanner = null,
+    ITranslationModelProvisioner? modelProvisioner = null,
+    IStudioSettingsService? settingsService = null)
     : ITranslationLanguageRouter
 {
     private readonly BundledModelManifestRegistry manifestRegistry = manifestRegistry ?? throw new ArgumentNullException(nameof(manifestRegistry));
@@ -25,7 +29,20 @@ public sealed class TranslationLanguageRouter(
         CancellationToken cancellationToken)
     {
         TranslationRoutingContext context = await BuildContextAsync(cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(sourceLanguage) || sourceLanguage.Equals("auto", StringComparison.OrdinalIgnoreCase) || sourceLanguage.Equals("und", StringComparison.OrdinalIgnoreCase))
+        {
+            return TranslationLanguageCoverageMatrix.AllLanguages
+                .Concat(context.DirectEntriesByPair.Keys.Select(pair => new TranslationLanguageDefinition(pair.TargetLanguage, pair.TargetLanguage, pair.TargetLanguage)))
+                .DistinctBy(language => language.Code)
+                .Select(language => new TranslationTargetLanguageOption(language.Code, language.DisplayName,
+                    TranslationRoutingKind.Unavailable, false, "Translation model selection waits for source language detection.",
+                    TranslationPreparationStatus.SourceUnresolved))
+                .ToArray();
+        }
         return TranslationLanguageCoverageMatrix.GetTargets(sourceLanguage)
+            .Concat(context.DirectEntriesByPair.Keys.Where(pair => pair.SourceLanguage.Equals(sourceLanguage, StringComparison.OrdinalIgnoreCase))
+                .Select(pair => new TranslationLanguageDefinition(pair.TargetLanguage, pair.TargetLanguage, pair.TargetLanguage)))
+            .DistinctBy(language => language.Code)
             .Select(language =>
             {
                 TranslationRouteSelection route = ResolveRoute(
@@ -40,7 +57,8 @@ public sealed class TranslationLanguageRouter(
                     route.IsAvailable,
                     route.IsAvailable
                         ? route.RouteDetail
-                        : route.UnavailableReason ?? route.RouteDetail);
+                        : route.UnavailableReason ?? route.RouteDetail,
+                    route.Status, route.ExpectedDownloadBytes);
             })
             .ToArray();
     }
@@ -58,6 +76,7 @@ public sealed class TranslationLanguageRouter(
     private async Task<TranslationRoutingContext> BuildContextAsync(
         CancellationToken cancellationToken)
     {
+        if (modelProvisioner is not null) await modelProvisioner.RefreshAsync(cancellationToken).ConfigureAwait(false);
         IReadOnlyList<LocalModelCacheRecord> cacheRecords = await modelCacheInventory.LoadAsync(cancellationToken).ConfigureAwait(false);
         IReadOnlyDictionary<string, IReadOnlyList<LocalModelCacheRecord>> cacheIndex = cacheRecords
             .GroupBy(record => record.ModelId, StringComparer.OrdinalIgnoreCase)
@@ -68,16 +87,21 @@ public sealed class TranslationLanguageRouter(
                     .ToArray(),
                 StringComparer.OrdinalIgnoreCase);
 
-        Dictionary<(string SourceLanguage, string TargetLanguage), IReadOnlyList<BundledModelManifestEntry>> directEntriesByPair = manifestRegistry.Entries
+        var manifestEntries = manifestRegistry.Entries;
+        Dictionary<(string SourceLanguage, string TargetLanguage), IReadOnlyList<BundledModelManifestEntry>> directEntriesByPair = manifestEntries
             .Where(static entry => string.Equals(entry.Task, "translation", StringComparison.OrdinalIgnoreCase) &&
                                    IsDirectTranslationEntry(entry))
             .SelectMany(entry => EnumerateDirectPairs(entry).Select(pair => (Entry: entry, Pair: pair)))
             .GroupBy(candidate => candidate.Pair)
             .ToDictionary(
                 group => group.Key,
-                group => (IReadOnlyList<BundledModelManifestEntry>)group.Select(candidate => candidate.Entry).ToArray());
+                group => (IReadOnlyList<BundledModelManifestEntry>)group.Select(candidate => candidate.Entry)
+                    .OrderBy(entry => entry.LanguageCoverage.LanguagePairs.Count == 1 ? 0 : 1)
+                    .ThenBy(entry => cacheIndex.ContainsKey(entry.ModelId) ? 0 : 1)
+                    .ThenBy(entry => entry.SourceUrl.Contains("/onnx-community/", StringComparison.Ordinal) ? 0 : 1)
+                    .ThenBy(entry => entry.ModelId, StringComparer.Ordinal).ToArray());
 
-        BundledModelManifestEntry[] pivotEntries = manifestRegistry.Entries.Where(entry =>
+        BundledModelManifestEntry[] pivotEntries = manifestEntries.Where(entry =>
             string.Equals(entry.Task, "translation", StringComparison.OrdinalIgnoreCase) &&
             IsPivotTranslationEntry(entry))
             .ToArray();
@@ -86,11 +110,13 @@ public sealed class TranslationLanguageRouter(
             directEntriesByPair.Values.SelectMany(static entries => entries).Concat(pivotEntries),
             cancellationToken).ConfigureAwait(false);
 
+        var settings = settingsService is null ? null : await settingsService.LoadAsync(cancellationToken).ConfigureAwait(false);
         return new TranslationRoutingContext(
             cacheIndex,
             directEntriesByPair,
             pivotEntries,
-            planAvailabilityByModelId);
+            planAvailabilityByModelId,
+            settings is null || (!settings.OfflineMode && settings.AutoDownloadTranslationModels));
     }
 
     /// <summary>
@@ -165,9 +191,18 @@ public sealed class TranslationLanguageRouter(
         string normalizedTargetLanguage = NormalizeLanguageCode(targetLanguage)
             ?? throw new InvalidOperationException("Target language is required.");
 
-        if (!TranslationLanguageCoverageMatrix.TryGetLanguage(normalizedTargetLanguage, out TranslationLanguageDefinition? targetDefinition) ||
+        if (normalizedSourceLanguage is "auto" or "und")
+        {
+            return new TranslationRouteSelection(normalizedSourceLanguage, normalizedTargetLanguage,
+                TranslationRoutingKind.Unavailable, false, "none", "Waiting for source language detection",
+                PreparationStatus: TranslationPreparationStatus.SourceUnresolved);
+        }
+
+        TranslationLanguageCoverageMatrix.TryGetLanguage(normalizedTargetLanguage, out TranslationLanguageDefinition? targetDefinition);
+        if (!context.DirectEntriesByPair.ContainsKey((normalizedSourceLanguage, normalizedTargetLanguage)) &&
+            (targetDefinition is null ||
             !TranslationLanguageCoverageMatrix.GetTargets(normalizedSourceLanguage)
-                .Any(candidate => string.Equals(candidate.Code, normalizedTargetLanguage, StringComparison.Ordinal)))
+                .Any(candidate => string.Equals(candidate.Code, normalizedTargetLanguage, StringComparison.Ordinal))))
         {
             return new TranslationRouteSelection(
                 normalizedSourceLanguage,
@@ -176,10 +211,10 @@ public sealed class TranslationLanguageRouter(
                 IsAvailable: false,
                 ProviderName: "none",
                 RouteDetail: "Unavailable",
-                UnavailableReason: $"Milestone 9 coverage does not include {normalizedSourceLanguage} -> {normalizedTargetLanguage}.");
+                UnavailableReason: $"No approved translation route is known for {normalizedSourceLanguage} -> {normalizedTargetLanguage}.");
         }
 
-        string resolvedDisplayName = displayName ?? targetDefinition!.DisplayName;
+        string resolvedDisplayName = displayName ?? targetDefinition?.DisplayName ?? normalizedTargetLanguage;
         if (TryResolvePreferredRoute(
             context,
             normalizedSourceLanguage,
@@ -190,20 +225,29 @@ public sealed class TranslationLanguageRouter(
             return preferredRoute!;
         }
 
-        // MADLAD-first default: when no model is preferred (Auto), the universal
-        // MADLAD-400 pivot wins over per-pair direct models so one model covers all
-        // languages. An explicit preferred alias is honored above via
-        // TryResolvePreferredRoute, and when MADLAD is not installed this falls
-        // through to the direct/genai routes below.
-        if (string.IsNullOrWhiteSpace(preferredModelAlias) &&
-            TryResolveMadladPivotRoute(context, normalizedSourceLanguage, normalizedTargetLanguage, out TranslationRouteSelection? madladRoute))
-        {
-            return madladRoute!;
-        }
+        var downloadable = GetDirectEntriesForPair(context, normalizedSourceLanguage, normalizedTargetLanguage)
+            .FirstOrDefault(entry => entry.CommercialAllowed && entry.CommercialUseVerified && entry.DownloadFiles.Count > 0 &&
+                (string.IsNullOrWhiteSpace(preferredModelAlias) || HasAlias(entry, preferredModelAlias)));
+        if (context.CanDownload && downloadable is not null && !context.CacheIndex.ContainsKey(downloadable.ModelId))
+            return new TranslationRouteSelection(normalizedSourceLanguage, normalizedTargetLanguage,
+                TranslationRoutingKind.Direct, false, ResolveProviderName(downloadable), "Download required",
+                ModelId: downloadable.ModelId, PreferredModelAlias: downloadable.Aliases.FirstOrDefault(),
+                EngineFamily: downloadable.EngineFamily, PreparationStatus: TranslationPreparationStatus.DownloadRequired,
+                ExpectedDownloadBytes: downloadable.ExpectedDownloadBytes);
+
+        if (!string.IsNullOrWhiteSpace(preferredModelAlias))
+            return new TranslationRouteSelection(normalizedSourceLanguage, normalizedTargetLanguage,
+                TranslationRoutingKind.Unavailable, false, "none", "Unavailable",
+                UnavailableReason: $"Selected translation model '{preferredModelAlias}' is not available for this language pair.");
 
         if (TryResolveDirectRoute(context, normalizedSourceLanguage, normalizedTargetLanguage, out TranslationRouteSelection? directRoute))
         {
             return directRoute!;
+        }
+
+        if (TryResolveMadladPivotRoute(context, normalizedSourceLanguage, normalizedTargetLanguage, out TranslationRouteSelection? madladRoute))
+        {
+            return madladRoute!;
         }
 
         if (TryResolvePivotRoute(context, normalizedSourceLanguage, normalizedTargetLanguage, out TranslationRouteSelection? pivotRoute))
@@ -341,7 +385,11 @@ public sealed class TranslationLanguageRouter(
                 ModelId: entry.ModelId,
                 PreferredModelAlias: entry.Aliases.FirstOrDefault(),
                 ResolvedModelEntryPath: entryPath,
-                EngineFamily: entry.EngineFamily);
+                EngineFamily: entry.EngineFamily,
+                ModelProvenance: new Trackdub.Domain.Translation.TranslationModelProvenance(
+                    entry.SourceUrl, entry.Revision, entry.Sha256,
+                    new Dictionary<string, string>(entry.DownloadFileHashes),
+                    entry.TargetPrefixes?.GetValueOrDefault(targetLanguage), entry.CatalogPolicyVersion));
             return true;
         }
 
@@ -402,7 +450,11 @@ public sealed class TranslationLanguageRouter(
                 ModelId: entry.ModelId,
                 PreferredModelAlias: entry.Aliases.FirstOrDefault(),
                 ResolvedModelEntryPath: entryPath,
-                EngineFamily: entry.EngineFamily);
+                EngineFamily: entry.EngineFamily,
+                ModelProvenance: new Trackdub.Domain.Translation.TranslationModelProvenance(
+                    entry.SourceUrl, entry.Revision, entry.Sha256,
+                    new Dictionary<string, string>(entry.DownloadFileHashes),
+                    entry.TargetPrefixes?.GetValueOrDefault(targetLanguage), entry.CatalogPolicyVersion));
             return true;
         }
 
@@ -459,7 +511,11 @@ public sealed class TranslationLanguageRouter(
                 ModelId: entry.ModelId,
                 PreferredModelAlias: entry.Aliases.FirstOrDefault(),
                 ResolvedModelEntryPath: entryPath,
-                EngineFamily: entry.EngineFamily);
+                EngineFamily: entry.EngineFamily,
+                ModelProvenance: new Trackdub.Domain.Translation.TranslationModelProvenance(
+                    entry.SourceUrl, entry.Revision, entry.Sha256,
+                    new Dictionary<string, string>(entry.DownloadFileHashes),
+                    entry.TargetPrefixes?.GetValueOrDefault(targetLanguage), entry.CatalogPolicyVersion));
             return true;
         }
 
@@ -709,5 +765,6 @@ public sealed class TranslationLanguageRouter(
         IReadOnlyDictionary<string, IReadOnlyList<LocalModelCacheRecord>> CacheIndex,
         IReadOnlyDictionary<(string SourceLanguage, string TargetLanguage), IReadOnlyList<BundledModelManifestEntry>> DirectEntriesByPair,
         IReadOnlyList<BundledModelManifestEntry> PivotEntries,
-        IReadOnlyDictionary<string, bool> PlanAvailabilityByModelId);
+        IReadOnlyDictionary<string, bool> PlanAvailabilityByModelId,
+        bool CanDownload);
 }

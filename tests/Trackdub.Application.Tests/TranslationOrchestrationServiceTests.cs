@@ -353,6 +353,8 @@ public sealed class TranslationOrchestrationServiceTests
         Assert.Equal(0, engine.StreamCalls);
 
         TranslationRevision revision = Assert.Single(harness.TranslationRepository.Revisions);
+        Assert.NotNull(revision.ModelProvenance);
+        Assert.Equal("policy-v1", revision.ModelProvenance.CatalogPolicyVersion);
         IReadOnlyList<TranslatedSegment> segments =
             await harness.TranslationRepository.GetSegmentsAsync(
                 revision.Id, TestContext.Current.CancellationToken);
@@ -382,6 +384,9 @@ public sealed class TranslationOrchestrationServiceTests
         TranslationRevision revision = Assert.Single(harness.TranslationRepository.Revisions);
         Assert.Equal(1, revision.RevisionNumber); // repository seeding is separate from state
         Assert.Equal("es", revision.TargetLanguage);
+        Assert.NotNull(revision.ModelProvenance);
+        Assert.Equal("policy-v1", revision.ModelProvenance.CatalogPolicyVersion);
+        Assert.Equal(">>spa<<", revision.ModelProvenance.TargetPrefix);
 
         IReadOnlyList<TranslatedSegment> segments =
             await harness.TranslationRepository.GetSegmentsAsync(
@@ -730,8 +735,13 @@ public sealed class TranslationOrchestrationServiceTests
     /// segment via <see cref="PipelineStreamItemFactory"/>, with injectable fault/cancel/
     /// identity-rewrite hooks for contract-violation tests.
     /// </summary>
-    private sealed class StreamingFakeTranslationEngine : IStreamingTranslationEngine
+    private sealed class StreamingFakeTranslationEngine : IStreamingTranslationEngine, ITranslationExecutionMetadataReporter
     {
+        public TranslationExecutionMetadata? LastExecutionMetadata { get; } = new(
+            "opus-mt", "catalog-model", "catalog-alias", "cpu", TranslationRoutingKind.Direct,
+            new Trackdub.Domain.Translation.TranslationModelProvenance("test/model", new string('a', 40), new string('b', 64),
+                new Dictionary<string, string> { ["model.onnx"] = new string('b', 64) }, ">>spa<<", "policy-v1"));
+
         public int StreamCalls { get; private set; }
 
         public int BatchCalls { get; private set; }

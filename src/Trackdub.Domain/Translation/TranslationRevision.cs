@@ -10,7 +10,8 @@ public sealed record TranslationRevision(
     string? ModelId,
     string? ExecutionProvider,
     int RevisionNumber,
-    DateTimeOffset CreatedAtUtc)
+    DateTimeOffset CreatedAtUtc,
+    TranslationModelProvenance? ModelProvenance = null)
 {
     public static TranslationRevision Create(
         Guid projectId,
@@ -21,7 +22,8 @@ public sealed record TranslationRevision(
         DateTimeOffset createdAtUtc,
         string? translationProvider = null,
         string? modelId = null,
-        string? executionProvider = null)
+        string? executionProvider = null,
+        TranslationModelProvenance? modelProvenance = null)
     {
         if (projectId == Guid.Empty)
         {
@@ -53,7 +55,8 @@ public sealed record TranslationRevision(
             NormalizeOptional(modelId),
             NormalizeOptional(executionProvider),
             revisionNumber,
-            createdAtUtc);
+            createdAtUtc,
+            modelProvenance);
     }
 
     private static string NormalizeLanguageCode(string? languageCode, string paramName)

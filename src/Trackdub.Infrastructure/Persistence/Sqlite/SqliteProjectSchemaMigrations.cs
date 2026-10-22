@@ -38,7 +38,8 @@ internal static class SqliteProjectSchemaMigrations
         new(24, "add-tts-candidate-metadata", AddTtsCandidateMetadataAsync),
         new(25, "create-lip-sync-segments", CreateLipSyncSegmentsAsync),
         new(26, "create-lip-synthesis-segments", CreateLipSynthesisSegmentsAsync),
-        new(27, "rebuild-lip-synthesis-segments-stage-run-key", RebuildLipSynthesisSegmentsStageRunKeyAsync)
+        new(27, "rebuild-lip-synthesis-segments-stage-run-key", RebuildLipSynthesisSegmentsStageRunKeyAsync),
+        new(28, "add-translation-model-provenance", AddTranslationModelProvenanceAsync)
     ];
 
     public static async Task MigrateAsync(SqliteConnection connection, CancellationToken cancellationToken)
@@ -373,6 +374,12 @@ internal static class SqliteProjectSchemaMigrations
             new("RuntimeModelVariant", "TEXT NULL"),
             new("BootstrapDetail", "TEXT NULL"));
     }
+
+    private static Task AddTranslationModelProvenanceAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken) =>
+        EnsureColumnAsync(connection, transaction, "translation_revisions", "model_provenance_json", "TEXT NULL", cancellationToken);
 
     private static Task AddTranslationRevisionRuntimeContextAsync(
         SqliteConnection connection,
