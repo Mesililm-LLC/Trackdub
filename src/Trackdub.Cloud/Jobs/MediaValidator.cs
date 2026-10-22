@@ -13,7 +13,8 @@ public static class MediaValidator
         var info = new ProcessStartInfo("ffprobe") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true };
         foreach (string arg in new[] { "-v", "error", "-show_streams", "-show_format", "-of", "json", Path.GetFullPath(path) }) info.ArgumentList.Add(arg);
         using var process = new Process { StartInfo = info };
-        using var bound = CancellationTokenSource.CreateLinkedTokenSource(token); bound.CancelAfter(TimeSpan.FromSeconds(20));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var bound = CancellationTokenSource.CreateLinkedTokenSource(token, timeout.Token);
         process.Start(); process.StandardInput.Close();
         try
         {
@@ -33,6 +34,8 @@ public static class MediaValidator
                     || s.TryGetProperty("width", out var w) && w.GetInt32() > 1920))
                 throw new JobException("INVALID_INPUT", 400, "Expected MP4 audio/video up to five minutes and 1920x1080.");
         }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested && !token.IsCancellationRequested)
+        { throw new JobException("VALIDATION_TIMEOUT", 503, "Media validation timed out. Retry safely."); }
         catch (Exception ex) when (ex is JsonException or KeyNotFoundException or FormatException or IOException)
         { throw new JobException("INVALID_INPUT", 400, "Input metadata is invalid."); }
         finally

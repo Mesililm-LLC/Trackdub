@@ -91,7 +91,7 @@ public interface IJobStore
 public interface IArtifactStore
 {
     Task VerifyAsync(ObjectReference reference, CancellationToken token);
-    Task<string> SignDownloadAsync(ObjectReference reference, CancellationToken token);
+    Task<string> SignDownloadAsync(ObjectReference reference, DateTimeOffset expiresAt, CancellationToken token);
     Task<string> SignUploadAsync(UploadRecord upload, CancellationToken token);
     Task<ObjectReference> CompleteUploadAsync(UploadRecord upload, string versionId, CancellationToken token);
     Task DownloadAsync(ObjectReference reference, string destination, CancellationToken token);

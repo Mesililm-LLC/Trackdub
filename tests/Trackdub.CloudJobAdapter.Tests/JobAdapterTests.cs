@@ -67,7 +67,7 @@ public sealed class JobAdapterTests
             _objects[reference] = bytes; return reference;
         }
         public Task VerifyAsync(ObjectReference reference, CancellationToken token) { Assert.True(_objects.ContainsKey(reference)); return Task.CompletedTask; }
-        public Task<string> SignDownloadAsync(ObjectReference reference, CancellationToken token) => throw new NotSupportedException();
+        public Task<string> SignDownloadAsync(ObjectReference reference, DateTimeOffset expiresAt, CancellationToken token) => throw new NotSupportedException();
         public Task<string> SignUploadAsync(UploadRecord upload, CancellationToken token) => throw new NotSupportedException();
         public Task<ObjectReference> CompleteUploadAsync(UploadRecord upload, string versionId, CancellationToken token) => throw new NotSupportedException();
         public Task<WorkerRunOutcome> ReadOutcomeAsync(ObjectReference reference, CancellationToken token) => Task.FromResult(JsonSerializer.Deserialize<WorkerRunOutcome>(_objects[reference], WorkerRunOutcome.JsonOptions)!);

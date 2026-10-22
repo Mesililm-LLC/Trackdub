@@ -14,7 +14,7 @@ public sealed class FakeCloudArtifactStore : IArtifactStore
         if (FailVerification) throw new IOException("Incomplete upload.");
         if (OnVerify is not null) await OnVerify();
     }
-    public Task<string> SignDownloadAsync(ObjectReference reference, CancellationToken token) => Task.FromResult("https://private.example/download");
+    public Task<string> SignDownloadAsync(ObjectReference reference, DateTimeOffset expiresAt, CancellationToken token) => Task.FromResult("https://private.example/download");
     public Task<string> SignUploadAsync(UploadRecord upload, CancellationToken token) => Task.FromResult("https://private.example/upload");
     public async Task<ObjectReference> CompleteUploadAsync(UploadRecord upload, string versionId, CancellationToken token)
     { var r = new ObjectReference(upload.Key, versionId, upload.SizeBytes, upload.Sha256); await VerifyAsync(r, token); return r; }

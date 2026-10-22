@@ -7,7 +7,7 @@ using Trackdub.Contracts.Jobs;
 
 namespace Trackdub.Cloud.Aws;
 
-public sealed class S3ArtifactStore(IAmazonS3 client, string bucket, TimeProvider clock) : IArtifactStore
+public sealed class S3ArtifactStore(IAmazonS3 client, string bucket) : IArtifactStore
 {
     private static void Validate(ObjectReference reference)
     {
@@ -52,7 +52,7 @@ public sealed class S3ArtifactStore(IAmazonS3 client, string bucket, TimeProvide
             throw new JobException("INPUT_CHANGED", 409, "Object checksum verification failed.");
     }
 
-    public Task<string> SignDownloadAsync(ObjectReference reference, CancellationToken token)
+    public Task<string> SignDownloadAsync(ObjectReference reference, DateTimeOffset expiresAt, CancellationToken token)
     {
         Validate(reference);
         return client.GetPreSignedURLAsync(new GetPreSignedUrlRequest
@@ -61,7 +61,7 @@ public sealed class S3ArtifactStore(IAmazonS3 client, string bucket, TimeProvide
             Key = reference.Key,
             VersionId = reference.VersionId,
             Verb = HttpVerb.GET,
-            Expires = clock.GetUtcNow().AddMinutes(5).UtcDateTime,
+            Expires = expiresAt.UtcDateTime,
         });
     }
 

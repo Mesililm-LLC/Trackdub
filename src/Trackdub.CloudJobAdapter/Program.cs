@@ -32,7 +32,7 @@ using var termination = OperatingSystem.IsWindows() ? null : PosixSignalRegistra
 using var dynamo = new AmazonDynamoDBClient();
 using var s3 = new AmazonS3Client();
 var store = new DynamoDbJobStore(dynamo, Required("TRACKDUB_CLOUD_TABLE"), TimeProvider.System);
-var objects = new S3ArtifactStore(s3, Required("TRACKDUB_CLOUD_BUCKET"), TimeProvider.System);
+var objects = new S3ArtifactStore(s3, Required("TRACKDUB_CLOUD_BUCKET"));
 var jobs = new JobService(store, objects, TimeProvider.System);
 var identity = new ExecutionClaim(Guid.Parse(Required("TRACKDUB_JOB_ID")), Guid.Parse(Required("TRACKDUB_ATTEMPT_ID")),
     Guid.Parse(Required("TRACKDUB_DISPATCH_ID")), Required("TRACKDUB_EXECUTION_ID"), 0);

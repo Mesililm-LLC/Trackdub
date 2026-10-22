@@ -25,7 +25,7 @@ builder.Services.AddSingleton<IAmazonS3>(_ => new AmazonS3Client());
 string table = Required("Cloud:TableName");
 string bucket = Required("Cloud:BucketName");
 builder.Services.AddSingleton<IJobStore>(services => new DynamoDbJobStore(services.GetRequiredService<IAmazonDynamoDB>(), table, services.GetRequiredService<TimeProvider>()));
-builder.Services.AddSingleton<IArtifactStore>(services => new S3ArtifactStore(services.GetRequiredService<IAmazonS3>(), bucket, services.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton<IArtifactStore>(services => new S3ArtifactStore(services.GetRequiredService<IAmazonS3>(), bucket));
 builder.Services.AddSingleton<JobService>();
 builder.Services.AddSingleton<UploadService>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options =>
@@ -132,9 +132,10 @@ api.MapPost("/jobs/{id:guid}/cancel", async (Guid id, HttpContext context, JobSe
     var job = await jobs.CancelAsync(Owner(context.User), id, token);
     return job.IsTerminal ? Results.Ok(new { job = JobDto.FromRecord(job) }) : Results.Accepted($"/jobs/{id}", new { job = JobDto.FromRecord(job) });
 });
-api.MapGet("/jobs/{id:guid}/artifacts", async (Guid id, HttpContext context, JobService jobs, IArtifactStore store, CancellationToken token) =>
+api.MapGet("/jobs/{id:guid}/artifacts", async (Guid id, HttpContext context, JobService jobs, IArtifactStore store, TimeProvider clock, CancellationToken token) =>
 {
     var job = await jobs.GetOwnedAsync(Owner(context.User), id, token);
+    var expiresAt = clock.GetUtcNow().AddMinutes(5);
     var items = new List<object>();
     foreach (var artifact in job.Artifacts)
         items.Add(new
@@ -146,8 +147,8 @@ api.MapGet("/jobs/{id:guid}/artifacts", async (Guid id, HttpContext context, Job
             artifact.Object.SizeBytes,
             artifact.Object.Sha256,
             available = true,
-            downloadUrl = await store.SignDownloadAsync(artifact.Object, token),
-            expiresAt = DateTimeOffset.UtcNow.AddMinutes(5)
+            downloadUrl = await store.SignDownloadAsync(artifact.Object, expiresAt, token),
+            expiresAt
         });
     return Results.Ok(new { items });
 });
