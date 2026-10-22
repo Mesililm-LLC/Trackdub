@@ -25,6 +25,7 @@ using Trackdub.Composition.Runtime;
 using Trackdub.Composition.StarterPacks;
 using Trackdub.Composition.Transcription;
 using Trackdub.Composition.Translation;
+using Trackdub.Contracts.Translation;
 using Trackdub.Composition.Tts;
 using Trackdub.Contracts.ApplicationContracts;
 using Trackdub.Inference.Onnx.Migraphx;
@@ -563,7 +564,8 @@ public static class CompositionRoot
                 sp.GetRequiredService<ICloudApiKeyProvider>(),
                 sp.GetRequiredService<IConsentService>(),
                 runtimePlanningPreferences: sp.GetService<IRuntimePlanningPreferences>(),
-                cloudEgressConsentService: sp.GetRequiredService<CloudEgressConsentService>()));
+                cloudEgressConsentService: sp.GetRequiredService<CloudEgressConsentService>(),
+                modelRegistry: sp.GetRequiredService<BundledModelManifestRegistry>()));
         services.TryAddSingleton<IStageReadinessOrchestrator, StageReadinessOrchestrator>();
         services.TryAddScoped<IRuntimeModelBootstrapService, RuntimeModelBootstrapService>();
         services.TryAddScoped<RuntimeModelWorkflow>();
@@ -660,6 +662,11 @@ public static class CompositionRoot
         services.TryAddSingleton(sp => new BenchmarkModelPathResolver(
             sp.GetService<BundledModelManifestRegistry>(),
             sp.GetRequiredService<TrackdubStoragePaths>().ModelCacheDirectory));
+        services.AddHttpClient("translation-catalog", client => client.Timeout = TimeSpan.FromSeconds(30));
+        services.TryAddSingleton<ITranslationModelCatalog>(sp => new HuggingFaceTranslationModelCatalog(
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient("translation-catalog"),
+            Path.Join(sp.GetRequiredService<TrackdubStoragePaths>().UserCacheRoot, "translation-catalog.json")));
+        services.TryAddSingleton<ITranslationModelProvisioner, CatalogTranslationModelProvisioner>();
         services.TryAddSingleton<TranslationLanguageRouter>();
         services.TryAddSingleton<ITranslationLanguageRouter>(sp =>
             new CloudAwareTranslationLanguageRouter(

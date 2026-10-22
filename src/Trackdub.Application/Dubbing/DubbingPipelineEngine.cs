@@ -1748,7 +1748,9 @@ public sealed class DubbingPipelineEngine(
             new GenerateTranslationRequest(
                 SourceLanguage: sourceLanguage,
                 TargetLanguage: options.TargetLanguageCode,
-                PreferredModelAlias: runtimeSelections.TranslationModelAlias,
+                PreferredModelAlias: runtimeSelections.GetSelectionIntent(RuntimeStage.Translation) == RuntimeModelSelectionIntent.Automatic
+                    ? null
+                    : runtimeSelections.TranslationModelAlias,
                 PreferredExecutionProvider: translationExecutionProvider.PreferredExecutionProvider,
                 RequirePreferredExecutionProvider: translationExecutionProvider.RequirePreferredExecutionProvider,
                 PreferredModelVariantAlias: RuntimeModelSetupCoordinator.ResolvePreferredModelVariantAlias(

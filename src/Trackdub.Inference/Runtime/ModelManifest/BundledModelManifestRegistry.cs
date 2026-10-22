@@ -2,7 +2,9 @@ namespace Trackdub.Inference.Runtime.ModelManifest;
 
 public sealed class BundledModelManifestRegistry
 {
-    private readonly IReadOnlyDictionary<string, BundledModelManifestEntry> aliasIndex;
+    private IReadOnlyDictionary<string, BundledModelManifestEntry> aliasIndex;
+    private readonly object catalogGate = new();
+    private IReadOnlyList<BundledModelManifestEntry> entries = [];
 
     private BundledModelManifestRegistry(
         string manifestPath,
@@ -10,13 +12,32 @@ public sealed class BundledModelManifestRegistry
         IReadOnlyDictionary<string, BundledModelManifestEntry> aliasIndex)
     {
         ManifestPath = manifestPath;
-        Entries = entries;
+        this.entries = entries;
         this.aliasIndex = aliasIndex;
     }
 
     public string ManifestPath { get; }
 
-    public IReadOnlyList<BundledModelManifestEntry> Entries { get; }
+    public IReadOnlyList<BundledModelManifestEntry> Entries => Volatile.Read(ref entries);
+
+    /// <summary>Adds validated catalog entries without changing any already published model revision.</summary>
+    public void AddCatalogEntries(IEnumerable<BundledModelManifestEntry> additions)
+    {
+        lock (catalogGate)
+        {
+            var merged = Entries.ToList();
+            var aliases = new Dictionary<string, BundledModelManifestEntry>(aliasIndex, StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in additions)
+            {
+                if (merged.Any(existing => existing.ModelId.Equals(entry.ModelId, StringComparison.OrdinalIgnoreCase)) ||
+                    entry.Aliases.Any(aliases.ContainsKey)) continue;
+                merged.Add(entry);
+                foreach (string alias in entry.Aliases) aliases.Add(alias, entry);
+            }
+            Volatile.Write(ref aliasIndex, aliases);
+            Volatile.Write(ref entries, merged.ToArray());
+        }
+    }
 
     public static bool TryLoadDefault(out BundledModelManifestRegistry? registry, out string? error)
     {
@@ -686,7 +707,10 @@ public sealed record BundledModelManifestEntry(
     string? ProviderId = null,
     string? ExpectedRuntime = null,
     bool Deprecated = false,
-    string? DeprecatedReason = null)
+    string? DeprecatedReason = null,
+    long? ExpectedDownloadBytes = null,
+    string? CatalogPolicyVersion = null,
+    IReadOnlyDictionary<string, string?>? TargetPrefixes = null)
 {
     public bool CommercialSafeMode => CommercialUseVerified;
 }

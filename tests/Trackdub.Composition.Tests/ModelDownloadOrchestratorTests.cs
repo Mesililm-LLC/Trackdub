@@ -17,6 +17,26 @@ public sealed class ModelDownloadOrchestratorTests : IDisposable
     private readonly string tempRoot = Path.Join(Path.GetTempPath(), "Trackdub.ModelDownloadOrchestrator.Tests", Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public async Task OfflineModePreventsNetworkDownloads()
+    {
+        (BundledModelManifestRegistry registry, TrackdubStoragePaths storagePaths, _) =
+            CreateRegistryWithManifestRootOutsideConfiguredCache();
+        var store = new LocalModelCacheRecordStore(storagePaths);
+        var downloader = new CaptureDestinationDownloader();
+        var settings = new FakeStudioSettingsService();
+        await settings.SaveAsync(StudioSettings.Default with { OfflineMode = true }, TestContext.Current.CancellationToken);
+        using var orchestrator = new ModelDownloadOrchestrator(registry, store, downloader, storagePaths,
+            settingsService: settings);
+
+        ModelDownloadResult result = await orchestrator.DownloadAsync("example/model", cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.Contains("Offline", result.FailureReason, StringComparison.Ordinal);
+        Assert.Empty(downloader.Destinations);
+        Assert.Empty(await store.LoadAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task DownloadAsync_rejects_path_traversal_in_download_file()
     {
         (BundledModelManifestRegistry registry, TrackdubStoragePaths storagePaths) = CreateRegistryWithMaliciousDownloadPath();

@@ -99,7 +99,9 @@ public sealed record StudioSettings(
     /// Persisted user consent for cloud data egress keyed by "{egressType}:{providerKey}".
     /// Null or absent entry means consent has not been granted.
     /// </summary>
-    IReadOnlyDictionary<string, bool>? CloudEgressConsents = null)
+    IReadOnlyDictionary<string, bool>? CloudEgressConsents = null,
+    bool AutoDownloadTranslationModels = true,
+    bool OfflineMode = false)
 {
     public const double DefaultTranscriptConfidenceThreshold = 0.75d;
 

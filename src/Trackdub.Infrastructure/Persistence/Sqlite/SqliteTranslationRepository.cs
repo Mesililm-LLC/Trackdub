@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Trackdub.Contracts;
 using Trackdub.Contracts.Transcripts;
 using Trackdub.Domain.Translation;
@@ -31,7 +32,8 @@ public sealed class SqliteTranslationRepository(
                    model_id,
                    execution_provider,
                    revision_number,
-                   created_at_utc
+                   created_at_utc,
+                   model_provenance_json
             FROM translation_revisions
             WHERE project_id = $projectId
               AND target_language = $targetLanguage
@@ -167,7 +169,8 @@ public sealed class SqliteTranslationRepository(
                     model_id,
                     execution_provider,
                     revision_number,
-                    created_at_utc)
+                    created_at_utc,
+                    model_provenance_json)
                 SELECT
                     $id,
                     $projectId,
@@ -178,7 +181,8 @@ public sealed class SqliteTranslationRepository(
                     $modelId,
                     $executionProvider,
                     $revisionNumber,
-                    $createdAtUtc
+                    $createdAtUtc,
+                    $modelProvenance
                 WHERE $guard = 0 OR (
                     (SELECT id FROM transcript_revisions WHERE project_id = $projectId ORDER BY revision_number DESC LIMIT 1) = $sourceTranscriptRevisionId
                     AND (SELECT id FROM translation_revisions WHERE project_id = $projectId AND target_language = $targetLanguage ORDER BY revision_number DESC LIMIT 1) IS $expectedPrevious);
@@ -191,6 +195,7 @@ public sealed class SqliteTranslationRepository(
             revisionCommand.Parameters.AddWithValue("$translationProvider", revision.TranslationProvider ?? (object)DBNull.Value);
             revisionCommand.Parameters.AddWithValue("$modelId", revision.ModelId ?? (object)DBNull.Value);
             revisionCommand.Parameters.AddWithValue("$executionProvider", revision.ExecutionProvider ?? (object)DBNull.Value);
+            revisionCommand.Parameters.AddWithValue("$modelProvenance", revision.ModelProvenance is null ? (object)DBNull.Value : JsonSerializer.Serialize(revision.ModelProvenance));
             revisionCommand.Parameters.AddWithValue("$revisionNumber", revision.RevisionNumber);
             revisionCommand.Parameters.AddWithValue("$createdAtUtc", revision.CreatedAtUtc.UtcDateTime);
             revisionCommand.Parameters.AddWithValue("$guard", guardExpectedHeads ? 1 : 0);
@@ -291,7 +296,8 @@ public sealed class SqliteTranslationRepository(
             reader.IsDBNull(6) ? null : reader.GetString(6),
             reader.IsDBNull(7) ? null : reader.GetString(7),
             reader.GetInt32(8),
-            new DateTimeOffset(DateTime.SpecifyKind(reader.GetDateTime(9), DateTimeKind.Utc)));
+            new DateTimeOffset(DateTime.SpecifyKind(reader.GetDateTime(9), DateTimeKind.Utc)),
+            reader.IsDBNull(10) ? null : JsonSerializer.Deserialize<TranslationModelProvenance>(reader.GetString(10)));
 
     private static string NormalizeLanguageCode(string targetLanguage)
     {

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Trackdub.Contracts.Pipeline;
+using Trackdub.Contracts;
 using Trackdub.Domain;
 using Trackdub.Inference.Onnx.Translation;
 using Trackdub.Inference.Runtime.ModelManifest;
@@ -9,9 +10,61 @@ namespace Trackdub.Inference.Tests;
 
 public sealed class TranslationLanguageRouterTests
 {
+    [Fact]
+    public async Task UnknownSourceAllowsTargetSelectionWithoutClaimingRunnableRoute()
+    {
+        using var workspace = new TranslationRouterTestWorkspace();
+        var registry = workspace.WriteManifest(CreateTranslationSpec("test/dynamic", ["dynamic"], "dynamic"));
+        var router = new TranslationLanguageRouter(registry, new InMemoryModelCacheInventory([]));
+
+        var targets = await router.GetSupportedTargetLanguagesAsync("auto", CancellationToken.None);
+        Assert.NotEmpty(targets);
+        Assert.All(targets, target =>
+        {
+            Assert.True(target.IsSelectable);
+            Assert.False(target.IsAvailable);
+            Assert.Equal(TranslationPreparationStatus.SourceUnresolved, target.Status);
+        });
+        var route = await router.ResolveRouteAsync("auto", "es", CancellationToken.None);
+        Assert.False(route.IsAvailable);
+        Assert.Equal(TranslationPreparationStatus.SourceUnresolved, route.Status);
+    }
+
+    [Theory]
+    [InlineData(false, true, true)]
+    [InlineData(true, true, false)]
+    [InlineData(false, false, false)]
+    public async Task Dynamic_uncached_pair_reports_download_required_only_when_policy_allows(bool offline, bool automatic, bool selectable)
+    {
+        using var workspace = new TranslationRouterTestWorkspace();
+        var registry = workspace.WriteManifest(CreateTranslationSpec("test/dynamic", ["dynamic"], "dynamic"));
+        var original = registry.Entries.Single();
+        registry.AddCatalogEntries([original with {
+            ModelId = "test/xx-yy", Aliases = ["xx-yy"],
+            LanguageCoverage = new ModelLanguageCoverage([], [], [new ModelLanguagePair("xx", "yy")]),
+            CommercialAllowed = true, CommercialUseVerified = true, DownloadFiles = ["onnx/encoder_model.onnx"]
+        }]);
+        var router = new TranslationLanguageRouter(registry, new InMemoryModelCacheInventory([]),
+            settingsService: new RouterSettings(StudioSettings.Default with { OfflineMode = offline, AutoDownloadTranslationModels = automatic }));
+        var route = await router.ResolveRouteAsync("xx", "yy", CancellationToken.None);
+        Assert.False(route.IsAvailable);
+        Assert.Equal(selectable, route.IsSelectable);
+        Assert.Equal(selectable ? TranslationPreparationStatus.DownloadRequired : TranslationPreparationStatus.Unavailable, route.Status);
+        var target = Assert.Single(await router.GetSupportedTargetLanguagesAsync("xx", CancellationToken.None));
+        Assert.Equal("yy", target.LanguageCode);
+        Assert.Equal(selectable, target.IsSelectable);
+    }
+
+    private sealed class RouterSettings(StudioSettings settings) : IStudioSettingsService
+    {
+        public Task<StudioSettings> LoadAsync(CancellationToken cancellationToken) => Task.FromResult(settings);
+        public Task SaveAsync(StudioSettings value, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<StudioSettings> TouchRecentProjectAsync(string projectPath, string projectName, CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
     private const string ValidSha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     [Fact]
-    public async Task ResolveRouteAsync_WhenMadladAndDirectOpusPairAreInstalled_PrefersMadladPivotByDefault()
+    public async Task ResolveRouteAsync_WhenMadladAndDirectOpusPairAreInstalled_PrefersDirectOpusByDefault()
     {
         using var workspace = new TranslationRouterTestWorkspace();
         BundledModelManifestRegistry registry = workspace.WriteManifest(
@@ -36,9 +89,12 @@ public sealed class TranslationLanguageRouterTests
         TranslationRouteSelection route = await router.ResolveRouteAsync("en", "es", CancellationToken.None);
 
         Assert.True(route.IsAvailable);
-        Assert.Equal(TranslationRoutingKind.Pivot, route.RoutingKind);
-        Assert.Equal("madlad400", route.ProviderName);
-        Assert.Equal("google/madlad400-3b-mt", route.ModelId);
+        Assert.Equal(TranslationRoutingKind.Direct, route.RoutingKind);
+        Assert.Equal("opus-mt", route.ProviderName);
+        Assert.Equal("Helsinki-NLP/opus-mt-en-es", route.ModelId);
+        Assert.NotNull(route.ModelProvenance);
+        Assert.Equal(registry.Entries.Single(entry => entry.ModelId == route.ModelId).Revision, route.ModelProvenance.Revision);
+        Assert.Equal(registry.Entries.Single(entry => entry.ModelId == route.ModelId).Sha256, route.ModelProvenance.Sha256);
     }
 
     [Fact]

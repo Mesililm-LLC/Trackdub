@@ -47,7 +47,9 @@ public sealed class SqliteTranslationRepositoryTests
                 now.AddSeconds(4),
                 translationProvider: "opus-mt",
                 modelId: "Helsinki-NLP/opus-mt-en-es",
-                executionProvider: "cpu");
+                executionProvider: "cpu",
+                modelProvenance: new TranslationModelProvenance("onnx-community/opus-mt-en-es", new string('a', 40), new string('b', 64),
+                    new Dictionary<string, string> { ["onnx/encoder_model.onnx"] = new string('b', 64) }, ">>spa<<", "opus-policy-v1"));
             TranslatedSegment[] translatedSegments =
             [
                 TranslatedSegment.Create(
@@ -76,6 +78,13 @@ public sealed class SqliteTranslationRepositoryTests
             Assert.Equal("opus-mt", current.TranslationProvider);
             Assert.Equal("Helsinki-NLP/opus-mt-en-es", current.ModelId);
             Assert.Equal("cpu", current.ExecutionProvider);
+            Assert.NotNull(current.ModelProvenance);
+            Assert.Equal(translationRevision.ModelProvenance!.Repository, current.ModelProvenance.Repository);
+            Assert.Equal(new string('a', 40), current.ModelProvenance.Revision);
+            Assert.Equal(new string('b', 64), current.ModelProvenance.Sha256);
+            Assert.Equal(new string('b', 64), current.ModelProvenance.FileHashes["onnx/encoder_model.onnx"]);
+            Assert.Equal(">>spa<<", current.ModelProvenance.TargetPrefix);
+            Assert.Equal("opus-policy-v1", current.ModelProvenance.CatalogPolicyVersion);
             Assert.Equal(2, reloadedSegments.Count);
             Assert.Equal("Hola", reloadedSegments[0].Text);
             Assert.Equal("hash-0", reloadedSegments[0].SourceSegmentHash);
