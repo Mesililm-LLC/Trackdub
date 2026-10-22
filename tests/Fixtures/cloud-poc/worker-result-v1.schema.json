@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Trackdub worker process result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "status", "result", "errorCode", "message", "artifacts"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "status": { "enum": ["succeeded", "failed", "cancelled"] },
+    "result": { "type": ["object", "null"] },
+    "errorCode": { "type": ["string", "null"] },
+    "message": { "type": ["string", "null"] },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["path", "kind", "sizeBytes", "sha256"],
+        "properties": {
+          "path": { "type": "string" },
+          "kind": { "enum": ["video", "subtitle"] },
+          "sizeBytes": { "type": "integer", "minimum": 1 },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        }
+      }
+    }
+  }
+}

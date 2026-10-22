@@ -1,5 +1,10 @@
 # Trackdub SnapSoft GPU POC: source assessment and proposed architecture
 
+> Follow-up 2026-10-21: Michael approved the Trackdub application scope. See the
+> [implementation acceptance/handoff contract](../../operations/snapsoft-poc-acceptance.md).
+> This assessment's original status/evidence is preserved below as a publication snapshot;
+> it does not establish current AWS deployment or target-GPU readiness.
+
 Status: **AWS-only API/storage required by Michael; implementation remains proposed pending plan approval and SnapSoft scope/service alignment**. This document is an assessment, not an implementation or deployment authorization. No AWS resources were created, no paid workloads were started, and no application code was changed.
 
 ## 1. Evidence and repository truth

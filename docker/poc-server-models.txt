@@ -1,0 +1,8 @@
+# poc-server-v1: manifest-pinned CUDA baseline, independent of the historical TRT warm list.
+onnx-community/silero-vad
+Rikorose/DeepFilterNet3
+cgus/diar_streaming_sortformer_4spk-v2.1-onnx
+tonythethompson/parakeet-tdt-0.6b-v3-onnx
+google/madlad400-3b-mt|quantized
+csukuangfj/sherpa-onnx-spleeter-2stems
+onnx-community/Kokoro-82M-v1.0-ONNX|default

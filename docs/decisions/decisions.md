@@ -1318,6 +1318,8 @@ is insufficient to catch future omissions; the analyzer is the safety net.
 
 # ADR-0015: Pipeline transient telemetry — in-process only on on-prem tiers
 
+> Current AWS POC contract: [SnapSoft application acceptance](../operations/snapsoft-poc-acceptance.md). Historical API/Swagger/compose/telemetry examples below are not evidence of current wiring. The new CPU API uses DynamoDB/S3, contains no inference, and has no billing/OTel exporter. GPU compose runs the one-shot CLI; it does not expose HTTP.
+
 - Status: Draft (promoted from `docs/internal/pipeline-readiness-spec.md` §9.4)
 - Date: 2026-07-23
 
@@ -1325,7 +1327,7 @@ is insufficient to catch future omissions; the analyzer is the safety net.
 
 Trackdub's `PipelineTransientFaultBus` already exposes a typed, in-process pub/sub surface for stage-level transient failures (see `src/Trackdub.Application/Transcripts/Pipeline/PipelineTransientFaultBus.cs` and the upstream spec `docs/internal/pipeline-readiness-spec.md` §4.3, §9.1). The bus ring-buffers the last 50 faults and surfaces them through `IObservable<PipelineTransientFault>` plus a snapshot accessor; readers today are the diagnostics-bundle exporter (`§9.3`), the per-run aggregation reader (`SnapshotPerRun`, §9.1), the `DubbingPipelineEngine`'s `IAsyncEnumerable<PipelineTransientFault> TransientFaults` accessor (§4.5), and the on-prem tier-specific consumers (Worker metrics, Avalonia `PipelineRunViewModel`, headless SDK).
 
-The cloud tier (`Trackdub.Api`) already wires OpenTelemetry (`src/Trackdub.Api/Program.cs:47-49`, `src/Trackdub.Api/Observability/DubbingMetrics.cs:6`, `src/Trackdub.Api/Billing/Services/UsageMeter.cs:12`). The on-prem tiers (App, SDK, Worker, CLI) do not.
+Earlier drafts assumed a cloud OpenTelemetry/billing surface. Those paths were not current implementation evidence; the new AWS CPU job API does not implement that surface.
 
 The question this ADR promotes is whether the on-prem `Observable` should also bridge to OpenTelemetry, Sentry, or another upstream telemetry sink.
 

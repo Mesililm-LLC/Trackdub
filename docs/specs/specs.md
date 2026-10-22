@@ -1209,6 +1209,8 @@ No inference code in App; no SQL in VMs; layer boundaries preserved.
 
 # Pipeline transient-failure coverage spec
 
+> Current AWS POC contract: [SnapSoft application acceptance](../operations/snapsoft-poc-acceptance.md). Historical API/Swagger/compose/telemetry examples below are not evidence of current wiring. The new CPU API uses DynamoDB/S3, contains no inference, and has no billing/OTel exporter. GPU compose runs the one-shot CLI; it does not expose HTTP.
+
 **Status:** Draft (2026-07-22). Spec only; does **not** close a BACKLOG row.
 **Lane:** Fault tolerance, pipeline-wide orchestrator, cross-cutting reader surface.
 **Coverage:** Cancellation + directory/file lock + transient download + transient OOM.
@@ -1420,7 +1422,7 @@ Each question below is structured for promotion to a discrete ADR. Status: **Can
 
 - **Slug:** `pipeline-transient-telemetry`
 
-**Problem.** `PipelineTransientFaultBus.Stream` is in-process only by design. Trackdub.Api already wires OpenTelemetry (`src/Trackdub.Api/Program.cs:47-49`, `src/Trackdub.Api/Observability/DubbingMetrics.cs:6`, `src/Trackdub.Api/Billing/Services/UsageMeter.cs:12`). On-prem tiers (App, SDK, Worker, CLI) do not. The question is whether the on-prem Observable should bridge to OTel, Sentry, or another upstream sink.
+Earlier drafts assumed a cloud OpenTelemetry/billing surface. Those paths were not current implementation evidence; the new AWS CPU job API does not implement that surface.
 
 **Options considered.**
 
@@ -1450,7 +1452,7 @@ Each question below is structured for promotion to a discrete ADR. Status: **Can
 - `src/Trackdub.Infrastructure/Diagnostics/DiagnosticsBundleExporter.cs:69-90, 116, 311-312` — section list to extend.
 - `src/Trackdub.Worker/WorkerMetrics.cs:20-86` — existing `WorkerMetrics` pattern (used as template).
 - `src/Trackdub.Contracts/Diagnostics/UserProfilePathRedactor.cs:7-93` — redaction primitive used by the bundle exporter (§9.3 evidence).
-- `src/Trackdub.Api/Program.cs:47-49`, `src/Trackdub.Api/Observability/DubbingMetrics.cs:6`, `src/Trackdub.Api/Billing/Services/UsageMeter.cs:12` — OTel surface already shipped in the cloud tier (§9.4 evidence).
+- `src/Trackdub.Api/Program.cs:47-49`, `src/Trackdub.Api/Observability/DubbingMetrics.cs:6`, `src/Trackdub.Api/Billing/Services/UsageMeter.cs:12` — historical assumed OTel surface, not shipped by the new AWS job API (§9.4 evidence).
 - `MILESTONE.md` §Current non-negotiables — "no fake readiness / no silent failures / no silent degradation" gate.
 - [`docs/adr/ADR-0015-pipeline-transient-telemetry.md`](../adr/ADR-0015-pipeline-transient-telemetry.md) — §9.4 (a) promotion: in-process `Observable` only on on-prem tiers (App/SDK/Worker/CLI); no new upstream sink. Cross-link closing the spec → ADR loop.
 
