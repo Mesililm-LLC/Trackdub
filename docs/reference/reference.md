@@ -1005,7 +1005,7 @@ tensorrt_rtx_1_7.dll
 tensorrt_onnxparser_rtx_1_7.dll
 ```
 
-Linux (v0.5.0 cu13 linux-x86_64 zip; SONAME symlinks are preserved on extract):
+Linux (v0.4.0 cu13, installed through LinML.Catalog; SONAME symlinks are preserved on extract):
 
 ```text
 libonnxruntime_providers_nv_tensorrt_rtx.so
@@ -1024,7 +1024,7 @@ Companion libraries such as `tensorrt_plugins.dll` / `libtensorrt_plugins.so` ar
 2. `TRACKDUB_TRT_RTX_EP_DIR`
 3. Default installed bundle under the Trackdub user data root (see below)
 
-If the bundle is missing, use **Install** in Model Manager (downloads v0.5.0 cu13, persists the studio path, then registers), or run the dev fetch script.
+If the bundle is missing, use **Install** in Model Manager (downloads v0.5.0 cu13 on Windows; on Linux LinML.Catalog installs its pinned 0.4.0 wheel, persists the studio path, then registers), or run the dev fetch script.
 
 ## Fetch script (dev/CI)
 
@@ -1040,9 +1040,9 @@ Optional `-InstallRoot` or `TRACKDUB_DATA_ROOT` overrides the user data root. Th
 
 Trackdub ships the EP ABI plugin through a pinned manifest, not the Windows ML catalog:
 
-- **Manifest:** `runtime/trt-rtx-ep.manifest.json` (version `0.5.0` for both platforms, CUDA `cu13`, `trtRtxRuntimeVersion` `1.7.1`, per-RID archive URL + SHA-256 + size).
+- **Manifest:** `runtime/trt-rtx-ep.manifest.json` (version `0.5.0`, linux-x64 package pinned to `0.4.0` to match LinML.Catalog, CUDA `cu13`, `trtRtxRuntimeVersion` `1.7.1` for Windows, per-RID archive URL + SHA-256 + size).
 - **Composition copy:** `trt-rtx-ep.manifest.json` next to the app assembly (`Trackdub.Composition` `CopyToOutputDirectory`).
-- **Downloader:** `TrtRtxEpBundleDownloader` verifies checksum/size, extracts required plugin files into `%UserDataRoot%/Providers/trt-rtx/<version>/cu13/<rid>/` (0.5.0 on both platforms).
+- **Downloader:** `TrtRtxEpBundleDownloader` verifies checksum/size, extracts required plugin files into `%UserDataRoot%/Providers/trt-rtx/<version>/cu13/<rid>/` (0.5.0 on win-x64, 0.4.0 on linux-x64).
 - **In-app install:** Model Manager **Install** calls `ITrtRtxEpInstaller` after `NvidiaTensorRtRtx` license acceptance, persists `StudioSettings.TensorRtRtxPluginDirectory`, then registers via `ITensorRtRtxProviderBootstrap`.
 - **Inference bootstrap:** registers an already-installed bundle only; it **never** downloads the EP bundle (same policy as WinML catalog EPs during session bootstrap).
 
@@ -1079,7 +1079,7 @@ Provider bundle (installed by Model Manager or `Fetch-TrtRtxEp.ps1`):
 
 ```text
 %LOCALAPPDATA%\Trackdub\Providers\trt-rtx\0.5.0\cu13\win-x64\   # Windows
-~/.local/share/Trackdub/Providers/trt-rtx/0.5.0/cu13/linux-x64/   # Linux
+~/.local/share/Trackdub/Providers/trt-rtx/0.4.0/cu13/linux-x64/   # Linux
 ```
 
 Manifest: `runtime/trt-rtx-ep.manifest.json` (pinned NVIDIA GitHub release URLs + checksums).

@@ -12,10 +12,11 @@
       "sizeBytes": 112819790
     },
     "linux-x64": {
-      "archiveUrl": "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/download/v0.5.0/TensorRT-RTX-EP-ABI-v0.5.0-cu13-linux-x86_64.zip",
+      "version": "0.4.0",
+      "archiveUrl": "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/download/v0.4.0/TensorRT-RTX-EP-ABI-v0.4.0-cu13-linux-x86_64.zip",
       "archiveKind": "zip",
-      "sha256": "141b500bbbb6cd8b61d76f25f778e86611de02d3b02a9a2d38620191c85736a7",
-      "sizeBytes": 146510199
+      "sha256": "4e7f1bbec993da054872a8c2473fe35f5a72ad4fdd2473cd236029a579401da9",
+      "sizeBytes": 143767002
     }
   }
 }

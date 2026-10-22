@@ -31,15 +31,16 @@ public sealed class TrtRtxBundlePinTests
     {
         using JsonDocument document = JsonDocument.Parse(File.ReadAllText(ResolveRepoManifestPath()));
 
+        // The manifest drives the Windows bundle; Linux follows LinML.Catalog's pinned wheel.
         Assert.Equal(
-            TensorRtRtxProviderConstants.BundledTrtRtxRuntimeVersion,
+            TensorRtRtxProviderConstants.BundledTrtRtxRuntimeVersionWindows,
             document.RootElement.GetProperty("trtRtxRuntimeVersion").GetString());
     }
 
     [Fact]
     public void Windows_runtime_file_names_encode_the_bundled_runtime_major_minor()
     {
-        string[] parts = TensorRtRtxProviderConstants.BundledTrtRtxRuntimeVersion.Split('.');
+        string[] parts = TensorRtRtxProviderConstants.BundledTrtRtxRuntimeVersionWindows.Split('.');
         string suffix = $"_{parts[0]}_{parts[1]}.dll";
 
         Assert.EndsWith(suffix, TensorRtRtxProviderConstants.TensorRtRuntimeFileNameWindows, StringComparison.Ordinal);

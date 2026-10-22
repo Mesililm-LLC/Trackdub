@@ -22,11 +22,13 @@ public static class TensorRtRtxProviderConstants
 
     public const string CudaRuntimeBinDirectoryEnvironmentVariable = "TRACKDUB_CUDA_BIN_DIR";
 
-    // NVIDIA does not publish every platform on every EP ABI tag (v0.4.2 was Windows-only), so the
-    // pin stays per-platform. v0.5.0 ships both win-x64 and linux-x86_64 cu13, vendoring TensorRT-RTX 1.7.1.
+    // The pin is per-platform. Windows installs NVIDIA's EP ABI GitHub bundle from
+    // runtime/trt-rtx-ep.manifest.json. Linux installs through LinML.Catalog, which pins its own
+    // onnxruntime-ep-nv-tensorrt-rtx wheel (0.4.0, TensorRT-RTX 1.6.1 as of LinML.Catalog 0.5.1), so
+    // the Linux values must follow LinML.Catalog, not the manifest.
     public const string BundledVersionWindows = "0.5.0";
 
-    public const string BundledVersionLinux = "0.5.0";
+    public const string BundledVersionLinux = "0.4.0";
 
     public const string BundledCudaVariant = "cu13";
 
@@ -34,7 +36,12 @@ public static class TensorRtRtxProviderConstants
     /// TensorRT-RTX runtime vendored by the pinned EP ABI bundle. Tracked separately from the EP ABI
     /// version because the runtime lineage can move without the plugin version moving.
     /// </summary>
-    public const string BundledTrtRtxRuntimeVersion = "1.7.1";
+    public static string BundledTrtRtxRuntimeVersion =>
+        OperatingSystem.IsLinux() ? BundledTrtRtxRuntimeVersionLinux : BundledTrtRtxRuntimeVersionWindows;
+
+    public const string BundledTrtRtxRuntimeVersionWindows = "1.7.1";
+
+    public const string BundledTrtRtxRuntimeVersionLinux = "1.6.1";
 
     public static string BundledVersion =>
         OperatingSystem.IsLinux() ? BundledVersionLinux : BundledVersionWindows;
