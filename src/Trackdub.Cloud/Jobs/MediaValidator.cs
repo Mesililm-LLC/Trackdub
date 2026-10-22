@@ -30,8 +30,8 @@ public static class MediaValidator
             if (!formats.Contains("mp4") || !double.IsFinite(duration) || duration is <= 0 or > 300
                 || !streams.Any(s => s.GetProperty("codec_type").GetString() == "audio")
                 || !streams.Any(s => s.GetProperty("codec_type").GetString() == "video")
-                || streams.Any(s => s.TryGetProperty("height", out var h) && h.GetInt32() > 1080
-                    || s.TryGetProperty("width", out var w) && w.GetInt32() > 1920))
+                || streams.Any(s => (s.TryGetProperty("height", out var h) && h.GetInt32() > 1080)
+                    || (s.TryGetProperty("width", out var w) && w.GetInt32() > 1920)))
                 throw new JobException("INVALID_INPUT", 400, "Expected MP4 audio/video up to five minutes and 1920x1080.");
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested && !token.IsCancellationRequested)

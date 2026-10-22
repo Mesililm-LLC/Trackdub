@@ -90,7 +90,7 @@ public sealed partial class CliProcessRunner
         byte[] buffer = new byte[8192]; long stored = 0; int count;
         while ((count = await source.ReadAsync(buffer).ConfigureAwait(false)) != 0)
         {
-            int keep = (int)Math.Min(count, Math.Max(0, 4 * 1024 * 1024 - stored));
+            int keep = (int)Math.Min(count, Math.Max(0, (4 * 1024 * 1024) - stored));
             if (keep > 0) { await destination.WriteAsync(buffer.AsMemory(0, keep)).ConfigureAwait(false); stored += keep; }
         }
     }

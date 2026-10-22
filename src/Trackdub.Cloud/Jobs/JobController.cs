@@ -31,7 +31,7 @@ public sealed class JobController(IJobStore store, JobService jobs, IJobSchedule
                 await scheduler.StopAsync(execution.Id, job.CancelRequestedAt is not null ? "Cancelled" : "Deadline or lease expired", token).ConfigureAwait(false);
             // An ambiguous submit with no visible execution is not evidence of cessation.
             bool stopped = executions.Count > 0 && executions.All(e => e.Stopped);
-            if (stopped || job.ExecutionId is null && job.DispatchLeaseExpiresAt is null)
+            if (stopped || (job.ExecutionId is null && job.DispatchLeaseExpiresAt is null))
                 await jobs.MutateAsync(job.Id, current => current.IsTerminal || current.AttemptId != job.AttemptId || current.Generation != job.Generation ? current : current with
                 {
                     State = current.CancelRequestedAt is not null ? JobState.Cancelled : timedOut ? JobState.TimedOut : JobState.Failed,

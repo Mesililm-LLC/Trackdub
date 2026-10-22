@@ -60,8 +60,8 @@ public sealed class JobAdapter(IJobStore store, JobService jobs, IArtifactStore 
             await File.WriteAllTextAsync(candidateFile, JsonSerializer.Serialize(candidate, CloudJson.Options), deadline.Token).ConfigureAwait(false);
             await RetryAsync(() => objects.UploadAsync(JobService.AttemptPrefix(job) + "candidate.json", candidateFile, deadline.Token), deadline.Token).ConfigureAwait(false);
             try { await RetryAsync(() => jobs.ReportCandidateAsync(claim, candidate, deadline.Token), deadline.Token).ConfigureAwait(false); }
-            catch (Exception ex) when (ex is IOException || ex is Amazon.Runtime.AmazonServiceException aws && (int)aws.StatusCode >= 500
-                || ex is JobException jobError && jobError.StatusCode == 503)
+            catch (Exception ex) when (ex is IOException || (ex is Amazon.Runtime.AmazonServiceException aws && (int)aws.StatusCode >= 500)
+                || (ex is JobException jobError && jobError.StatusCode == 503))
             { /* Durable candidate allows reconciliation without repeating the pipeline. */ }
             return 0;
         }
@@ -149,8 +149,8 @@ public sealed class JobAdapter(IJobStore store, JobService jobs, IArtifactStore 
         for (int retry = 0; ; retry++)
         {
             try { return await action().ConfigureAwait(false); }
-            catch (Exception ex) when (retry < 4 && (ex is IOException || ex is Amazon.Runtime.AmazonServiceException aws && (int)aws.StatusCode >= 500
-                || ex is JobException jobError && jobError.StatusCode == 503))
+            catch (Exception ex) when (retry < 4 && (ex is IOException || (ex is Amazon.Runtime.AmazonServiceException aws && (int)aws.StatusCode >= 500)
+                || (ex is JobException jobError && jobError.StatusCode == 503)))
             { await Task.Delay(TimeSpan.FromSeconds(Math.Min(10, 1 << retry)), token).ConfigureAwait(false); }
         }
     }
