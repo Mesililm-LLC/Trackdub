@@ -69,7 +69,8 @@ public sealed class JobAdapter(IJobStore store, JobService jobs, IArtifactStore 
         finally
         {
             deadline.Cancel();
-            try { await heartbeat.ConfigureAwait(false); } catch (OperationCanceledException) { /* Heartbeat stops by the same deadline; nothing to report. */ }
+            try { await heartbeat.ConfigureAwait(false); }
+            catch (OperationCanceledException ex) when (deadline.IsCancellationRequested) { Console.Error.WriteLine($"Heartbeat stopped at deadline: {ex.Message}"); }
             await watchdog.ConfigureAwait(false);
         }
     }
@@ -119,7 +120,7 @@ public sealed class JobAdapter(IJobStore store, JobService jobs, IArtifactStore 
                 }
             }
         }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { /* Cancellation requested by the job or deadline; the caller reconciles. */ }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { return; }
         catch { lifetime.Cancel(); throw; }
     }
 
