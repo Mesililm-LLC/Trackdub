@@ -1,5 +1,6 @@
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Trackdub.Contracts.Diagnostics;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Domain.LipSynthesis;
 using Trackdub.Inference.Onnx.LipSynthesis;
@@ -86,6 +87,7 @@ public sealed class GeometryLandmarkProvider(
 
             using var outputs = session.Run(
                 [NamedOnnxValue.CreateFromTensor(inputName, inputTensor)]);
+            ColdStartCapture.MarkInferenceCompleted("geometry:landmarks");
 
             float[]? landmarks = ParseLandmarks(outputs);
             if (landmarks is null)

@@ -1,4 +1,5 @@
 using Trackdub.Contracts.Pipeline;
+using Trackdub.Contracts.Diagnostics;
 using Trackdub.Domain;
 using Trackdub.Inference.Onnx.Audio;
 using Trackdub.Inference.Onnx.Runtime.Routing;
@@ -19,6 +20,9 @@ namespace Trackdub.Inference.Onnx.Whisper;
 public sealed class WhisperGenAiAudioTranscriptionEngine : IAudioTranscriptionEngineAdapter, IStageRuntimeExecutionReporter
 {
     public const string EngineFamilyName = "whisper-genai";
+
+    /// <summary>Cold-start evidence source label for the GenAI token-generation choke point.</summary>
+    internal const string GenerateSource = "genai:whisper";
 
     private const int TargetSampleRate = 16000;
     private const double MaxClipDurationSeconds = 28;
@@ -527,10 +531,16 @@ public sealed class WhisperGenAiAudioTranscriptionEngine : IAudioTranscriptionEn
         using Generator generator = new(model, generatorParams);
         generator.SetInputs(inputTensors);
 
+        bool firstTokenGenerated = false;
         while (!generator.IsDone())
         {
             cancellationToken.ThrowIfCancellationRequested();
             generator.GenerateNextToken();
+            if (!firstTokenGenerated)
+            {
+                firstTokenGenerated = true;
+                ColdStartCapture.MarkInferenceCompleted(GenerateSource);
+            }
         }
 
         return generator.GetSequence(0).ToArray();

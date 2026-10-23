@@ -13,12 +13,16 @@ using Trackdub.Inference.Onnx.Whisper;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using Trackdub.Inference.Onnx.Worker;
+using Trackdub.Contracts.Diagnostics;
 using Trackdub.Contracts.Pipeline;
 
 namespace Trackdub.Inference.Onnx.Runtime.Planning;
 
 public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTester
 {
+    /// <summary>Cold-start evidence source label for the GenAI smoke's generated token.</summary>
+    internal const string GenAiSmokeSource = "smoke:genai";
+
     private readonly GenAiModelPool genAiModelPool;
 
     public OnnxExecutionProviderSmokeTester()
@@ -89,6 +93,11 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
     {
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
+
+        // Smoke and warmup inference is real inference that warms pooled sessions; attribute
+        // its completions to the smoke phase so cold-start evidence separates it from the
+        // first real stage inference.
+        using IDisposable smokePhase = ColdStartCapture.EnterPhase(ColdStartPhase.Smoke);
 
         if (request.ExecutionProvider is ExecutionProviderKind.Cuda &&
             workerClient is not null &&
@@ -224,6 +233,7 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
             using Generator generator = new(model, generatorParams);
             generator.AppendTokenSequences(input);
             generator.GenerateNextToken();
+            ColdStartCapture.MarkInferenceCompleted(GenAiSmokeSource);
         }, cancellationToken).ConfigureAwait(false);
     }
 

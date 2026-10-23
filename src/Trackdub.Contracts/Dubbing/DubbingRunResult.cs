@@ -1,3 +1,5 @@
+using Trackdub.Contracts.Diagnostics;
+
 namespace Trackdub.Contracts.Dubbing;
 
 /// <summary>
@@ -66,4 +68,11 @@ public sealed record DubbingRunResult
     /// Populated when <see cref="OverallStatus"/> is <see cref="DubbingRunStatus.PreFlightFailed"/>.
     /// </summary>
     public IReadOnlyList<string>? PreFlightFailures { get; init; }
+
+    /// <summary>
+    /// Cold-start evidence for this run: elapsed time from the pipeline start request to the
+    /// first completed inference, decomposed by the phase (stage, smoke/warmup, unclassified)
+    /// that produced it. Null when the result was built outside an instrumented pipeline run.
+    /// </summary>
+    public PipelineColdStartTiming? ColdStartTiming { get; init; }
 }

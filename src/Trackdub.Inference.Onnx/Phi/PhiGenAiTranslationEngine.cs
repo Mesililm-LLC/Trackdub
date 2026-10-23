@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using Microsoft.ML.OnnxRuntimeGenAI;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Diagnostics;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Domain;
 using Trackdub.Inference.Onnx.Runtime.Routing;
@@ -19,6 +20,9 @@ public sealed class PhiGenAiTranslationEngine(IRuntimePlanner runtimePlanner,
     : IStreamingTranslationEngineAdapter, IStageRuntimeExecutionReporter
 {
     public const string EngineFamilyName = "phi-genai";
+
+    /// <summary>Cold-start evidence source label for the GenAI token-generation choke point.</summary>
+    internal const string GenerateSource = "genai:phi";
 
     private const string GenAiConfigFileName = "genai_config.json";
     private const string HfConfigFileName = "config.json";
@@ -197,10 +201,16 @@ public sealed class PhiGenAiTranslationEngine(IRuntimePlanner runtimePlanner,
         // Capture prompt length before generation to decode only new tokens.
         int promptLength = (int)generator.GetSequence(0).Length;
 
+        bool firstTokenGenerated = false;
         while (!generator.IsDone())
         {
             cancellationToken.ThrowIfCancellationRequested();
             generator.GenerateNextToken();
+            if (!firstTokenGenerated)
+            {
+                firstTokenGenerated = true;
+                ColdStartCapture.MarkInferenceCompleted(GenerateSource);
+            }
         }
 
         ReadOnlySpan<int> fullSequence = generator.GetSequence(0);

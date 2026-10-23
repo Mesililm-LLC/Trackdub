@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Diagnostics;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Trackdub.Contracts.Diagnostics;
 
 namespace Trackdub.Inference.Onnx.Qwen3Tts.Models;
 
@@ -12,6 +13,11 @@ namespace Trackdub.Inference.Onnx.Qwen3Tts.Models;
 /// </summary>
 internal sealed class LanguageModel : IDisposable
 {
+    /// <summary>Cold-start evidence source labels for the direct ONNX run calls.</summary>
+    internal const string PrefillRunSource = "qwen3-tts:prefill";
+    internal const string DecodeRunSource = "qwen3-tts:decode";
+    internal const string CodePredictorRunSource = "qwen3-tts:code-predictor";
+
     private InferenceSession? _prefillSession;
     private InferenceSession? _decodeSession;
     private InferenceSession? _cpSession;
@@ -210,6 +216,7 @@ internal sealed class LanguageModel : IDisposable
             using (var prefillOutputs = prefillSession.Run(runOptions, inputNames,
                 new[] { embedsOrt, maskOrt, posOrt }, prefillSession.OutputNames))
             {
+                ColdStartCapture.MarkInferenceCompleted(PrefillRunSource);
                 logits = prefillOutputs[0].GetTensorDataAsSpan<float>().ToArray();
                 hiddenStates = prefillOutputs[1].GetTensorDataAsSpan<float>().ToArray();
                 (pastKeys, pastValues) = StackPrefillKVFromOrtValues(prefillOutputs, prefillLen);
@@ -320,6 +327,7 @@ internal sealed class LanguageModel : IDisposable
                         };
 
                         using var cpOutputs = GetCpSession().Run(cpInputsList);
+                        ColdStartCapture.MarkInferenceCompleted(CodePredictorRunSource);
                         var cpLogits = cpOutputs.First(x => x.Name == "logits").AsEnumerable<float>().ToArray();
                         var cpToken = SampleTokenSimple(cpLogits, temperature);
                         codes[groupIdx] = cpToken;
@@ -398,6 +406,7 @@ internal sealed class LanguageModel : IDisposable
                 };
 
                 using var decodeOutputs = GetDecodeSession().Run(decodeInputs);
+                ColdStartCapture.MarkInferenceCompleted(DecodeRunSource);
                 logits = decodeOutputs.First(x => x.Name == "logits").AsEnumerable<float>().ToArray();
                 hiddenStates = decodeOutputs.First(x => x.Name == "hidden_states").AsEnumerable<float>().ToArray();
                 pastKeys = decodeOutputs.First(x => x.Name == "present_keys").AsEnumerable<float>().ToArray();

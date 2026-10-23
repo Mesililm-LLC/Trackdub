@@ -1,5 +1,6 @@
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Trackdub.Contracts.Diagnostics;
 using Trackdub.Domain;
 using Trackdub.Inference.Onnx.Pool;
 
@@ -210,6 +211,83 @@ public sealed class InferenceRetryPolicyTests
             runOptions, binding, ["y"], cancellationToken: cts.Token));
 
         Assert.True(runOptions.Terminate);
+    }
+
+    [Fact]
+    public void Completed_run_reports_cold_start_evidence_with_stage_attribution()
+    {
+        // The run retry wrapper is the completion choke point for standard ORT engine
+        // inference. Under a stage phase (the context RunStageWorkflowAsync installs), the
+        // first completed run must land in the stage milestone with the stage name.
+        var capture = new ColdStartCapture();
+        using (ColdStartCapture.Activate(capture))
+        using (ColdStartCapture.EnterPhase(ColdStartPhase.Stage, "asr"))
+        using (var session = new InferenceSession(IdentityOnnxModel))
+        {
+            using var outputs = session.RunWithRetry([IdentityInput(1f)], cancellationToken: CancellationToken.None);
+        }
+
+        PipelineColdStartTiming timing = capture.BuildTiming();
+        Assert.Equal(InferenceRetryPolicy.Source, timing.FirstInferenceSource);
+        Assert.Equal(ColdStartPhase.Stage, timing.FirstInferencePhase);
+        Assert.Equal("asr", timing.FirstInferenceStageName);
+        Assert.NotNull(timing.FirstStageInferenceCompletionElapsedMs);
+        Assert.True(timing.FirstStageInferenceCompletionElapsedMs >= 0);
+    }
+
+    [Fact]
+    public void RunOnce_records_the_first_completion_only()
+    {
+        var capture = new ColdStartCapture();
+        using (ColdStartCapture.Activate(capture))
+        using (ColdStartCapture.EnterPhase(ColdStartPhase.Stage, "asr"))
+        {
+            using var first = InferenceRetryPolicy.RunOnce(
+                () => new FakeOutputs(), runOptions: null, CancellationToken.None);
+            using var second = InferenceRetryPolicy.RunOnce(
+                () => new FakeOutputs(), runOptions: null, CancellationToken.None);
+        }
+
+        Assert.Equal(InferenceRetryPolicy.Source, capture.BuildTiming().FirstInferenceSource);
+    }
+
+    [Fact]
+    public void Failed_run_reports_no_cold_start_evidence()
+    {
+        var capture = new ColdStartCapture();
+        using (ColdStartCapture.Activate(capture))
+        {
+            Assert.Throws<InvalidOperationException>(() => InferenceRetryPolicy.RunOnce(
+                static () => throw new InvalidOperationException("boom"),
+                runOptions: null,
+                CancellationToken.None));
+        }
+
+        Assert.Null(capture.BuildTiming().FirstInferenceCompletionElapsedMs);
+    }
+
+    [Fact]
+    public void Cancelled_run_reports_no_cold_start_evidence()
+    {
+        var capture = new ColdStartCapture();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        using (ColdStartCapture.Activate(capture))
+        {
+            Assert.Throws<OperationCanceledException>(() => InferenceRetryPolicy.RunOnce(
+                () => new FakeOutputs(), runOptions: null, cts.Token));
+        }
+
+        Assert.Null(capture.BuildTiming().FirstInferenceCompletionElapsedMs);
+    }
+
+    [Fact]
+    public void RunOnce_without_active_capture_is_a_no_op()
+    {
+        // The common case (benchmarks, tests, ad-hoc runs): marks must never throw and
+        // never require a capture.
+        using var outputs = InferenceRetryPolicy.RunOnce(
+            () => new FakeOutputs(), runOptions: null, CancellationToken.None);
     }
 
     private sealed class FakeOutputs : IDisposableReadOnlyCollection<DisposableNamedOnnxValue>

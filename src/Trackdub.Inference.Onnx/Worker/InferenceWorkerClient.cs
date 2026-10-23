@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using Trackdub.Contracts.Diagnostics;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Inference.Runtime.Planning;
 
@@ -36,6 +37,9 @@ public interface IInferenceWorkerClient
 public sealed class InferenceWorkerClient : IInferenceWorkerClient, IAsyncDisposable, IDisposable
 {
     public const string WorkerPathEnvironmentVariable = "TRACKDUB_INFERENCE_WORKER_PATH";
+
+    /// <summary>Cold-start evidence source label for worker-hosted TTS completions.</summary>
+    internal const string SynthesisSource = "inference-worker:tts";
     public const string WorkerDirectoryName = "inference-worker";
     public const string WorkerExecutableName = "Trackdub.InferenceWorker.exe";
     private const int MaxStarts = 3;
@@ -120,6 +124,9 @@ public sealed class InferenceWorkerClient : IInferenceWorkerClient, IAsyncDispos
                 request.TargetDurationSeconds,
                 WorkerPlan.From(plan))),
             cancellationToken).ConfigureAwait(false);
+        // The worker process has no ambient capture of its own, so the host reports the
+        // completion here: the result arrived, so the out-of-process inference completed.
+        ColdStartCapture.MarkInferenceCompleted(SynthesisSource);
         WorkerTtsResult result = InferenceWorkerProtocol.FromPayload<WorkerTtsResult>(response.Payload);
         LastTtsExecutionSummary = result.ExecutionSummary;
         return new TtsSynthesisResult(

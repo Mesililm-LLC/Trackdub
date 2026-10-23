@@ -1,4 +1,5 @@
 using Microsoft.ML.OnnxRuntime;
+using Trackdub.Contracts.Diagnostics;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Contracts.Benchmarking;
 using Trackdub.Domain;
@@ -31,6 +32,12 @@ namespace Trackdub.Inference.Onnx.Pool;
 /// </remarks>
 internal static class InferenceRetryPolicy
 {
+    /// <summary>
+    /// Choke point label recorded on cold-start evidence for every inference that completes
+    /// through this retry wrapper.
+    /// </summary>
+    internal const string Source = "onnx-run";
+
     private const int DefaultMaxAttempts = 3;
     private static readonly TimeSpan[] DefaultDelays =
     [
@@ -196,7 +203,9 @@ internal static class InferenceRetryPolicy
         using var inference = BenchmarkPhaseCapture.Start("onnx-inference");
         if (runOptions is null || !cancellationToken.CanBeCanceled)
         {
-            return run();
+            IDisposableReadOnlyCollection<DisposableNamedOnnxValue> completed = run();
+            ColdStartCapture.MarkInferenceCompleted(Source);
+            return completed;
         }
 
         // Capture the caller's initial Terminate value and restore it after the run, so a
@@ -216,6 +225,8 @@ internal static class InferenceRetryPolicy
             try
             {
                 IDisposableReadOnlyCollection<DisposableNamedOnnxValue> outputs = run();
+                // Cold-start evidence: the run returned, so this is a completed inference.
+                ColdStartCapture.MarkInferenceCompleted(Source);
                 // ORT honors Terminate between graph nodes and may complete a run that was
                 // cancelled mid-flight; never surface results produced after cancellation.
                 if (cancellationToken.IsCancellationRequested)

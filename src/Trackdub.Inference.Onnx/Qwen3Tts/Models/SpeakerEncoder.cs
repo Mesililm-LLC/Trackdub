@@ -1,5 +1,6 @@
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Trackdub.Contracts.Diagnostics;
 
 namespace Trackdub.Inference.Onnx.Qwen3Tts.Models;
 
@@ -63,6 +64,7 @@ public sealed class SpeakerEncoder : IDisposable
         };
 
         using var results = GetSession().Run(inputs);
+        ColdStartCapture.MarkInferenceCompleted("qwen3-tts:speaker-encoder");
         var outputTensor = results.First().AsTensor<float>();
 
         // Copy to flat array

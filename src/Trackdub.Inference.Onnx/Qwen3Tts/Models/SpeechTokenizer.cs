@@ -1,5 +1,6 @@
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Trackdub.Contracts.Diagnostics;
 
 namespace Trackdub.Inference.Onnx.Qwen3Tts.Models;
 
@@ -63,6 +64,7 @@ internal sealed class SpeechTokenizer : IDisposable
         };
 
         using var results = GetSession().Run(inputs);
+        ColdStartCapture.MarkInferenceCompleted("qwen3-tts:speech-tokenizer");
         var outputTensor = results.First().AsTensor<long>();
 
         // ONNX output shape: [B, 16, T_frames] — transpose to [B, T_frames, 16]

@@ -10,6 +10,7 @@ using Trackdub.Application.Transcripts.Pipeline;
 using Trackdub.Contracts;
 using Trackdub.Contracts.Dubbing;
 using Trackdub.Contracts.Benchmarking;
+using Trackdub.Contracts.Diagnostics;
 using Trackdub.Contracts.Licensing;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Contracts.Transcripts;
@@ -64,6 +65,25 @@ public sealed class DubbingPipelineEngine(
     {
         ArgumentNullException.ThrowIfNull(options);
 
+        // Cold-start instrumentation: one capture per run, active for everything the run
+        // spawns, so every inference choke point can report its first completed inference
+        // here regardless of which thread it completes on.
+        var coldStart = new ColdStartCapture();
+        using (ColdStartCapture.Activate(coldStart))
+        {
+            DubbingRunResult result = await ExecuteCoreAsync(options, progress, cancellationToken, coldStart).ConfigureAwait(false);
+            PipelineColdStartTiming timing = coldStart.BuildTiming();
+            coldStart.Logger?.LogInformation(ColdStartCapture.BuildSummaryMessage(timing));
+            return result with { ColdStartTiming = timing };
+        }
+    }
+
+    private async Task<DubbingRunResult> ExecuteCoreAsync(
+        DubbingSessionOptions options,
+        IProgress<PipelineProgressEvent>? progress,
+        CancellationToken cancellationToken,
+        ColdStartCapture coldStart)
+    {
         Guid runId = Guid.NewGuid();
         // All preflight/nested/stage events of this run carry the same RunId and a
         // strictly increasing SequenceNumber; downstream callers see only the wrapper.
@@ -108,6 +128,9 @@ public sealed class DubbingPipelineEngine(
 
         await using (session.ConfigureAwait(false))
         {
+            // Best-effort evidence channel for the end-of-run cold-start summary line.
+            coldStart.SetLogger(TryResolveService<IApplicationLogger>(session));
+
             if (RequestsVoiceCloning(options))
             {
                 TryResolveService<IConsentService>(session)?.GrantVoiceCloningConsent();
@@ -1379,6 +1402,12 @@ public sealed class DubbingPipelineEngine(
         CancellationToken cancellationToken,
         TtsStreamingPrefetch? ttsPrefetch = null)
     {
+        // Stage attribution for cold-start evidence: everything this workflow runs —
+        // including plan-time smoke inference (which scopes itself to the smoke phase) —
+        // is attributed to this stage until the workflow returns.
+        ColdStartCapture.MarkFirstStageStart(stageName);
+        using IDisposable stagePhase = ColdStartCapture.EnterPhase(ColdStartPhase.Stage, stageName);
+
         TranscriptWorkspace workspace = session.Workspace;
         InferenceModelPreferences modelPreferences =
             RuntimeModelRequestFactory.CreateModelPreferences(runtimeSelections);

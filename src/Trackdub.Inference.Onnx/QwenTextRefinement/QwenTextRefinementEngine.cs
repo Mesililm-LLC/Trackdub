@@ -1,4 +1,5 @@
 using Microsoft.ML.OnnxRuntimeGenAI;
+using Trackdub.Contracts.Diagnostics;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Domain;
 using Trackdub.Inference.Onnx.Runtime.Routing;
@@ -17,6 +18,9 @@ public sealed class QwenTextRefinementEngine(
     : ITextRefinementEngine, IStageRuntimeExecutionReporter
 {
     public const string EngineFamilyName = "qwen-instruct";
+
+    /// <summary>Cold-start evidence source label for the GenAI token-generation choke point.</summary>
+    internal const string GenerateSource = "genai:qwen-instruct";
 
     private const string GenAiConfigFileName = "genai_config.json";
     private const int MaxNewTokens = 256;
@@ -147,10 +151,16 @@ public sealed class QwenTextRefinementEngine(
         generator.AppendTokenSequences(inputTokens);
 
         int promptLength = (int)generator.GetSequence(0).Length;
+        bool firstTokenGenerated = false;
         while (!generator.IsDone())
         {
             cancellationToken.ThrowIfCancellationRequested();
             generator.GenerateNextToken();
+            if (!firstTokenGenerated)
+            {
+                firstTokenGenerated = true;
+                ColdStartCapture.MarkInferenceCompleted(GenerateSource);
+            }
         }
 
         ReadOnlySpan<int> fullSequence = generator.GetSequence(0);

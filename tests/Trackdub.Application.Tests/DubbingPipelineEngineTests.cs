@@ -1,6 +1,7 @@
 using Trackdub.Application.Dubbing;
 using Trackdub.Application.Transcripts;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Diagnostics;
 using Trackdub.Contracts.Dubbing;
 using Trackdub.Domain;
 using Trackdub.Domain.StageRuns;
@@ -267,6 +268,74 @@ public sealed class DubbingPipelineEngineTests
         }
 
         return -1;
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_attaches_cold_start_evidence_to_the_run_result()
+    {
+        // The run fails validation (no known stage in the filter) before any I/O; the
+        // evidence must still be attached (reporting "no inference completed") rather than
+        // omitted, because a cold run that never reached inference is itself the finding.
+        var engine = new DubbingPipelineEngine(new FakeSessionFactory());
+        var options = new DubbingSessionOptions
+        {
+            SourceMediaPath = "source.mp4",
+            TargetLanguageCode = "es",
+            StageFilter = ["bogus-stage"],
+        };
+
+        DubbingRunResult result = await engine.ExecuteAsync(
+            options, progress: null, TestContext.Current.CancellationToken);
+
+        Assert.NotNull(result.ColdStartTiming);
+        Assert.NotNull(result.PreFlightFailures);
+        Assert.True(result.ColdStartTiming.RunElapsedMs >= 0);
+        Assert.Null(result.ColdStartTiming.FirstInferenceCompletionElapsedMs);
+    }
+
+    [Fact]
+    public async Task RunStageWorkflowAsync_attributes_completions_to_the_stage()
+    {
+        // A skipped stage performs no inference, so nothing may be recorded as stage
+        // inference; the stage start marker must still name the stage.
+        var capture = new ColdStartCapture();
+        var session = new FakeSession();
+        var options = new DubbingSessionOptions
+        {
+            SourceMediaPath = "source.mp4",
+            TargetLanguageCode = "es",
+            EnableStemSeparation = false,
+        };
+
+        DubbingPipelineEngine.StageWorkflowResult result;
+        using (ColdStartCapture.Activate(capture))
+        {
+            result = await DubbingPipelineEngine.RunStageWorkflowAsync(
+                session,
+                options,
+                StageNames.Separation,
+                new RuntimeModelSelections(
+                    AsrModelOverride.Auto,
+                    IsDevBuild: false,
+                    new Dictionary<string, ExecutionProviderKind>()),
+                progress: null,
+                TestContext.Current.CancellationToken);
+        }
+
+        Assert.Equal(StageStatus.Skipped, result.Status);
+        Assert.Equal(StageNames.Separation, capture.BuildTiming().FirstStageStartedStageName);
+        Assert.Null(capture.BuildTiming().FirstStageInferenceCompletionElapsedMs);
+    }
+
+    private sealed class FakeSessionFactory : IDubbingSessionFactory
+    {
+        public IDubbingSession CreateSession(string projectRootPath, StudioSettings? settings = null) =>
+            throw new InvalidOperationException(
+                "A validation-failure run must end before any session is created.");
+
+        public void Dispose()
+        {
+        }
     }
 
     private sealed class FakeSession : IDubbingSession

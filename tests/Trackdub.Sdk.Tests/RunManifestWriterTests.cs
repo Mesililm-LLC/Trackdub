@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Trackdub.Contracts.Diagnostics;
 
 namespace Trackdub.Sdk.Tests;
 
@@ -152,6 +153,39 @@ public sealed class RunManifestWriterTests : IDisposable
         string secondHistoryPath = Path.Join(outputDir, "run-manifests", $"run-{secondRunId}.json");
         Assert.True(File.Exists(firstHistoryPath));
         Assert.True(File.Exists(secondHistoryPath));
+    }
+
+    [Fact]
+    public async Task WriteAsync_WritesColdStartEvidence()
+    {
+        // Cold-start evidence must reach the durable run manifest so real pipeline-start
+        // to first-inference-completion numbers can be collected across runs.
+        string outputDir = CreateTempDirectory();
+        DubbingRunResult result = CreateFullResult(DubbingRunStatus.Succeeded) with
+        {
+            ColdStartTiming = new PipelineColdStartTiming
+            {
+                RunElapsedMs = 1234.5,
+                FirstStageStartElapsedMs = 12.5,
+                FirstStageStartedStageName = "vad",
+                FirstInferenceCompletionElapsedMs = 987.25,
+                FirstInferenceSource = "onnx-run",
+                FirstInferencePhase = ColdStartPhase.Stage,
+                FirstInferenceStageName = "vad",
+                FirstStageInferenceCompletionElapsedMs = 987.25,
+                FirstStageInferenceSource = "onnx-run",
+            },
+        };
+
+        await _writer.WriteAsync(result, outputDir);
+
+        string manifestPath = Path.Join(outputDir, "run-manifest.json");
+        using var doc = JsonDocument.Parse(await File.ReadAllTextAsync(manifestPath));
+        Assert.True(doc.RootElement.TryGetProperty("coldStartTiming", out var coldStart));
+        Assert.True(coldStart.TryGetProperty("firstInferenceCompletionElapsedMs", out var firstInference));
+        Assert.Equal(987.25, firstInference.GetDouble());
+        Assert.True(coldStart.TryGetProperty("firstInferenceSource", out var source));
+        Assert.Equal("onnx-run", source.GetString());
     }
 
     private static DubbingRunResult CreateFullResult(DubbingRunStatus status, Guid? runId = null)

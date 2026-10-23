@@ -1,6 +1,7 @@
 using Microsoft.ML.OnnxRuntimeGenAI;
 using Trackdub.Contracts;
 using Trackdub.Contracts.ApplicationContracts;
+using Trackdub.Contracts.Diagnostics;
 using Trackdub.Domain;
 using Trackdub.Inference.Onnx.Runtime.Planning;
 using Trackdub.Inference.Onnx.Pool;
@@ -18,6 +19,9 @@ public sealed class QwenLocalAssistantEngine(
     private const string GenAiConfigFileName = "genai_config.json";
     private const int MaxNewTokens = 512;
     private const double RepetitionPenalty = 1.05;
+
+    /// <summary>Cold-start evidence source label for the GenAI token-generation choke point.</summary>
+    internal const string GenerateSource = "genai:qwen-assistant";
 
     private static readonly string[] EosTokenSuffixes =
         ["<|im_end|>", "<|endoftext|>", "<|assistant|>"];
@@ -150,10 +154,16 @@ public sealed class QwenLocalAssistantEngine(
         generator.AppendTokenSequences(inputTokens);
 
         int promptLength = (int)generator.GetSequence(0).Length;
+        bool firstTokenGenerated = false;
         while (!generator.IsDone())
         {
             cancellationToken.ThrowIfCancellationRequested();
             generator.GenerateNextToken();
+            if (!firstTokenGenerated)
+            {
+                firstTokenGenerated = true;
+                ColdStartCapture.MarkInferenceCompleted(GenerateSource);
+            }
         }
 
         ReadOnlySpan<int> fullSequence = generator.GetSequence(0);

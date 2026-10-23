@@ -1,5 +1,6 @@
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Trackdub.Contracts.Diagnostics;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Domain.LipSynthesis;
 using Trackdub.Inference.Onnx.LipSynthesis;
@@ -83,6 +84,7 @@ public sealed class ScfrdOnnxFaceDetector(
 
             using var outputs = session.Run(
                 [NamedOnnxValue.CreateFromTensor(inputName, inputTensor)]);
+            ColdStartCapture.MarkInferenceCompleted("scrfd:detect");
 
             var detections = DecodeAndFilter(outputs);
             if (detections.Count == 0)
