@@ -662,6 +662,17 @@ public static class CompositionRoot
                 sp.GetRequiredService<IServiceScopeFactory>(),
                 sp.GetRequiredService<IExecutionProviderDiscovery>(),
                 sp.GetRequiredService<IHardwareProfileProvider>()));
+        // Post-install engine warming: a freshly installed model has no EP-context artifact, so
+        // without this its engines rebuild from source on every launch until something warms it.
+        services.TryAddSingleton<IEngineAutoWarmQueue>(sp =>
+            new Trackdub.Composition.Pipeline.EngineAutoWarmCoordinator(
+                sp.GetRequiredService<IResidentWarmupService>(),
+                sp.GetRequiredService<BundledModelManifestRegistry>(),
+                sp.GetService<IApplicationLogger>()));
+        services.TryAddSingleton(sp => new Trackdub.Composition.Pipeline.EngineAutoWarmInstaller(
+            sp.GetRequiredService<IModelDownloadOrchestrator>(),
+            sp.GetRequiredService<IEngineAutoWarmQueue>(),
+            sp.GetService<IApplicationLogger>()));
         // Wire the model cache directory explicitly: the bare-type registration would fall back
         // to the constructor default (no cache), making downloaded models invisible to alias
         // resolution (e.g. the kokoro voice catalog) even when the planner reports them ready.
