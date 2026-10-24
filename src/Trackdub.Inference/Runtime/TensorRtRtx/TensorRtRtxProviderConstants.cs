@@ -24,11 +24,11 @@ public static class TensorRtRtxProviderConstants
 
     // The pin is per-platform. Windows installs NVIDIA's EP ABI GitHub bundle from
     // runtime/trt-rtx-ep.manifest.json. Linux installs through LinML.Catalog, which pins its own
-    // onnxruntime-ep-nv-tensorrt-rtx wheel (0.4.0, TensorRT-RTX 1.6.1 as of LinML.Catalog 0.5.1), so
+    // onnxruntime-ep-nv-tensorrt-rtx wheel (0.5.0, TensorRT-RTX 1.7.1 as of LinML.Catalog 0.6.0), so
     // the Linux values must follow LinML.Catalog, not the manifest.
     public const string BundledVersionWindows = "0.5.0";
 
-    public const string BundledVersionLinux = "0.4.0";
+    public const string BundledVersionLinux = "0.5.0";
 
     public const string BundledCudaVariant = "cu13";
 
@@ -41,7 +41,7 @@ public static class TensorRtRtxProviderConstants
 
     public const string BundledTrtRtxRuntimeVersionWindows = "1.7.1";
 
-    public const string BundledTrtRtxRuntimeVersionLinux = "1.6.1";
+    public const string BundledTrtRtxRuntimeVersionLinux = "1.7.1";
 
     public static string BundledVersion =>
         OperatingSystem.IsLinux() ? BundledVersionLinux : BundledVersionWindows;

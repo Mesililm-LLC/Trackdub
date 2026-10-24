@@ -305,7 +305,7 @@ public sealed class LinMlTensorRtRtxBootstrapTests
 
         public string? LibraryPath => null;
 
-        public string? PinnedVersion => "0.4.0";
+        public string? PinnedVersion => "0.5.0";
 
         public Task<ProviderEnsureResult> EnsureReadyAsync(EnsureOptions options, CancellationToken cancellationToken = default)
         {
