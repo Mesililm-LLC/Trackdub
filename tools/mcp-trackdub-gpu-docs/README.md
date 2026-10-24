@@ -1,12 +1,12 @@
 # Local FastMCP for Trackdub GPU / TensorRT-RTX agent docs (v0).
 #
-# Complements NVIDIA CUDA MCP. Pin: runtime/trt-rtx-ep.manifest.json 0.5.0 (win, TRT-RTX 1.7.1) / 0.4.0 via LinML.Catalog (linux, TRT-RTX 1.6.1), cu13.
+# Complements NVIDIA CUDA MCP. Pin: runtime/trt-rtx-ep.manifest.json 0.5.0 (win + linux, TRT-RTX 1.7.1; Linux via LinML.Catalog 0.6.0), cu13.
 
 ## Layout
 
 ```text
 tools/mcp-trackdub-gpu-docs/
-  corpus/manifest.v0.json     # allowlist keyed to EP ABI 0.5.0 (win) / 0.4.0 (linux)
+  corpus/manifest.v0.json     # allowlist keyed to EP ABI 0.5.0 (win + linux)
   src/trackdub_gpu_docs_mcp/  # FastMCP server + keyword search
   .data/chunks/               # ingested remote pages (gitignored)
   pyproject.toml
@@ -51,7 +51,7 @@ Adjust `--directory` to your checkout path.
 
 ## Pin notes
 
-- EP ABI **0.5.0** (win-x64) / **0.4.0** (linux-x64, via LinML.Catalog), **cu13**, from `NVIDIA/TensorRT-RTX-EP-ABI`
+- EP ABI **0.5.0** (win-x64, and linux-x64 via LinML.Catalog), **cu13**, from `NVIDIA/TensorRT-RTX-EP-ABI`
 - Windows bundle libs include `tensorrt_rtx_1_7.dll` (TRT-RTX 1.7.1 lineage); CUDA runtime statically linked
 - NVIDIA `/latest/` docs may describe newer product releases; do not treat them as the shipped pin
 

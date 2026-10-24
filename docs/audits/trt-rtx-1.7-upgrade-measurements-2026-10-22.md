@@ -9,7 +9,7 @@ Plan: `docs/plans/HANDOFF-trt-rtx-1.7-ep-abi-0.5.0-upgrade.md`, Part 1.7 and 1.9
 - Candidate: this branch (EP ABI 0.5.0 / TensorRT-RTX 1.7.1).
 - Both builds run the Windows ML ORT flavor, **ORT 1.27.1** (`HostOrtRuntimeVersion`), inside EP ABI 0.5.0's tested range of 1.25–1.30.
 - Graph benchmarks: `Trackdub.Benchmarks.DevHost --provider trt-rtx --artifact source --runtime-cache-dir <per model>`. "cold" uses an empty runtime cache, and "warm" is a second fresh process on the same cache.
-- Linux was **not** measured. Linux installs TRT-RTX through LinML.Catalog, which still pins the 0.4.0 wheel (TensorRT-RTX 1.6.1), so a Linux run would only re-test 1.6.1.
+- Linux was **not** measured. At measurement time LinML.Catalog 0.5.1 still pinned the 0.4.0 wheel (TensorRT-RTX 1.6.1), so a Linux run would only have re-tested 1.6.1. LinML.Catalog 0.6.0 (released 2026-10-22) now pins the 0.5.0 wheel (TensorRT-RTX 1.7.1) and is the current pin; Linux performance is still unmeasured.
 
 ## Steady-state latency (median of 3 interleaved rounds × 50 runs, warm runtime cache)
 
@@ -62,5 +62,5 @@ The first load right after `cache warm` was slower on 1.7.1 (sortformer 2.3 → 
 
 - `controlled --stage translation --model madlad400 --provider TensorRTRtx` fails with a bare `STAGE_FAILED` on **both** builds (no reason in the report, log or project DB). This is a harness issue unrelated to the upgrade. The MADLAD smoke above stands in for it.
 - CosyVoice `int8` graphs are not cached locally and were not retested.
-- Linux / LinML route: blocked on a LinML.Catalog release that pins wheel `onnxruntime-ep-nv-tensorrt-rtx` 0.5.0 (published on PyPI).
+- Linux / LinML route: was blocked on a LinML.Catalog release pinning wheel `onnxruntime-ep-nv-tensorrt-rtx` 0.5.0; unblocked by LinML.Catalog 0.6.0 (this PR moves to it). Linux performance is not measured. A WSL2 functional check (tiny MatMul model, RTX 5070, ORT 1.31.0, TRT-RTX 1.7.1 runtime) passed on 2026-10-24.
 - Driver ≤ R615 DirectML+TRT-RTX workaround: unit-tested only. No affected driver was available.

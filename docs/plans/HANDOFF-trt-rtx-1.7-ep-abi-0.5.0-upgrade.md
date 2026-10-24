@@ -47,6 +47,16 @@ Do the work as a **stack** (`gh stack`), one PR per part below. Part 1 is mandat
 2. The EP-context compile/load round-trip and `SetEpDynamicOptions` both work. These are the ORT APIs that 0.5.0 leans on more than before.
 3. If registration fails, **stop**. Either pin ORT to 1.30.x for the whole app (a large blast radius, so call it out in the PR) or wait for an EP ABI build against 1.31. Do **not** downgrade ORT silently.
 
+**B1 results by host runtime** (recorded per route, not pooled):
+
+| Route | Host runtime | Plugin registration | EP-context round trip / `SetEpDynamicOptions` |
+|---|---|---|---|
+| Windows ML, native Windows (RTX 5070, driver 617.42) | ORT 1.27.1 (inside the 1.25-1.30 tested range) | OK (`providers trt-rtx status`, measurements audit) | `cache warm` ran in the measurement pass; `SetEpDynamicOptions` not yet exercised |
+| LinML route on WSL2 (RTX 5070, driver 621.01, Ubuntu 26.04) | ORT 1.31.0 (outside the tested range) | OK: LinML patched plugin registers 1 GPU device; `providers trt-rtx status` Ready (2026-10-24) | Not run. Only a tiny MatMul+Relu inference (max error 1.9e-6) was checked |
+| Stock NVIDIA zip on WSL2 | ORT 1.31.0 | Registers, exposes 0 GPU devices (NVIDIA/TensorRT-RTX-EP-ABI#12) | n/a |
+
+The 1.31 route still owes the EP-context compile/load round trip and `SetEpDynamicOptions` checks above.
+
 ### B2. EP registration-name standardization vs the WinML catalog filter
 `src/Trackdub.Inference.Onnx/TensorRtRtx/WindowsMlCatalogProviderFilter.cs` excludes the WinML catalog's TRT-RTX EP from bulk registration by comparing to `NvTensorRTRTXExecutionProvider` with `OrdinalIgnoreCase`. The doc comment says the catalog spells it `NvTensorRtRtxExecutionProvider`. The ignore-case match is what makes the exclusion work, and it keeps working whatever casing NVIDIA standardizes to. The risk is in the other direction:
 - `OnnxExecutionSessionFactory.IsTensorRtRtxDeviceCandidate` matches the **bundled** plugin with `StringComparison.Ordinal`. If 0.5.0 now registers under a different casing, device selection finds no TRT-RTX device, and every stage silently falls back to DML/CPU.

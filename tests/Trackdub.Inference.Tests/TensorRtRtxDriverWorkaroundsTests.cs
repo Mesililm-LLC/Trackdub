@@ -62,4 +62,34 @@ public sealed class TensorRtRtxDriverWorkaroundsTests
 
         Assert.Equal("65536", options[TensorRtRtxDriverWorkarounds.MaxSharedMemSizeOptionKey]);
     }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("202752")]
+    [InlineData("not-a-number")]
+    [InlineData("-1")]
+    public void Apply_clamps_caller_limits_that_leave_the_engine_uncapped(string requested)
+    {
+        var options = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [TensorRtRtxDriverWorkarounds.MaxSharedMemSizeOptionKey] = requested,
+        };
+
+        TensorRtRtxDriverWorkarounds.Apply(options, "600.10", isWindows: true);
+
+        Assert.Equal("101376", options[TensorRtRtxDriverWorkarounds.MaxSharedMemSizeOptionKey]);
+    }
+
+    [Fact]
+    public void Apply_leaves_caller_limits_untouched_on_unaffected_drivers()
+    {
+        var options = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [TensorRtRtxDriverWorkarounds.MaxSharedMemSizeOptionKey] = "0",
+        };
+
+        TensorRtRtxDriverWorkarounds.Apply(options, "617.14", isWindows: true);
+
+        Assert.Equal("0", options[TensorRtRtxDriverWorkarounds.MaxSharedMemSizeOptionKey]);
+    }
 }

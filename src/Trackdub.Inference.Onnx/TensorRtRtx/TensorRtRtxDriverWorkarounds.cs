@@ -18,11 +18,21 @@ internal static class TensorRtRtxDriverWorkarounds
     // Bytes; the EP maps nv_max_shared_mem_size to MemoryPoolType::kTACTIC_SHARED_MEMORY.
     internal const string DirectMlInteropSharedMemoryLimitBytes = "101376";
 
+    private const long DirectMlInteropSharedMemoryLimitValue = 101376;
+
     internal static void Apply(IDictionary<string, string> trtOptions, string? driverVersion, bool isWindows)
     {
-        if (!isWindows ||
-            trtOptions.ContainsKey(MaxSharedMemSizeOptionKey) ||
-            !IsDirectMlInteropAffected(driverVersion))
+        if (!isWindows || !IsDirectMlInteropAffected(driverVersion))
+        {
+            return;
+        }
+
+        // A smaller caller limit is kept. Zero means "device maximum" and anything above the cap leaves
+        // the engine uncapped, so both (and unparsable values) are clamped to the workaround value.
+        if (trtOptions.TryGetValue(MaxSharedMemSizeOptionKey, out string? requested) &&
+            long.TryParse(requested, NumberStyles.None, CultureInfo.InvariantCulture, out long requestedBytes) &&
+            requestedBytes > 0 &&
+            requestedBytes <= DirectMlInteropSharedMemoryLimitValue)
         {
             return;
         }

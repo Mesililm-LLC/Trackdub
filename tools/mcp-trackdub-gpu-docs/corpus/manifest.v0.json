@@ -6,7 +6,7 @@
   "pin": {
     "sourceManifest": "runtime/trt-rtx-ep.manifest.json",
     "epAbiVersion": "0.5.0",
-    "epAbiVersionLinux": "0.4.0",
+    "epAbiVersionLinux": "0.5.0",
     "cudaVariant": "cu13",
     "trtRtxRuntimeVersion": "1.7.1",
     "bundledWindowsLibs": [
@@ -18,11 +18,11 @@
     "epDeviceName": "NvTensorRTRTXExecutionProvider",
     "releaseAssets": {
       "win-x64": "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/download/v0.5.0/TensorRT-RTX-EP-ABI-v0.5.0-cu13.zip",
-      "linux-x64": "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/download/v0.4.0/TensorRT-RTX-EP-ABI-v0.4.0-cu13-linux-x86_64.zip"
+      "linux-x64": "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/download/v0.5.0/TensorRT-RTX-EP-ABI-v0.5.0-cu13-linux-x86_64.zip"
     },
     "notes": [
       "Trackdub ships the standalone ORT EP ABI plugin, not the Windows ML catalog EP.",
-      "DLL suffix _1_7 means TensorRT-RTX library lineage 1.7 (1.7.1) inside EP ABI 0.5.0 (Windows). Linux installs through LinML.Catalog, still pinned to the 0.4.0 wheel (TensorRT-RTX 1.6.1). EP ABI 0.5.0 lists ORT 1.25-1.30 as compatible; Trackdub runs it on ORT 1.31 (verified 2026-10-22).",
+      "DLL suffix _1_7 means TensorRT-RTX library lineage 1.7 (1.7.1) inside EP ABI 0.5.0 (Windows). Linux installs through LinML.Catalog 0.6.0, which pins the 0.5.0 wheel (TensorRT-RTX 1.7.1). EP ABI 0.5.0 lists ORT 1.25-1.30 as compatible; Trackdub runs it on ORT 1.31 (verified 2026-10-22).",
       "The Windows cu13 bundle has no cudart import (CUDA runtime statically linked); the Linux cu13 bundle ships libcudart.so.13.",
       "docs.nvidia.com/deeplearning/tensorrt-rtx/latest/ currently tracks newer product docs (1.7+). Prefer Trackdub reference docs for pin-specific behavior; treat /latest/ as upstream context, not a pin guarantee.",
       "GitHub EP ABI release notes are the pin-accurate changelog."
@@ -80,7 +80,7 @@
       "kind": "repo-file",
       "tags": ["trackdub-local", "trt-rtx", "pin", "manifest"],
       "path": "runtime/trt-rtx-ep.manifest.json",
-      "title": "TRT-RTX EP bundle manifest (0.5.0 win / 0.4.0 linux, cu13, TRT-RTX 1.7.1 win / 1.6.1 linux)",
+      "title": "TRT-RTX EP bundle manifest (0.5.0 win + linux, cu13, TRT-RTX 1.7.1)",
       "priority": 90
     },
     {
