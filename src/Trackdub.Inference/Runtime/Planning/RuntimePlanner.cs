@@ -1,4 +1,5 @@
 using Trackdub.Contracts;
+using Trackdub.Contracts.Benchmarking;
 using Trackdub.Domain;
 using Trackdub.Inference.Runtime.Migraphx;
 using Trackdub.Inference.Runtime.ModelManifest;
@@ -54,6 +55,10 @@ public sealed class RuntimePlanner : IRuntimePlanner
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        // Cold-start attribution: planning runs per stage (often with plan-cache hits) and is
+        // a named phase of the pipeline-start overhead this run evidence exists to explain.
+        using IDisposable planPhase = BenchmarkPhaseCapture.Start("runtime-plan");
 
         // Resolve the effective device exclusion set: explicit request parameter takes
         // precedence, otherwise fall back to the provider's current run exclusions.

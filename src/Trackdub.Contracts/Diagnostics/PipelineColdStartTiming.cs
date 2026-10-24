@@ -1,5 +1,8 @@
 namespace Trackdub.Contracts.Diagnostics;
 
+/// <summary>Aggregate of one instrumented phase across a run: total elapsed and invocation count.</summary>
+public sealed record PhaseTotal(double TotalMs, int Count);
+
 /// <summary>
 /// Identifies the execution context an inference call runs under, so cold-start
 /// evidence can separate smoke/warmup inference from real stage inference.
@@ -79,4 +82,13 @@ public sealed record PipelineColdStartTiming
 
     /// <summary>Run choke point that produced the first completed unclassified inference.</summary>
     public string? FirstUnclassifiedInferenceSource { get; init; }
+
+    /// <summary>
+    /// Per-phase aggregates for the run, ordered by total elapsed descending. Phases cover the
+    /// named work that fills cold-start gaps: <c>runtime-plan</c>, <c>model-provision</c>,
+    /// <c>provider-bootstrap</c>, <c>ep-smoke</c>, <c>onnx-session-create</c>, <c>pool-wait</c>,
+    /// <c>stage-warmup</c>, and related spans. Empty when nothing was instrumented.
+    /// </summary>
+    public IReadOnlyDictionary<string, PhaseTotal> PhaseTotals { get; init; } =
+        new Dictionary<string, PhaseTotal>(StringComparer.Ordinal);
 }

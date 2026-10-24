@@ -1,4 +1,5 @@
 using Trackdub.Contracts;
+using Trackdub.Contracts.Benchmarking;
 using Trackdub.Contracts.Licensing;
 using Trackdub.Domain;
 using Trackdub.Infrastructure.Settings;
@@ -845,6 +846,9 @@ public sealed class RuntimeModelBootstrapService(
         string selectedEntryRelativePath,
         CancellationToken cancellationToken)
     {
+        // Hashing required model files streams them end to end; attribute that read pass to a
+        // named phase so cold-start evidence shows how much of model provisioning is hashing.
+        using IDisposable hashPhase = BenchmarkPhaseCapture.Start("model-hash-verify");
         string selectedRelativePath = NormalizeRelativePath(selectedEntryRelativePath);
         string benchmarkRelativePath = NormalizeRelativePath(
             Path.GetRelativePath(entry.RootDirectory, entry.DefaultBenchmarkEntryPath));
@@ -950,6 +954,7 @@ public sealed class RuntimeModelBootstrapService(
         IProgress<ModelDownloadProgress>? downloadProgress,
         CancellationToken cancellationToken)
     {
+        using IDisposable downloadPhase = BenchmarkPhaseCapture.Start("model-download");
         if (TryResolveExternalDownloadSource(entry, relativePath, out Uri? sourceUri))
         {
             return await modelDownloader

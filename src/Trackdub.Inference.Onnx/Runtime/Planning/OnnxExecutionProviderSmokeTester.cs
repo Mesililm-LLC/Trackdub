@@ -13,6 +13,7 @@ using Trackdub.Inference.Onnx.Whisper;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using Trackdub.Inference.Onnx.Worker;
+using Trackdub.Contracts.Benchmarking;
 using Trackdub.Contracts.Diagnostics;
 using Trackdub.Contracts.Pipeline;
 
@@ -98,6 +99,7 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
         // its completions to the smoke phase so cold-start evidence separates it from the
         // first real stage inference.
         using IDisposable smokePhase = ColdStartCapture.EnterPhase(ColdStartPhase.Smoke);
+        using IDisposable smokeSpan = BenchmarkPhaseCapture.Start("ep-smoke");
 
         if (request.ExecutionProvider is ExecutionProviderKind.Cuda &&
             workerClient is not null &&

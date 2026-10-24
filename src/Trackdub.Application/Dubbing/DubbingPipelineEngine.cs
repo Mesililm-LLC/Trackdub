@@ -119,8 +119,14 @@ public sealed class DubbingPipelineEngine(
         Dictionary<string, string> executionSnapshot = CaptureExecutionSnapshot(options);
 
         // --- Create session ---
-        (IDubbingSession? session, DubbingRunResult? sessionError) = CreateSessionOrError(
-            projectOutputDirectory, options, runId, runStart, stageOutcomes, executionSnapshot);
+        IDubbingSession? session;
+        DubbingRunResult? sessionError;
+        using (BenchmarkPhaseCapture.Start("session-create"))
+        {
+            (session, sessionError) = CreateSessionOrError(
+                projectOutputDirectory, options, runId, runStart, stageOutcomes, executionSnapshot);
+        }
+
         if (sessionError is not null || session is null)
         {
             return sessionError!;
@@ -928,16 +934,20 @@ public sealed class DubbingPipelineEngine(
 
         // Evaluate. The project state is passed so consent gates (voice cloning) are
         // evaluated up front instead of failing mid-run.
-        PipelineReadinessReport report = await readinessService
-            .EvaluateAsync(
-                enabledStages,
-                selections,
-                state,
-                cancellationToken,
-                options.SourceLanguageCode,
-                options.TargetLanguageCode,
-                explicitEgressConsents: BuildExplicitCloudEgressConsents(options.ExplicitCloudEgressConsents))
-            .ConfigureAwait(false);
+        PipelineReadinessReport report;
+        using (BenchmarkPhaseCapture.Start("readiness-evaluate"))
+        {
+            report = await readinessService
+                .EvaluateAsync(
+                    enabledStages,
+                    selections,
+                    state,
+                    cancellationToken,
+                    options.SourceLanguageCode,
+                    options.TargetLanguageCode,
+                    explicitEgressConsents: BuildExplicitCloudEgressConsents(options.ExplicitCloudEgressConsents))
+                .ConfigureAwait(false);
+        }
 
         // Provision downloadable models upfront via the host's interaction surface.
         // Headless sessions auto-download-or-cancel; interactive hosts show dialogs.
@@ -947,16 +957,20 @@ public sealed class DubbingPipelineEngine(
                 TryResolveService<IPipelineModelSetupInteraction>(session)
                     ?.CreateCallbacks(progress, cancellationToken)
                 ?? BuildHeadlessCallbacks(cancellationToken);
-            RuntimeModelSetupResult result = await coordinator
-                .EnsurePipelineModelsAvailableAsync(
-                    session.Workspace,
-                    selections,
-                    report,
-                    setupCallbacks,
-                    options.SourceLanguageCode,
-                    options.TargetLanguageCode,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            RuntimeModelSetupResult result;
+            using (BenchmarkPhaseCapture.Start("model-provision"))
+            {
+                result = await coordinator
+                    .EnsurePipelineModelsAvailableAsync(
+                        session.Workspace,
+                        selections,
+                        report,
+                        setupCallbacks,
+                        options.SourceLanguageCode,
+                        options.TargetLanguageCode,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
 
             RuntimeModelSetupResult provisionResult = result;
 

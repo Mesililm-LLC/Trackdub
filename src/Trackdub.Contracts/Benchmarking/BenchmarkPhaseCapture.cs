@@ -22,10 +22,13 @@ public sealed class BenchmarkPhaseCapture
         return new Scope(previous);
     }
 
-    public static Timer Start(string phase) =>
-        Ambient.Value is { } capture
-            ? new Timer(capture, phase, Stopwatch.GetTimestamp())
-            : default;
+    /// <summary>
+    /// Starts a phase timer that feeds every active capture on this async flow: the ambient
+    /// <see cref="BenchmarkPhaseCapture"/> (if any) and the ambient run
+    /// <see cref="Diagnostics.ColdStartCapture"/> (if any). When neither is active this returns
+    /// a no-op scope, so ordinary runs still pay only a null check.
+    /// </summary>
+    public static Timer Start(string phase) => new(Ambient.Value, phase, Stopwatch.GetTimestamp());
 
     /// <summary>Adds <paramref name="amount"/> to a named counter on the active ambient
     /// capture. No ambient capture is a no-op; the name and amount are still validated.</summary>
@@ -93,13 +96,12 @@ public sealed class BenchmarkPhaseCapture
         }
     }
 
-    private void Record(string phase, long start)
+    private void Record(string phase, double elapsedMs)
     {
-        double elapsed = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
         lock (_gate)
         {
             _totals.TryGetValue(phase, out var previous);
-            _totals[phase] = (previous.Milliseconds + elapsed, previous.Count + 1);
+            _totals[phase] = (previous.Milliseconds + elapsedMs, previous.Count + 1);
         }
     }
 
@@ -109,7 +111,7 @@ public sealed class BenchmarkPhaseCapture
         private readonly string? _phase;
         private readonly long _start;
 
-        internal Timer(BenchmarkPhaseCapture capture, string phase, long start)
+        internal Timer(BenchmarkPhaseCapture? capture, string? phase, long start)
         {
             _capture = capture;
             _phase = phase;
@@ -118,8 +120,21 @@ public sealed class BenchmarkPhaseCapture
 
         public void Dispose()
         {
-            if (_capture is not null && _phase is not null)
-                _capture.Record(_phase, _start);
+            if (_phase is null || _phase.Length == 0)
+            {
+                return;
+            }
+
+            double elapsed = Stopwatch.GetElapsedTime(_start).TotalMilliseconds;
+            if (_capture is not null)
+            {
+                _capture.Record(_phase, elapsed);
+            }
+
+            // Mirror into the ambient run cold-start capture so pipeline runs attribute
+            // cold-start gaps to the same named phases the benchmark harness uses. A no-op
+            // when no run capture is active.
+            Diagnostics.ColdStartCapture.RecordPhase(_phase, elapsed);
         }
     }
 

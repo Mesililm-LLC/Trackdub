@@ -132,7 +132,7 @@ internal static class OnnxExecutionSessionFactory
         ExecutionProviderKind provider,
         CancellationToken cancellationToken)
     {
-        var bootstrapResult = await _bootstrapper.BootstrapAsync(provider, allowDownloads: true, cancellationToken)
+        var bootstrapResult = await BootstrapTrackedAsync(provider, allowDownloads: true, cancellationToken)
             .ConfigureAwait(false);
         WindowsMlExecutionDevicePolicy devicePolicy = await ResolveDevicePolicyAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -154,7 +154,22 @@ internal static class OnnxExecutionSessionFactory
 #if WINDOWS
         WindowsMlOnnxRuntimeNativeResolver.EnsureInitialized();
 #endif
-        return await _bootstrapper.BootstrapAsync(provider, allowDownloads: false, cancellationToken)
+        return await BootstrapTrackedAsync(provider, allowDownloads: false, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Bootstraps an execution provider while attributing the elapsed time to the
+    /// <c>provider-bootstrap</c> phase, so cold-start evidence separates provider/runtime
+    /// registration cost from session creation and inference.
+    /// </summary>
+    private static async Task<ExecutionProviders.ExecutionProviderBootstrapResult> BootstrapTrackedAsync(
+        ExecutionProviderKind provider,
+        bool allowDownloads,
+        CancellationToken cancellationToken)
+    {
+        using IDisposable phase = BenchmarkPhaseCapture.Start("provider-bootstrap");
+        return await _bootstrapper.BootstrapAsync(provider, allowDownloads, cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -297,7 +312,7 @@ internal static class OnnxExecutionSessionFactory
         bool allowTrtInitFallback = true)
     {
         string requestedProvider = FormatProviderLabel(provider);
-        var bootstrapResult = await _bootstrapper.BootstrapAsync(provider, allowDownloads: true, cancellationToken)
+        var bootstrapResult = await BootstrapTrackedAsync(provider, allowDownloads: true, cancellationToken)
             .ConfigureAwait(false);
         WindowsMlExecutionDevicePolicy devicePolicy = await ResolveDevicePolicyAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -803,7 +818,7 @@ internal static class OnnxExecutionSessionFactory
         pool ??= InferenceSessionPool.Shared;
 
         string requestedProvider = FormatProviderLabel(provider);
-        var bootstrapResult = await _bootstrapper.BootstrapAsync(provider, allowDownloads: true, cancellationToken)
+        var bootstrapResult = await BootstrapTrackedAsync(provider, allowDownloads: true, cancellationToken)
             .ConfigureAwait(false);
         WindowsMlExecutionDevicePolicy devicePolicy = await ResolveDevicePolicyAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -1154,7 +1169,7 @@ internal static class OnnxExecutionSessionFactory
             decoderProvider is ExecutionProviderKind.TensorRTRtx
                 ? ExecutionProviderKind.TensorRTRtx
                 : encoderProvider;
-        var bootstrapResult = await _bootstrapper.BootstrapAsync(bootstrapProvider, allowDownloads: true, cancellationToken)
+        var bootstrapResult = await BootstrapTrackedAsync(bootstrapProvider, allowDownloads: true, cancellationToken)
             .ConfigureAwait(false);
         WindowsMlExecutionDevicePolicy devicePolicy = await ResolveDevicePolicyAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -1295,7 +1310,7 @@ internal static class OnnxExecutionSessionFactory
         pool ??= InferenceSessionPool.Shared;
 
         string requestedProvider = FormatProviderLabel(provider);
-        var bootstrapResult = await _bootstrapper.BootstrapAsync(provider, allowDownloads: true, cancellationToken)
+        var bootstrapResult = await BootstrapTrackedAsync(provider, allowDownloads: true, cancellationToken)
             .ConfigureAwait(false);
         WindowsMlExecutionDevicePolicy devicePolicy = await ResolveDevicePolicyAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -1548,7 +1563,7 @@ internal static class OnnxExecutionSessionFactory
         CancellationToken cancellationToken,
         IReadOnlyDictionary<string, string>? additionalTrtOptions = null)
     {
-        var bootstrapResult = await _bootstrapper.BootstrapAsync(requestedProvider, allowDownloads: true, cancellationToken)
+        var bootstrapResult = await BootstrapTrackedAsync(requestedProvider, allowDownloads: true, cancellationToken)
             .ConfigureAwait(false);
         WindowsMlExecutionDevicePolicy devicePolicy = await ResolveDevicePolicyAsync(cancellationToken)
             .ConfigureAwait(false);

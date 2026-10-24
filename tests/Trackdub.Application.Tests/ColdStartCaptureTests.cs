@@ -144,6 +144,73 @@ public sealed class ColdStartCaptureTests
     }
 
     [Fact]
+    public void RecordPhase_aggregates_by_name_and_orders_by_total()
+    {
+        var capture = new ColdStartCapture();
+        using (ColdStartCapture.Activate(capture))
+        {
+            ColdStartCapture.RecordPhase("session-create", 40);
+            ColdStartCapture.RecordPhase("session-create", 60);
+            ColdStartCapture.RecordPhase("provider-bootstrap", 1250);
+            ColdStartCapture.RecordPhase("runtime-plan", 7.5);
+        }
+
+        var totals = capture.BuildTiming().PhaseTotals;
+        Assert.Equal(100, totals["session-create"].TotalMs, precision: 3);
+        Assert.Equal(2, totals["session-create"].Count);
+        Assert.Equal(1250, totals["provider-bootstrap"].TotalMs, precision: 3);
+        Assert.Equal("provider-bootstrap", totals.Keys.First());
+        Assert.Equal(["provider-bootstrap", "session-create", "runtime-plan"], totals.Keys);
+    }
+
+    [Fact]
+    public void RecordPhase_without_active_capture_is_a_no_op()
+    {
+        ColdStartCapture.RecordPhase("session-create", 10);
+        Assert.Empty(new ColdStartCapture().BuildTiming().PhaseTotals);
+    }
+
+    [Fact]
+    public void RecordPhase_rejects_blank_names()
+    {
+        Assert.Throws<ArgumentException>(() => ColdStartCapture.RecordPhase(" ", 1));
+    }
+
+    [Fact]
+    public void Summary_message_includes_the_phase_breakdown()
+    {
+        var capture = new ColdStartCapture();
+        using (ColdStartCapture.Activate(capture))
+        using (ColdStartCapture.EnterPhase(ColdStartPhase.Stage, "vad"))
+        {
+            ColdStartCapture.RecordPhase("session-create", 1500);
+            ColdStartCapture.RecordPhase("session-create", 500);
+            ColdStartCapture.RecordPhase("provider-bootstrap", 2400);
+            ColdStartCapture.MarkInferenceCompleted("onnx-run");
+            ColdStartCapture.MarkFirstStageStart("vad");
+        }
+
+        string message = ColdStartCapture.BuildSummaryMessage(capture.BuildTiming());
+
+        Assert.Contains("Phases:", message, StringComparison.Ordinal);
+        Assert.Contains("provider-bootstrap=2400 ms", message, StringComparison.Ordinal);
+        Assert.Contains("session-create=2000 ms x2", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FormatPhaseTotals_formats_largest_phases_and_nulls_when_empty()
+    {
+        Assert.Equal(string.Empty, ColdStartCapture.FormatPhaseTotals(
+            new Dictionary<string, PhaseTotal>(StringComparer.Ordinal)));
+
+        string formatted = ColdStartCapture.FormatPhaseTotals(new Dictionary<string, PhaseTotal>(StringComparer.Ordinal)
+        {
+            ["runtime-plan"] = new PhaseTotal(12.7, 3),
+        });
+        Assert.Equal(" Phases: runtime-plan=13 ms x3.", formatted);
+    }
+
+    [Fact]
     public void BuildTiming_without_marks_reports_null_inference_milestones()
     {
         var capture = new ColdStartCapture();

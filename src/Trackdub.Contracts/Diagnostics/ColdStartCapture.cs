@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
+using Trackdub.Contracts.Benchmarking;
 
 namespace Trackdub.Contracts.Diagnostics;
 
@@ -23,6 +25,7 @@ public sealed class ColdStartCapture
 
     private readonly long startTimestamp = Stopwatch.GetTimestamp();
     private readonly object gate = new();
+    private readonly ConcurrentDictionary<string, PhaseAggregate> phases = new(StringComparer.Ordinal);
 
     private long? firstStageStartTimestamp;
     private string? firstStageStartedStageName;
@@ -41,6 +44,11 @@ public sealed class ColdStartCapture
     }
 
     private sealed record InferenceMilestone(long Timestamp, string Source, PhaseContext Phase);
+
+    private sealed record PhaseAggregate(double TotalMs, int Count)
+    {
+        public PhaseAggregate Add(double ms) => new(TotalMs + ms, Count + 1);
+    }
 
     /// <summary>The capture active on this async flow, or <see langword="null"/> when none.</summary>
     public static ColdStartCapture? Current => Ambient.Value;
@@ -124,6 +132,16 @@ public sealed class ColdStartCapture
         capture.RecordInference(source, AmbientPhase.Value ?? PhaseContext.Unclassified);
     }
 
+    /// <summary>
+    /// Records elapsed milliseconds under a named phase, aggregating across the run
+    /// (nested and repeated spans sum). No-op when no capture is active.
+    /// </summary>
+    public static void RecordPhase(string name, double elapsedMs)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        Ambient.Value?.AddPhase(name, elapsedMs);
+    }
+
     /// <summary>Builds immutable evidence from the milestones recorded so far.</summary>
     public PipelineColdStartTiming BuildTiming()
     {
@@ -144,17 +162,30 @@ public sealed class ColdStartCapture
                 FirstStageInferenceSource = stageInference?.Source,
                 FirstUnclassifiedInferenceCompletionElapsedMs = ElapsedSinceStart(unclassifiedInference?.Timestamp),
                 FirstUnclassifiedInferenceSource = unclassifiedInference?.Source,
+                PhaseTotals = SnapshotPhases(),
             };
         }
     }
+
+    private void AddPhase(string name, double elapsedMs) =>
+        phases.AddOrUpdate(name, new PhaseAggregate(elapsedMs, 1), (_, existing) => existing.Add(elapsedMs));
+
+    private IReadOnlyDictionary<string, PhaseTotal> SnapshotPhases() =>
+        phases
+            .OrderByDescending(static pair => pair.Value.TotalMs)
+            .ToDictionary(
+                static pair => pair.Key,
+                static pair => new PhaseTotal(pair.Value.TotalMs, pair.Value.Count),
+                StringComparer.Ordinal);
 
     /// <summary>Formats a one-line summary of <paramref name="timing"/> for run logs.</summary>
     public static string BuildSummaryMessage(PipelineColdStartTiming timing)
     {
         ArgumentNullException.ThrowIfNull(timing);
+        string phases = FormatPhaseTotals(timing.PhaseTotals);
         if (timing.FirstInferenceCompletionElapsedMs is not { } firstInferenceMs)
         {
-            return $"Cold start: no inference completed within the run (elapsed {timing.RunElapsedMs:F0} ms).";
+            return $"Cold start: no inference completed within the run (elapsed {timing.RunElapsedMs:F0} ms).{phases}";
         }
 
         string phase = timing.FirstInferencePhase switch
@@ -171,7 +202,27 @@ public sealed class ColdStartCapture
             : " No stage started.";
 
         return $"Cold start: pipeline start -> first inference completed in {firstInferenceMs:F0} ms "
-            + $"(source: {timing.FirstInferenceSource}, phase: {phase}).{stageStart}";
+            + $"(source: {timing.FirstInferenceSource}, phase: {phase}).{stageStart}{phases}";
+    }
+
+    /// <summary>
+    /// Formats the largest phase totals (descending) as a compact
+    /// <c> Phases: name=123 ms x2, ...</c> suffix. Null when no phases were recorded.
+    /// </summary>
+    public static string FormatPhaseTotals(IReadOnlyDictionary<string, PhaseTotal> phaseTotals)
+    {
+        ArgumentNullException.ThrowIfNull(phaseTotals);
+        if (phaseTotals.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        IEnumerable<string> entries = phaseTotals
+            .Take(6)
+            .Select(static pair => pair.Value.Count > 1
+                ? $"{pair.Key}={pair.Value.TotalMs:F0} ms x{pair.Value.Count}"
+                : $"{pair.Key}={pair.Value.TotalMs:F0} ms");
+        return $" Phases: {string.Join(", ", entries)}.";
     }
 
     private void RecordFirstStageStart(string stageName)
@@ -247,4 +298,5 @@ public sealed class ColdStartCapture
     {
         public void Dispose() => AmbientPhase.Value = previous;
     }
+
 }
