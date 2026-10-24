@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
+using Trackdub.Contracts;
 using Trackdub.Contracts.ApplicationContracts;
 using Trackdub.Contracts.Benchmarking;
 using Trackdub.Domain;
@@ -43,6 +44,7 @@ internal static class OnnxExecutionSessionFactory
     private const string DirectMlExecutionProviderName = "DmlExecutionProvider";
     private const string ClassicTensorRtExecutionProviderName = "TensorrtExecutionProvider";
     private const string DirectMlLongExecutionProviderName = "DirectMLExecutionProvider";
+    private const string DataRootEnvironmentVariable = "TRACKDUB_DATA_ROOT";
     private const string CacheRootEnvironmentVariable = "TRACKDUB_CACHE_ROOT";
     private const string EngineCacheRootEnvironmentVariable = "TRACKDUB_ENGINE_CACHE_ROOT";
 
@@ -156,6 +158,48 @@ internal static class OnnxExecutionSessionFactory
 #endif
         return await BootstrapTrackedAsync(provider, allowDownloads: false, cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    private static readonly ConcurrentDictionary<string, byte> ReportedCaptureSkips =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Surfaces a skipped EP-context capture once per model per process. A skip means this
+    /// process builds TensorRT engines from source instead of deserializing them, which costs
+    /// tens of seconds on multi-GB graphs and repeats on every launch until resolved.
+    /// </summary>
+    private static void ReportCaptureSkip(string modelPath, string reason)
+    {
+        string fullPath = Path.GetFullPath(modelPath);
+        if (!ReportedCaptureSkips.TryAdd(fullPath, 0))
+        {
+            return;
+        }
+
+        DiagnosticsLogger?.LogWarning(
+            $"TensorRT-RTX engine capture skipped for '{Path.GetFileName(fullPath)}': {reason} " +
+            "Engines will be rebuilt from source on each launch until this is resolved.");
+    }
+
+    /// <summary>
+    /// Optional process-wide warning sink installed by the composition root so engine-capture
+    /// skips reach the operator log rather than only a debug trace.
+    /// </summary>
+    internal static IApplicationLogger? DiagnosticsLogger { get; set; }
+
+    /// <summary>
+    /// Explains why TensorRT-RTX engine capture is (or is not) available for
+    /// <paramref name="modelPath"/>. Public so operator tooling can report the same decision the
+    /// session factory makes, without needing a session to have been created yet.
+    /// </summary>
+    public static bool TryGetEngineCaptureSkipReason(string modelPath, out string reason) =>
+        EpContext.EpContextCapture.TryGetSkipReason(modelPath, out reason);
+
+    /// <summary>Minimum free bytes the capture path requires before it will write an artifact.</summary>
+    public static long EngineCaptureRequiredFreeBytes(string modelPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(modelPath);
+        return EpContext.EpContextArtifact.GetSourceTotalBytes(modelPath) * 2;
     }
 
     /// <summary>
@@ -385,15 +429,22 @@ internal static class OnnxExecutionSessionFactory
             : modelPath;
         // Without a current artifact, a large graph's engine build is captured as one, so the next
         // process loads engines instead of rebuilding them (minutes for multi-GB models).
+        bool captureCandidate = sessionFactory is null &&
+                               trtOptions is not null &&
+                               string.Equals(loadPath, modelPath, StringComparison.Ordinal);
+        if (captureCandidate && EpContext.EpContextCapture.TryGetSkipReason(modelPath, out string captureSkipReason))
+        {
+            // A skipped capture is not harmless: every later launch rebuilds these engines.
+            // Say so once per model at warning level instead of a trace-only whisper.
+            ReportCaptureSkip(modelPath, captureSkipReason);
+        }
+
         InferenceSession session;
         try
         {
             session =
-                sessionFactory is null &&
-                trtOptions is not null &&
-                string.Equals(loadPath, modelPath, StringComparison.Ordinal) &&
-                EpContext.EpContextCapture.ShouldCapture(modelPath)
-                    ? EpContext.EpContextCapture.CreateSession(modelPath, options, trtOptions, static (path, o) => new InferenceSession(path, o))
+                captureCandidate && EpContext.EpContextCapture.ShouldCapture(modelPath)
+                    ? EpContext.EpContextCapture.CreateSession(modelPath, options, trtOptions!, static (path, o) => new InferenceSession(path, o))
                     : sessionFactory is null
                         ? new InferenceSession(loadPath, options)
                         : sessionFactory(loadPath, options);
@@ -2799,10 +2850,36 @@ internal static class OnnxExecutionSessionFactory
 
         return new ExecutionProviders.PortableExecutionProviderBootstrapper(
             TensorRtRtx.TensorRtRtxProviderBootstrapFactory.CreateWithDefaultInstallPath(
-                Path.Join(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "Trackdub")));
+                ResolveProductDataRoot()));
 #endif
+    }
+
+    /// <summary>
+    /// Product data root that owns runtime component installs (the TensorRT-RTX plugin, and
+    /// anything else installed beside it). Honors the same relocation variables as the engine
+    /// cache; a host that moved its data root must keep resolving installed providers, or the
+    /// plugin becomes invisible and every TensorRT stage silently falls back to another EP.
+    /// </summary>
+    internal static string ResolveProductDataRoot()
+    {
+        string? dataRoot = Environment.GetEnvironmentVariable(DataRootEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(dataRoot))
+        {
+            dataRoot = Environment.GetEnvironmentVariable(CacheRootEnvironmentVariable);
+        }
+
+        if (!string.IsNullOrWhiteSpace(dataRoot))
+        {
+            return NormalizePath(dataRoot);
+        }
+
+        string localAppDataRoot = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrWhiteSpace(localAppDataRoot))
+        {
+            localAppDataRoot = AppContext.BaseDirectory;
+        }
+
+        return Path.Join(localAppDataRoot, "Trackdub");
     }
 
     private sealed class NullOpenVinoAvailabilityProvider : IOpenVinoAvailabilityProvider

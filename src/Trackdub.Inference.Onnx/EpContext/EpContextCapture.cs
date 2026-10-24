@@ -18,17 +18,88 @@ internal static class EpContextCapture
 
     private static readonly ConcurrentDictionary<string, string> FailedSources = new(StringComparer.OrdinalIgnoreCase);
 
-    internal static bool ShouldCapture(string sourceModelPath)
+    /// <summary>
+    /// Reasons a capture was not attempted. <see cref="InsufficientDiskSpace"/> is observed
+    /// per call and never memoized: free space can change between sessions (a disk that was
+    /// full during one launch may be fine the next), so it must not permanently disable
+    /// capture. Every other reason reflects a property of the graph/capture itself and is
+    /// sticky for the process.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, string> SkippedSources = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Reason used when capture is skipped purely for lack of free disk space.</summary>
+    public const string InsufficientDiskSpaceReason =
+        "Insufficient free disk space for the EP-context artifact; engines will rebuild on every launch.";
+
+    internal static bool ShouldCapture(string sourceModelPath) =>
+        TryGetSkipReason(sourceModelPath, out _) is false;
+
+    /// <summary>
+    /// Explains why <paramref name="sourceModelPath"/> will not have its engines captured, or
+    /// returns <see langword="false"/> when capture will be attempted. Operators need this
+    /// surfaced: a silently skipped capture means every future launch rebuilds the engines.
+    /// </summary>
+    internal static bool TryGetSkipReason(string sourceModelPath, out string reason)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceModelPath);
+
         string fullPath = Path.GetFullPath(sourceModelPath);
-        if (EpContextArtifact.IsEpContextPath(fullPath) || FailedSources.ContainsKey(fullPath))
+        if (EpContextArtifact.IsEpContextPath(fullPath))
         {
-            return false;
+            reason = "Already an EP-context artifact.";
+            return true;
         }
 
+        if (FailedSources.TryGetValue(fullPath, out string? failed))
+        {
+            reason = failed;
+            return true;
+        }
+
+        if (SkippedSources.TryGetValue(fullPath, out string? skipped))
+        {
+            reason = skipped;
+            return true;
+        }
+
+        // Size is a property of the graph, so it is sticky and checked before headroom: an
+        // artifact that would never be captured should not be described as a space problem.
         long sourceBytes = EpContextArtifact.GetSourceTotalBytes(fullPath);
+        if (sourceBytes < MinimumSourceBytes)
+        {
+            const string smallGraphReason =
+                "Graph is small enough that an engine build is cheaper than an artifact.";
+            SkippedSources.TryAdd(fullPath, smallGraphReason);
+            reason = smallGraphReason;
+            return true;
+        }
+
+        // Free-space outcomes are recomputed every call so recovering disk space re-enables
+        // capture without an app restart, and are never recorded in the sticky skip snapshot.
         // The engine roughly mirrors the weights; keep at least that much free again afterwards.
-        return sourceBytes >= MinimumSourceBytes && HasFreeSpace(fullPath, sourceBytes * 2);
+        if (!HasFreeSpace(fullPath, sourceBytes * 2))
+        {
+            reason = InsufficientDiskSpaceReason;
+            return true;
+        }
+
+        reason = string.Empty;
+        return false;
+    }
+
+    /// <summary>
+    /// Snapshot of capture decisions made in this process, for diagnostics and doctor output.
+    /// Keys are model paths; values explain why capture was skipped or failed.
+    /// </summary>
+    internal static IReadOnlyDictionary<string, string> SnapshotCaptureSkips()
+    {
+        var snapshot = new Dictionary<string, string>(SkippedSources, StringComparer.OrdinalIgnoreCase);
+        foreach ((string path, string reason) in FailedSources)
+        {
+            snapshot[path] = reason;
+        }
+
+        return snapshot;
     }
 
     /// <summary>

@@ -211,11 +211,17 @@ public static class CompositionRoot
             new CachingVitisAiCatalogReadinessProbe(new VitisAiCatalogReadinessProbe()));
         services.TryAddSingleton<IDiagnosticsRuntimeInfo, DiagnosticsRuntimeInfoProvider>();
         services.TryAddSingleton<IApplicationLogger>(sp =>
-            new RollingFileApplicationLogger(
+        {
+            var logger = new RollingFileApplicationLogger(
                 sp.GetRequiredService<TrackdubStoragePaths>().LogFilePath,
                 maxArchiveFiles: RollingFileApplicationLogger.SessionMaxArchiveFiles,
                 minimumLevel: ApplicationLogLevel.Information,
-                rotateOnStartup: true));
+                rotateOnStartup: true);
+            // Engine-capture skips otherwise only reach a debug trace. A skipped capture means
+            // TensorRT engines rebuild on every launch, so it must be visible in the operator log.
+            Trackdub.Inference.Onnx.OnnxExecutionSessionFactory.DiagnosticsLogger = logger;
+            return logger;
+        });
         services.TryAddSingleton<LocalModelCacheRecordStore>();
         services.TryAddSingleton<IDiagnosticsBundleExporter, DiagnosticsBundleExporter>();
         services.TryAddSingleton<IModelCacheRegistrar, LocalModelCacheRegistrar>();

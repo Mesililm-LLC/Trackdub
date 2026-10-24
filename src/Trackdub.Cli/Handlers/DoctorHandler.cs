@@ -39,6 +39,7 @@ internal static class DoctorHandler
         checks.Add(CheckLogPath(storagePaths));
         checks.Add(CheckAcceleratorBudget(factory));
         checks.Add(CheckEngineCache(factory));
+        checks.Add(CheckEngineCaptureHeadroom(factory));
         checks.Add(CheckPlaybackNatives());
         checks.Add(CheckWindowsMlSummary());
         checks.Add(await CheckTensorRtRtxPluginAsync(factory, cancellationToken).ConfigureAwait(false));
@@ -133,6 +134,94 @@ internal static class DoctorHandler
                 $"Engine cache contains {description.FileCount} file(s) (~{sizeLabel}) at {description.CacheDirectory}.",
             Remediation =
                 "After GPU/driver changes or TRT RTX EP bumps: trackdub cache clear engines, then trackdub cache warm",
+        };
+    }
+
+    /// <summary>
+    /// TensorRT-RTX engine capture needs free space roughly twice the size of the largest
+    /// captured graph. When it cannot write the artifact, every launch rebuilds the engines
+    /// from source: minutes of avoidable cold start that is otherwise invisible until someone
+    /// notices slow runs. Report the real headroom so the cause is actionable.
+    /// </summary>
+    private static DoctorCheckRow CheckEngineCaptureHeadroom(TrackdubSessionFactory factory)
+    {
+        IAppStoragePaths storagePaths = factory.GetRequiredService<IAppStoragePaths>();
+        string modelCacheDirectory = storagePaths.ModelCacheDirectory;
+
+        string? largestModelPath = null;
+        long largestModelBytes = 0;
+        try
+        {
+            foreach (string path in Directory.EnumerateFiles(modelCacheDirectory, "*.onnx", SearchOption.AllDirectories))
+            {
+                long length = new FileInfo(path).Length;
+                if (length > largestModelBytes)
+                {
+                    largestModelBytes = length;
+                    largestModelPath = path;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DirectoryNotFoundException)
+        {
+            return new DoctorCheckRow
+            {
+                Id = "engine-capture",
+                Status = "pass",
+                Message = $"Engine capture headroom not measurable (model cache unreadable): {ex.Message}",
+            };
+        }
+
+        if (largestModelPath is null || largestModelBytes < 256L * 1024 * 1024)
+        {
+            return new DoctorCheckRow
+            {
+                Id = "engine-capture",
+                Status = "pass",
+                Message = "No model large enough to benefit from an EP-context engine artifact.",
+            };
+        }
+
+        long requiredBytes = largestModelBytes * 2;
+        long availableBytes;
+        try
+        {
+            availableBytes = new DriveInfo(Path.GetPathRoot(modelCacheDirectory)!).AvailableFreeSpace;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return new DoctorCheckRow
+            {
+                Id = "engine-capture",
+                Status = "warn",
+                Message = $"Engine capture headroom could not be read for '{modelCacheDirectory}': {ex.Message}",
+            };
+        }
+
+        string modelLabel = Path.GetFileName(largestModelPath);
+        if (availableBytes < requiredBytes)
+        {
+            return new DoctorCheckRow
+            {
+                Id = "engine-capture",
+                Status = "fail",
+                Message =
+                    $"Not enough free space to capture TensorRT-RTX engines: '{modelLabel}' needs " +
+                    $"{FormatApproximateBytes(requiredBytes)} free but only {FormatApproximateBytes(availableBytes)} is available. " +
+                    "Engines will rebuild from source on every launch (minutes of avoidable cold start).",
+                Remediation =
+                    $"Free disk space on the model cache drive ({Path.GetPathRoot(modelCacheDirectory)}), " +
+                    "or move the cache to a larger drive with TRACKDUB_CACHE_ROOT, then run: trackdub cache warm",
+            };
+        }
+
+        return new DoctorCheckRow
+        {
+            Id = "engine-capture",
+            Status = "pass",
+            Message =
+                $"Engine capture has headroom for '{modelLabel}' " +
+                $"({FormatApproximateBytes(availableBytes)} free, needs {FormatApproximateBytes(requiredBytes)}).",
         };
     }
 
