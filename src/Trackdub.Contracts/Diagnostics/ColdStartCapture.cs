@@ -298,5 +298,4 @@ public sealed class ColdStartCapture
     {
         public void Dispose() => AmbientPhase.Value = previous;
     }
-
 }
