@@ -305,7 +305,12 @@ public sealed class OnnxExecutionSessionFactoryTests
             var options = Assert.IsAssignableFrom<IReadOnlyDictionary<string, string>>(rawResult);
 
             Assert.Equal(
-                Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Trackdub", "EngineCache"),
+                Path.Join(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "Trackdub",
+                    "EngineCache",
+                    "trt-rtx",
+                    Trackdub.Inference.Runtime.TensorRtRtx.TensorRtRtxProviderConstants.BundledFingerprintVersion),
                 options["nv_runtime_cache_path"]);
             // Cuda-graph capture requires stable device buffer addresses across Run() calls; most
             // call sites build fresh input tensors every call, so the flag must default to off.
@@ -317,6 +322,21 @@ public sealed class OnnxExecutionSessionFactoryTests
             Environment.SetEnvironmentVariable("TRACKDUB_ENGINE_CACHE_ROOT", previousEngineCacheRoot);
             Environment.SetEnvironmentVariable("TRACKDUB_CACHE_ROOT", previousCacheRoot);
         }
+    }
+
+    [Fact]
+    public void BuildTensorRtRtxOptions_drops_device_id_removed_in_ep_abi_0_5()
+    {
+        MethodInfo method = typeof(OnnxExecutionSessionFactory)
+            .GetMethod("BuildTensorRtRtxOptions", BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("Could not locate TensorRT RTX provider-options helper.");
+
+        var additional = new Dictionary<string, string> { ["device_id"] = "0", ["nv_max_workspace_size"] = "1024" };
+        object? rawResult = method.Invoke(null, [additional, false]);
+        var options = Assert.IsAssignableFrom<IReadOnlyDictionary<string, string>>(rawResult);
+
+        Assert.False(options.ContainsKey("device_id"));
+        Assert.Equal("1024", options["nv_max_workspace_size"]);
     }
 
     [Fact]
@@ -354,7 +374,13 @@ public sealed class OnnxExecutionSessionFactoryTests
             object? rawResult = method.Invoke(null, [null, false]);
             var options = Assert.IsAssignableFrom<IReadOnlyDictionary<string, string>>(rawResult);
 
-            Assert.Equal(Path.Join(Path.GetFullPath(cacheRoot), "EngineCache"), options["nv_runtime_cache_path"]);
+            Assert.Equal(
+                Path.Join(
+                    Path.GetFullPath(cacheRoot),
+                    "EngineCache",
+                    "trt-rtx",
+                    Trackdub.Inference.Runtime.TensorRtRtx.TensorRtRtxProviderConstants.BundledFingerprintVersion),
+                options["nv_runtime_cache_path"]);
         }
         finally
         {
@@ -386,7 +412,12 @@ public sealed class OnnxExecutionSessionFactoryTests
             object? rawResult = method.Invoke(null, [null, false]);
             var options = Assert.IsAssignableFrom<IReadOnlyDictionary<string, string>>(rawResult);
 
-            Assert.Equal(Path.GetFullPath(engineCacheRoot), options["nv_runtime_cache_path"]);
+            Assert.Equal(
+                Path.Join(
+                    Path.GetFullPath(engineCacheRoot),
+                    "trt-rtx",
+                    Trackdub.Inference.Runtime.TensorRtRtx.TensorRtRtxProviderConstants.BundledFingerprintVersion),
+                options["nv_runtime_cache_path"]);
         }
         finally
         {

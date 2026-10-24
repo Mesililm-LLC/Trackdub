@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Trackdub.Inference.Onnx;
 using Trackdub.Inference.Onnx.TensorRtRtx;
 using Trackdub.Inference.Runtime.TensorRtRtx;
 using Trackdub.Infrastructure.Runtime.TrtRtxEp;
@@ -30,15 +31,16 @@ public sealed class TrtRtxBundlePinTests
     {
         using JsonDocument document = JsonDocument.Parse(File.ReadAllText(ResolveRepoManifestPath()));
 
+        // The manifest drives the Windows bundle; Linux follows LinML.Catalog's pinned wheel.
         Assert.Equal(
-            TensorRtRtxProviderConstants.BundledTrtRtxRuntimeVersion,
+            TensorRtRtxProviderConstants.BundledTrtRtxRuntimeVersionWindows,
             document.RootElement.GetProperty("trtRtxRuntimeVersion").GetString());
     }
 
     [Fact]
     public void Windows_runtime_file_names_encode_the_bundled_runtime_major_minor()
     {
-        string[] parts = TensorRtRtxProviderConstants.BundledTrtRtxRuntimeVersion.Split('.');
+        string[] parts = TensorRtRtxProviderConstants.BundledTrtRtxRuntimeVersionWindows.Split('.');
         string suffix = $"_{parts[0]}_{parts[1]}.dll";
 
         Assert.EndsWith(suffix, TensorRtRtxProviderConstants.TensorRtRuntimeFileNameWindows, StringComparison.Ordinal);
@@ -142,14 +144,25 @@ public sealed class TrtRtxBundlePinTests
         Assert.Equal(userChosen, resolution.DirectoryPath);
     }
 
+    [Fact]
+    public void Runtime_cache_path_is_scoped_to_the_bundled_fingerprint()
+    {
+        string path = OnnxExecutionSessionFactory.ResolveTensorRtRtxRuntimeCachePath();
+
+        Assert.Equal(TensorRtRtxProviderConstants.BundledFingerprintVersion, Path.GetFileName(path));
+        Assert.Equal("trt-rtx", Path.GetFileName(Path.GetDirectoryName(path)));
+    }
+
     [Theory]
     [InlineData(@"0.3.0\cu12\win-x64", true)]
     [InlineData(@"0.4.2\cu12\win-x64", true)]
+    [InlineData(@"0.4.2\cu13\win-x64", true)]
+    [InlineData(@"0.4.0\cu13\linux-x64", true)]
     [InlineData(@"CURRENT", false)]
     public void IsSupersededManagedInstallDirectory_detects_other_versions_under_the_managed_root(string relative, bool expected)
     {
         string root = Path.GetFullPath(Path.Join(Path.GetTempPath(), "trackdub-pin", "Providers", "trt-rtx"));
-        string current = Path.Join(root, "0.4.2", "cu13", "win-x64");
+        string current = Path.Join(root, "0.5.0", "cu13", "win-x64");
         string candidate = relative == "CURRENT"
             ? current
             : Path.Join(root, relative.Replace('\\', Path.DirectorySeparatorChar));

@@ -35,11 +35,11 @@ Windows:
 
 ```text
 onnxruntime_providers_nv_tensorrt_rtx.dll
-tensorrt_rtx_1_6.dll
-tensorrt_onnxparser_rtx_1_6.dll
+tensorrt_rtx_1_7.dll
+tensorrt_onnxparser_rtx_1_7.dll
 ```
 
-Linux (v0.4.0 cu13 linux-x86_64 zip; SONAME symlinks are preserved on extract):
+Linux (v0.5.0 cu13, installed through LinML.Catalog; SONAME symlinks are preserved on extract):
 
 ```text
 libonnxruntime_providers_nv_tensorrt_rtx.so
@@ -58,7 +58,7 @@ Companion libraries such as `tensorrt_plugins.dll` / `libtensorrt_plugins.so` ar
 2. `TRACKDUB_TRT_RTX_EP_DIR`
 3. Default installed bundle under the Trackdub user data root (see below)
 
-If the bundle is missing, use **Install** in Model Manager (downloads v0.4.2 cu13 on Windows / v0.4.0 cu13 on Linux, persists the studio path, then registers), or run the dev fetch script.
+If the bundle is missing, use **Install** in Model Manager (downloads v0.5.0 cu13 on Windows; on Linux LinML.Catalog installs its pinned 0.5.0 wheel, persists the studio path, then registers), or run the dev fetch script.
 
 ## Fetch script (dev/CI)
 
@@ -74,9 +74,9 @@ Optional `-InstallRoot` or `TRACKDUB_DATA_ROOT` overrides the user data root. Th
 
 Trackdub ships the EP ABI plugin through a pinned manifest, not the Windows ML catalog:
 
-- **Manifest:** `runtime/trt-rtx-ep.manifest.json` (version `0.4.2`, linux-x64 package pinned to `0.4.0`, CUDA `cu13`, `trtRtxRuntimeVersion` `1.6.1`, per-RID archive URL + SHA-256 + size).
+- **Manifest:** `runtime/trt-rtx-ep.manifest.json` (version `0.5.0`, linux-x64 package at the same `0.5.0` as LinML.Catalog's wheel, CUDA `cu13`, `trtRtxRuntimeVersion` `1.7.1` for Windows, per-RID archive URL + SHA-256 + size).
 - **Composition copy:** `trt-rtx-ep.manifest.json` next to the app assembly (`Trackdub.Composition` `CopyToOutputDirectory`).
-- **Downloader:** `TrtRtxEpBundleDownloader` verifies checksum/size, extracts required plugin files into `%UserDataRoot%/Providers/trt-rtx/<version>/cu13/<rid>/ (0.4.2 on win-x64, 0.4.0 on linux-x64)`.
+- **Downloader:** `TrtRtxEpBundleDownloader` verifies checksum/size, extracts required plugin files into `%UserDataRoot%/Providers/trt-rtx/<version>/cu13/<rid>/` (0.5.0 on win-x64 and linux-x64).
 - **In-app install:** Model Manager **Install** calls `ITrtRtxEpInstaller` after `NvidiaTensorRtRtx` license acceptance, persists `StudioSettings.TensorRtRtxPluginDirectory`, then registers via `ITensorRtRtxProviderBootstrap`.
 - **Inference bootstrap:** registers an already-installed bundle only; it **never** downloads the EP bundle (same policy as WinML catalog EPs during session bootstrap).
 
@@ -123,9 +123,11 @@ Provider binaries and runtime cache are separate.
 Provider bundle (installed by Model Manager or `Fetch-TrtRtxEp.ps1`):
 
 ```text
-%LOCALAPPDATA%\Trackdub\Providers\trt-rtx\0.4.2\cu13\win-x64\   # Windows
-~/.local/share/Trackdub/Providers/trt-rtx/0.4.0/cu13/linux-x64/   # Linux
+%LOCALAPPDATA%\Trackdub\Providers\trt-rtx\0.5.0\cu13\win-x64\   # Windows
+~/.local/share/Trackdub/Providers/trt-rtx/0.5.0/cu13/linux-x64/   # Linux
 ```
+
+> Engine caches: TRT-RTX runtime caches live under `EngineCache/trt-rtx/<BundledFingerprintVersion>`, and classic TensorRT engines under `EngineCache/classic-trt/<fingerprint>` (no longer nested inside the TRT-RTX path). Caches written by earlier layouts (flat `EngineCache/NvTensorRTRTX*`, or `EngineCache/trt-rtx/<old-fingerprint>/classic-trt/`) are orphaned on upgrade; the next run rebuilds engines once. Run `trackdub cache clear engines` to reclaim the space.
 
 Manifest: `runtime/trt-rtx-ep.manifest.json` (pinned NVIDIA GitHub release URLs + checksums).
 
@@ -238,7 +240,7 @@ dotnet test tests/Trackdub.Inference.Tests --filter "FullyQualifiedName~TensorRt
 Benchmark smoke on a Windows NVIDIA RTX machine with the plugin bundle available:
 
 ```powershell
-$env:TRACKDUB_TRT_RTX_EP_DIR = "$env:LOCALAPPDATA\Trackdub\Providers\trt-rtx\0.4.2\cu13\win-x64"
+$env:TRACKDUB_TRT_RTX_EP_DIR = "$env:LOCALAPPDATA\Trackdub\Providers\trt-rtx\0.5.0\cu13\win-x64"
 dotnet run --project src/Trackdub.Benchmarks.DevHost -f net10.0-windows10.0.19041.0 -- --model <model-id> --provider trt-rtx --runs 1 --format console
 ```
 
@@ -343,9 +345,9 @@ compared honestly.
 
 When NVIDIA ships a new `TensorRT-RTX-EP-ABI` GitHub release:
 
-1. Check which platforms the tag actually ships (v0.4.2 is Windows-only). Run `tools/dev/Update-TrtRtxEpManifest.ps1 -Version <x.y.z> -TrtRtxRuntimeVersion <a.b.c> [-LinuxVersion <older tag>] [-CudaVariant cu13]` to refresh `runtime/trt-rtx-ep.manifest.json` (URLs, SHA-256, size, per-package `version` when a platform lags).
-2. Inspect the archive: update `TensorRtRtxProviderConstants.BundledVersionWindows` / `BundledVersionLinux`, `BundledCudaVariant`, `BundledTrtRtxRuntimeVersion`, and the `tensorrt_rtx_<major>_<minor>.dll` / parser file names (plus `TrtRtxEpRequiredFiles`). `TrtRtxBundlePinTests` fails if constants and manifest drift. Check the plugin's imports (`dumpbin /dependents`): the cu13 Windows bundle links the CUDA runtime statically, the Linux bundle ships `libcudart.so.13`; adjust `TensorRtRtxCudaRuntimeBootstrap` if that changes.
-   `BundledFingerprintVersion` (EP ABI version + TRT-RTX runtime version) keys smoke verdicts and EP-context stamps, so either bump invalidates them.
+1. Check which platforms the tag actually ships (v0.4.2 was Windows-only; v0.5.0 ships both). Run `tools/dev/Update-TrtRtxEpManifest.ps1 -Version <x.y.z> -TrtRtxRuntimeVersion <a.b.c> [-LinuxVersion <older tag>] [-CudaVariant cu13]` to refresh `runtime/trt-rtx-ep.manifest.json` (URLs, SHA-256, size, per-package `version` when a platform lags).
+2. Inspect the archive: update `TensorRtRtxProviderConstants.BundledVersionWindows` / `BundledVersionLinux`, `BundledCudaVariant`, `BundledTrtRtxRuntimeVersion`, and the `tensorrt_rtx_<major>_<minor>.dll` / parser file names (plus `TrtRtxEpRequiredFiles` and the required-file list in `tools/dev/Fetch-TrtRtxEp.ps1`). `TrtRtxBundlePinTests` fails if constants and manifest drift. Check the plugin's imports (`dumpbin /dependents`): the cu13 Windows bundle links the CUDA runtime statically, the Linux bundle ships `libcudart.so.13`; adjust `TensorRtRtxCudaRuntimeBootstrap` if that changes.
+   `BundledFingerprintVersion` (EP ABI version + TRT-RTX runtime version) keys smoke verdicts and EP-context stamps, so either bump invalidates them. It also names the TRT-RTX runtime cache directory (`EngineCache/trt-rtx/<fingerprint>`), so runtime caches from an older lineage are never fed to the new runtime.
 3. Run `tools/dev/Fetch-TrtRtxEp.ps1` locally and verify `trackdub providers trt-rtx status`.
 4. Run optional GPU smoke (`.github/workflows/trt-rtx-smoke.yml`) or `Trackdub.Benchmarks.DevHost --provider trt-rtx`.
 5. Run `trackdub doctor` and advise users with stale engines to `trackdub cache clear engines` after upgrading the EP bundle.

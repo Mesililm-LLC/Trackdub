@@ -86,7 +86,7 @@ checked first.
 ### TensorRT RTX on Linux
 
 `ExecutionProviderKind.TensorRTRtx` on Linux runs on NVIDIA's EP ABI plugin
-(`NvTensorRTRTXExecutionProvider`, 0.4.0 cu13, TensorRT-RTX 1.6.1) that `LinML.Catalog`
+(`NvTensorRTRTXExecutionProvider`, 0.5.0 cu13, TensorRT-RTX 1.7.1) that `LinML.Catalog`
 pins, installs, registers and appends. `LinMlTensorRtRtxBootstrap` implements the same
 `ITensorRtRtxProviderBootstrap` the Windows path uses, so readiness reports, the
 bootstrapper and the session factory are unchanged. The plugin is vendored under

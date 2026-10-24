@@ -51,9 +51,9 @@ $ModelCacheRoot = Resolve-TrackdubModelCacheRoot
 
 # TensorRT RTX EP ABI plugin DLL, resolved like TensorRtRtxPluginLocator: TRACKDUB_TRT_RTX_EP_DIR,
 # then the default install. Olive registers it via the recipe accelerator's (name, path) pair.
-$TrtRtxEpDir    = if ($env:TRACKDUB_TRT_RTX_EP_DIR) { $env:TRACKDUB_TRT_RTX_EP_DIR } else { Join-Path $env:LOCALAPPDATA 'Trackdub\Providers\trt-rtx\0.4.2\cu13\win-x64' }
+$TrtRtxEpDir    = if ($env:TRACKDUB_TRT_RTX_EP_DIR) { $env:TRACKDUB_TRT_RTX_EP_DIR } else { Join-Path $env:LOCALAPPDATA 'Trackdub\Providers\trt-rtx\0.5.0\cu13\win-x64' }
 $TrtRtxEpPath   = Join-Path $TrtRtxEpDir 'onnxruntime_providers_nv_tensorrt_rtx.dll'
-# The plugin's companion DLLs (tensorrt_rtx_1_6.dll, tensorrt_onnxparser_rtx_1_6.dll) live beside it but are
+# The plugin's companion DLLs (tensorrt_rtx_1_7.dll, tensorrt_onnxparser_rtx_1_7.dll) live beside it but are
 # resolved through the normal DLL search path, so the bundle dir must be on PATH for olive.
 $env:PATH = "$TrtRtxEpDir;$env:PATH"
 $modelRoot      = Join-Path $ModelCacheRoot 'cgus\diar_streaming_sortformer_4spk-v2.1-onnx'

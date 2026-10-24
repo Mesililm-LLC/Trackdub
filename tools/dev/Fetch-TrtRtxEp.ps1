@@ -47,8 +47,8 @@ function Get-RequiredFileNames([string]$Rid) {
     if ($Rid -eq 'win-x64') {
         return @(
             'onnxruntime_providers_nv_tensorrt_rtx.dll',
-            'tensorrt_rtx_1_6.dll',
-            'tensorrt_onnxparser_rtx_1_6.dll'
+            'tensorrt_rtx_1_7.dll',
+            'tensorrt_onnxparser_rtx_1_7.dll'
         )
     }
 

@@ -5,26 +5,26 @@
   "description": "Curated GPU/inference docs for Trackdub agents. Complements NVIDIA CUDA MCP; does not replace it.",
   "pin": {
     "sourceManifest": "runtime/trt-rtx-ep.manifest.json",
-    "epAbiVersion": "0.4.2",
-    "epAbiVersionLinux": "0.4.0",
+    "epAbiVersion": "0.5.0",
+    "epAbiVersionLinux": "0.5.0",
     "cudaVariant": "cu13",
-    "trtRtxRuntimeVersion": "1.6.1",
+    "trtRtxRuntimeVersion": "1.7.1",
     "bundledWindowsLibs": [
       "onnxruntime_providers_nv_tensorrt_rtx.dll",
-      "tensorrt_rtx_1_6.dll",
-      "tensorrt_onnxparser_rtx_1_6.dll",
+      "tensorrt_rtx_1_7.dll",
+      "tensorrt_onnxparser_rtx_1_7.dll",
       "tensorrt_plugins.dll"
     ],
     "epDeviceName": "NvTensorRTRTXExecutionProvider",
     "releaseAssets": {
-      "win-x64": "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/download/v0.4.2/TensorRT-RTX-EP-ABI-v0.4.2-cu13.zip",
-      "linux-x64": "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/download/v0.4.0/TensorRT-RTX-EP-ABI-v0.4.0-cu13-linux-x86_64.zip"
+      "win-x64": "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/download/v0.5.0/TensorRT-RTX-EP-ABI-v0.5.0-cu13.zip",
+      "linux-x64": "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/download/v0.5.0/TensorRT-RTX-EP-ABI-v0.5.0-cu13-linux-x86_64.zip"
     },
     "notes": [
       "Trackdub ships the standalone ORT EP ABI plugin, not the Windows ML catalog EP.",
-      "DLL suffix _1_6 means TensorRT-RTX library lineage 1.6 (1.6.1) inside EP ABI 0.4.2 (Windows) / 0.4.0 (Linux). v0.4.2 ships no Linux x64 asset.",
+      "DLL suffix _1_7 means TensorRT-RTX library lineage 1.7 (1.7.1) inside EP ABI 0.5.0 (Windows). Linux installs through LinML.Catalog 0.6.0, which pins the 0.5.0 wheel (TensorRT-RTX 1.7.1). EP ABI 0.5.0 lists ORT 1.25-1.30 as compatible; Trackdub runs it on ORT 1.31 (verified 2026-10-22).",
       "The Windows cu13 bundle has no cudart import (CUDA runtime statically linked); the Linux cu13 bundle ships libcudart.so.13.",
-      "docs.nvidia.com/deeplearning/tensorrt-rtx/latest/ currently tracks newer product docs (1.6+). Prefer Trackdub reference docs for pin-specific behavior; treat /latest/ as upstream context, not a pin guarantee.",
+      "docs.nvidia.com/deeplearning/tensorrt-rtx/latest/ currently tracks newer product docs (1.7+). Prefer Trackdub reference docs for pin-specific behavior; treat /latest/ as upstream context, not a pin guarantee.",
       "GitHub EP ABI release notes are the pin-accurate changelog."
     ]
   },
@@ -80,23 +80,31 @@
       "kind": "repo-file",
       "tags": ["trackdub-local", "trt-rtx", "pin", "manifest"],
       "path": "runtime/trt-rtx-ep.manifest.json",
-      "title": "TRT-RTX EP bundle manifest (0.4.2 win / 0.4.0 linux, cu13, TRT-RTX 1.6.1)",
+      "title": "TRT-RTX EP bundle manifest (0.5.0 win + linux, cu13, TRT-RTX 1.7.1)",
       "priority": 90
     },
     {
-      "id": "gh-ep-abi-v042",
+      "id": "gh-ep-abi-v050",
       "kind": "url",
       "tags": ["nvidia-tensorrt-rtx", "ep-abi", "pin", "release"],
-      "url": "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/tag/v0.4.2",
-      "title": "TensorRT-RTX-EP-ABI v0.4.2 release notes (Windows pin)",
+      "url": "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/tag/v0.5.0",
+      "title": "TensorRT-RTX-EP-ABI v0.5.0 release notes (pin; TRT-RTX 1.7 lineage)",
       "priority": 85
     },
     {
-      "id": "gh-ep-abi-v040",
+      "id": "gh-ep-abi-v050-technical-notes",
       "kind": "url",
-      "tags": ["nvidia-tensorrt-rtx", "ep-abi", "pin", "release"],
-      "url": "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/tag/v0.4.0",
-      "title": "TensorRT-RTX-EP-ABI v0.4.0 release notes (Linux pin; TRT-RTX 1.6 lineage change)",
+      "tags": ["nvidia-tensorrt-rtx", "ep-abi", "pin", "allocator", "ep-context"],
+      "url": "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/blob/v0.5.0/docs/technical-notes.md",
+      "title": "TensorRT-RTX-EP-ABI v0.5.0 technical notes (sync GPU allocator, weightless EPContext)",
+      "priority": 80
+    },
+    {
+      "id": "nv-trt-rtx-release-notes-1-7",
+      "kind": "url",
+      "tags": ["nvidia-tensorrt-rtx", "pin", "release"],
+      "url": "https://docs.nvidia.com/deeplearning/tensorrt-rtx/latest/getting-started/release-notes-1/1.7.html",
+      "title": "TensorRT-RTX 1.7 release notes (pinned runtime lineage)",
       "priority": 85
     },
     {
@@ -114,7 +122,7 @@
       "url": "https://docs.nvidia.com/deeplearning/tensorrt-rtx/latest/index.html",
       "title": "NVIDIA TensorRT for RTX docs index (latest)",
       "priority": 50,
-      "pinWarning": "latest may be newer than EP ABI 0.4.2 / tensorrt_rtx_1_6 (TRT-RTX 1.6.1)"
+      "pinWarning": "latest may be newer than EP ABI 0.5.0 / tensorrt_rtx_1_7 (TRT-RTX 1.7.1)"
     },
     {
       "id": "nv-trt-rtx-arch-overview",

@@ -13,7 +13,7 @@ mcp = FastMCP(
     name="trackdub-gpu-docs",
     instructions=(
         "Curated Trackdub GPU / TensorRT-RTX / ORT plugin EP / Windows ML docs. "
-        "Keyed to TRT-RTX EP ABI 0.4.2 (win) / 0.4.0 (linux) cu13, TRT-RTX 1.6.1. Prefer Trackdub local sources for pin policy. "
+        "Keyed to TRT-RTX EP ABI 0.5.0 (win + linux via LinML, TRT-RTX 1.7.1) cu13. Prefer Trackdub local sources for pin policy. "
         "Use NVIDIA CUDA MCP for CUDA programming questions; use this server for TRT-RTX EP wiring."
     ),
 )
