@@ -288,6 +288,34 @@ public sealed class SidecarCacheTests
     // ── Count ─────────────────────────────────────────────────────────────────
 
     [Fact]
+    public async Task GetOrAddAsync_CancellingOneCallersWait_DoesNotCancelTheSharedLoad()
+    {
+        // The Qwen3-ASR engine loads its tokenizer with CancellationToken.None and applies each caller's
+        // token to its own wait, so one cancelled transcription cannot abort a read that others await.
+        var cache = new SidecarCache<string>();
+        var load = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cancellation = new CancellationTokenSource();
+        int factoryCalls = 0;
+
+        Task<string> cancelledCaller = cache
+            .GetOrAddAsync("model", _ =>
+            {
+                factoryCalls++;
+                return load.Task;
+            })
+            .WaitAsync(cancellation.Token);
+
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelledCaller);
+
+        load.SetResult("loaded");
+        string sharedValue = await cache.GetOrAddAsync("model", _ => Task.FromResult("replacement"));
+
+        Assert.Equal("loaded", sharedValue);
+        Assert.Equal(1, factoryCalls);
+    }
+
+    [Fact]
     public void Count_ReflectsDistinctKeys()
     {
         var cache = new SidecarCache<int>();
