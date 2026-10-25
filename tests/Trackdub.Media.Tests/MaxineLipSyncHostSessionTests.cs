@@ -203,7 +203,7 @@ public sealed class MaxineLipSyncHostSessionTests : IDisposable
         byte[] data = new byte[count * FrameBytes];
         for (int i = 0; i < data.Length; i++)
         {
-            data[i] = (byte)(i / FrameBytes * 31 + i % 7);
+            data[i] = (byte)((i / FrameBytes * 31) + (i % 7));
         }
 
         return data;
