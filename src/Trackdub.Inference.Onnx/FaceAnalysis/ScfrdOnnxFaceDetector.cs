@@ -164,15 +164,17 @@ public sealed class ScfrdOnnxFaceDetector(
     }
 
     private static List<Detection> DecodeAndFilter(
-        IDisposableReadOnlyCollection<DisposableNamedOnnxValue> outputs)
+        IDisposableReadOnlyCollection<DisposableNamedOnnxValue> outputs) =>
+        DecodeAndFilter(outputs.Select(static output => output.Value).OfType<Tensor<float>>());
+
+    internal static List<Detection> DecodeAndFilter(IEnumerable<Tensor<float>> outputs)
     {
         // Group tensors by anchor-count N: scores=[N,1] or [1,N,1], bboxes=[N,4] or [1,N,4]
         var scoreTensors = new Dictionary<int, Tensor<float>>();
         var bboxTensors = new Dictionary<int, Tensor<float>>();
 
-        foreach (DisposableNamedOnnxValue output in outputs)
+        foreach (Tensor<float> tensor in outputs)
         {
-            if (output.Value is not Tensor<float> tensor) continue;
             ReadOnlySpan<int> dims = tensor.Dimensions;
 
             int n, c;
@@ -228,8 +230,9 @@ public sealed class ScfrdOnnxFaceDetector(
                     float cx = (col + 0.5f) * stride;
                     for (int a = 0; a < 2; a++) // 2 anchors per cell
                     {
-                        float rawScore = scoresIs3D ? scores[0, anchorIdx, 0] : scores[anchorIdx, 0];
-                        float score = Sigmoid(rawScore);
+                        // The InsightFace SCRFD export already applies the sigmoid; applying it again
+                        // maps every score to at least 0.5, so every anchor would pass the threshold.
+                        float score = scoresIs3D ? scores[0, anchorIdx, 0] : scores[anchorIdx, 0];
 
                         if (score >= ScoreThreshold)
                         {
@@ -292,10 +295,8 @@ public sealed class ScfrdOnnxFaceDetector(
         return union <= 0f ? 0f : intersection / union;
     }
 
-    private static float Sigmoid(float x) => 1f / (1f + MathF.Exp(-x));
-
     private static FaceDetectionResult NoFace =>
         new(FaceFound: false, Confidence: 0d, PrimaryFace: null);
 
-    private readonly record struct Detection(float X1, float Y1, float X2, float Y2, float Score);
+    internal readonly record struct Detection(float X1, float Y1, float X2, float Y2, float Score);
 }

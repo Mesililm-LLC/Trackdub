@@ -1,3 +1,4 @@
+using Microsoft.ML.OnnxRuntime.Tensors;
 using Trackdub.Inference.Onnx.FaceAnalysis;
 
 namespace Trackdub.Inference.Onnx.Tests;
@@ -32,6 +33,35 @@ public sealed class ScfrdLetterboxTests
         Assert.Equal(white, tensor[Index(0, 639, 351)], 5);
         Assert.Equal(PadValue, tensor[Index(0, 0, 352)], 5);
         Assert.Equal(PadValue, tensor[Index(2, 639, 639)], 5);
+    }
+
+    [Fact]
+    public void DecodeAndFilter_treats_scores_as_probabilities_and_keeps_only_confident_anchors()
+    {
+        // Model outputs are already sigmoided: one confident anchor, the rest near zero.
+        int[] anchorCounts = [12800, 3200, 800];
+        var tensors = new List<Tensor<float>>();
+        foreach (int count in anchorCounts)
+        {
+            var scores = new DenseTensor<float>([count, 1]);
+            for (int i = 0; i < count; i++)
+            {
+                scores[i, 0] = 0.01f;
+            }
+
+            if (count == 3200)
+            {
+                scores[100, 0] = 0.82f;
+            }
+
+            tensors.Add(scores);
+            tensors.Add(new DenseTensor<float>([count, 4]));
+        }
+
+        List<ScfrdOnnxFaceDetector.Detection> detections = ScfrdOnnxFaceDetector.DecodeAndFilter(tensors);
+
+        ScfrdOnnxFaceDetector.Detection detection = Assert.Single(detections);
+        Assert.Equal(0.82f, detection.Score, 5);
     }
 
     private static int Index(int channel, int y, int x) => (channel * InferSize * InferSize) + (y * InferSize) + x;
