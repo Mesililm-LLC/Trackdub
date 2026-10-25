@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Trackdub.Contracts;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Inference.Onnx;
 using Trackdub.Inference.Onnx.FaceAnalysis;
@@ -13,6 +14,31 @@ namespace Trackdub.Composition.LipSynthesis;
 
 internal static class LatentSyncLipSynthesisRegistration
 {
+    /// <summary>
+    /// Settings first, then environment variables. Settings that cannot be read fall back to the
+    /// environment so a damaged settings file never stops a configured install from working.
+    /// </summary>
+    internal static NvidiaMaxineLipSyncOptions ResolveMaxineOptions(IStudioSettingsService? settingsService)
+    {
+        StudioSettings? settings = null;
+        if (settingsService is not null)
+        {
+            try
+            {
+                settings = settingsService.LoadAsync(CancellationToken.None).ConfigureAwait(false).GetAwaiter().GetResult();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+            {
+                settings = null;
+            }
+        }
+
+        return NvidiaMaxineLipSyncOptions.Resolve(
+            settings?.MaxineLipSyncHostPath,
+            settings?.MaxineLipSyncArSdkRoot,
+            settings?.MaxineLipSyncLanguage);
+    }
+
     internal static void Register(IServiceCollection services)
     {
         services.TryAddSingleton<FfmpegVideoFrameExtractor>();
@@ -31,7 +57,11 @@ internal static class LatentSyncLipSynthesisRegistration
                 sp.GetRequiredService<IVideoFrameAssembler>(),
                 sp.GetRequiredService<IAudioSegmentExtractor>(),
                 sp.GetRequiredService<BundledModelManifestRegistry>()));
-        services.TryAddSingleton(_ => new NvidiaMaxineLipSynthesisEngine(NvidiaMaxineLipSyncOptions.FromEnvironment()));
+        services.TryAddSingleton(sp =>
+        {
+            IStudioSettingsService? settingsService = sp.GetService<IStudioSettingsService>();
+            return new NvidiaMaxineLipSynthesisEngine(() => ResolveMaxineOptions(settingsService));
+        });
 
         // Maxine first: it runs whenever a local AR SDK is configured; LatentSync stays the fallback.
         services.TryAddSingleton<ILipSynthesisEngine>(sp =>

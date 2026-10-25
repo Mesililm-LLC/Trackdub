@@ -26,13 +26,16 @@ When it is configured, the stage prefers it and falls back to LatentSync
 otherwise. Pass `--model nvidia-maxine-lipsync` to pick it explicitly, or
 `--model latentsync-1.6` to pick LatentSync.
 
-Nothing NVIDIA ships is bundled with Trackdub. Configure it with:
+Nothing NVIDIA ships is bundled with Trackdub. Configure it in the desktop
+Settings, in `settings.json`, or with environment variables. Each settings value
+wins over its variable, and settings changes apply on the next run without a
+restart.
 
-| Variable | Value |
-| --- | --- |
-| `TRACKDUB_MAXINE_ARSDK_ROOT` | AR SDK root containing `bin/nvARPose.dll`, `bin/models/` and `features/` |
-| `TRACKDUB_MAXINE_LIPSYNC_HOST` | LipSync host executable (today, the `LipSyncApp` sample from [NVIDIA-Maxine/AR-SDK-Samples](https://github.com/NVIDIA-Maxine/AR-SDK-Samples)) |
-| `TRACKDUB_MAXINE_LIPSYNC_LANGUAGE` | Optional: `es`, `de`, `fr` or `generic` (default) |
+| Setting | Variable | Value |
+| --- | --- | --- |
+| `MaxineLipSyncArSdkRoot` | `TRACKDUB_MAXINE_ARSDK_ROOT` | AR SDK root containing `bin/nvARPose.dll`, `bin/models/` and `features/` |
+| `MaxineLipSyncHostPath` | `TRACKDUB_MAXINE_LIPSYNC_HOST` | LipSync host executable (today, the `LipSyncApp` sample from [NVIDIA-Maxine/AR-SDK-Samples](https://github.com/NVIDIA-Maxine/AR-SDK-Samples)) |
+| `MaxineLipSyncLanguage` | `TRACKDUB_MAXINE_LIPSYNC_LANGUAGE` | Optional: `es`, `de`, `fr` or `generic` (default) |
 
 The AR SDK needs the `nvarlipsync`, `nvarfaceboxdetection`,
 `nvarlandmarkdetection` and `nvarfaceexpressions` features and their models.
@@ -55,7 +58,6 @@ Known limits:
 
 - Turns shorter than 15 frames are skipped: LipSync buffers 14 frames before
   it outputs an animated one.
-- Configuration is read when Trackdub starts; there is no Settings UI yet.
 - The host starts and loads its models for every turn (about 12 s on an
   RTX 5070). Steady-state speed is roughly 7–10 fps, and peak GPU use is about
   2.6 GB above idle.

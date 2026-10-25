@@ -28,13 +28,21 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine
 
     private static readonly TimeSpan DefaultPerTurnTimeout = TimeSpan.FromMinutes(30);
 
-    private readonly NvidiaMaxineLipSyncOptions options;
+    private readonly Func<NvidiaMaxineLipSyncOptions> optionsProvider;
     private readonly IProcessRunner processRunner;
     private readonly FfmpegToolResolver toolResolver;
     private readonly string workRoot;
 
     public NvidiaMaxineLipSynthesisEngine(NvidiaMaxineLipSyncOptions options, string? ffmpegPath = null)
-        : this(options, new ProcessRunner(), ffmpegPath, workRoot: null)
+        : this(ConstantOptions(options), new ProcessRunner(), ffmpegPath, workRoot: null)
+    {
+    }
+
+    /// <summary>
+    /// Reads the configuration on every use, so changes made in Settings apply without a restart.
+    /// </summary>
+    public NvidiaMaxineLipSynthesisEngine(Func<NvidiaMaxineLipSyncOptions> optionsProvider, string? ffmpegPath = null)
+        : this(optionsProvider, new ProcessRunner(), ffmpegPath, workRoot: null)
     {
     }
 
@@ -43,14 +51,26 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine
         IProcessRunner processRunner,
         string? ffmpegPath,
         string? workRoot)
+        : this(ConstantOptions(options), processRunner, ffmpegPath, workRoot)
     {
-        this.options = options ?? throw new ArgumentNullException(nameof(options));
+    }
+
+    internal NvidiaMaxineLipSynthesisEngine(
+        Func<NvidiaMaxineLipSyncOptions> optionsProvider,
+        IProcessRunner processRunner,
+        string? ffmpegPath,
+        string? workRoot)
+    {
+        this.optionsProvider = optionsProvider ?? throw new ArgumentNullException(nameof(optionsProvider));
         this.processRunner = processRunner ?? throw new ArgumentNullException(nameof(processRunner));
         toolResolver = new FfmpegToolResolver(ffmpegPath);
         this.workRoot = workRoot ?? Path.Join(Path.GetTempPath(), "trackdub-maxine-lipsync");
     }
 
-    public bool IsAvailable => GetUnavailableReason(options) is null;
+    public bool IsAvailable => GetUnavailableReason(optionsProvider()) is null;
+
+    /// <summary>Why the engine cannot run with the current configuration, or null when it can.</summary>
+    public string? UnavailableReason => GetUnavailableReason(optionsProvider());
 
     public bool IsExperimental => false;
 
@@ -62,7 +82,7 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine
     /// Null when the host executable, the AR SDK runtime, the LipSync feature and its models are
     /// all present. This checks files only; it does not start the host.
     /// </summary>
-    internal static string? GetUnavailableReason(NvidiaMaxineLipSyncOptions options)
+    public static string? GetUnavailableReason(NvidiaMaxineLipSyncOptions options)
     {
         if (string.IsNullOrWhiteSpace(options.HostExecutablePath) || !File.Exists(options.HostExecutablePath))
         {
@@ -101,6 +121,7 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        NvidiaMaxineLipSyncOptions options = optionsProvider();
         string? unavailable = GetUnavailableReason(options);
         if (unavailable is not null)
         {
@@ -326,6 +347,12 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine
             string detail = Trim(string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError);
             throw new InvalidOperationException($"{step} failed with exit code {result.ExitCode}: {detail}");
         }
+    }
+
+    private static Func<NvidiaMaxineLipSyncOptions> ConstantOptions(NvidiaMaxineLipSyncOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return () => options;
     }
 
     private static string FormatSeconds(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);

@@ -15,12 +15,28 @@ public sealed record NvidiaMaxineLipSyncOptions(
     public const string ArSdkRootEnvironmentVariable = "TRACKDUB_MAXINE_ARSDK_ROOT";
     public const string LanguageEnvironmentVariable = "TRACKDUB_MAXINE_LIPSYNC_LANGUAGE";
 
-    public static NvidiaMaxineLipSyncOptions FromEnvironment() =>
-        new(
-            Environment.GetEnvironmentVariable(HostExecutableEnvironmentVariable),
-            Environment.GetEnvironmentVariable(ArSdkRootEnvironmentVariable),
-            NvidiaMaxineLipSyncLanguages.Parse(Environment.GetEnvironmentVariable(LanguageEnvironmentVariable))
+    public static NvidiaMaxineLipSyncOptions FromEnvironment() => Resolve(null, null, null);
+
+    /// <summary>
+    /// Settings values win; each unset value falls back to its environment variable.
+    /// </summary>
+    public static NvidiaMaxineLipSyncOptions Resolve(
+        string? hostExecutablePath,
+        string? arSdkRoot,
+        string? language,
+        Func<string, string?>? getEnvironmentVariable = null)
+    {
+        getEnvironmentVariable ??= Environment.GetEnvironmentVariable;
+        return new NvidiaMaxineLipSyncOptions(
+            FirstNonEmpty(hostExecutablePath, getEnvironmentVariable(HostExecutableEnvironmentVariable)),
+            FirstNonEmpty(arSdkRoot, getEnvironmentVariable(ArSdkRootEnvironmentVariable)),
+            NvidiaMaxineLipSyncLanguages.Parse(language)
+                ?? NvidiaMaxineLipSyncLanguages.Parse(getEnvironmentVariable(LanguageEnvironmentVariable))
                 ?? NvidiaMaxineLipSyncLanguage.Generic);
+    }
+
+    private static string? FirstNonEmpty(string? preferred, string? fallback) =>
+        string.IsNullOrWhiteSpace(preferred) ? (string.IsNullOrWhiteSpace(fallback) ? null : fallback.Trim()) : preferred.Trim();
 
     public string? ModelDirectory =>
         string.IsNullOrWhiteSpace(ArSdkRoot) ? null : Path.Join(ArSdkRoot, "bin", "models");

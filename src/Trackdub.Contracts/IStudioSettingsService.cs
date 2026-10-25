@@ -101,7 +101,21 @@ public sealed record StudioSettings(
     /// </summary>
     IReadOnlyDictionary<string, bool>? CloudEgressConsents = null,
     bool AutoDownloadTranslationModels = true,
-    bool OfflineMode = false)
+    bool OfflineMode = false,
+    /// <summary>
+    /// Local NVIDIA Maxine AR SDK root used for video lip repair (contains bin/nvARPose.dll,
+    /// bin/models and features). Overrides TRACKDUB_MAXINE_ARSDK_ROOT when set.
+    /// </summary>
+    string? MaxineLipSyncArSdkRoot = null,
+    /// <summary>
+    /// Maxine LipSync host executable. Overrides TRACKDUB_MAXINE_LIPSYNC_HOST when set.
+    /// </summary>
+    string? MaxineLipSyncHostPath = null,
+    /// <summary>
+    /// LipSync model language: "generic" (default), "es", "de" or "fr". Overrides
+    /// TRACKDUB_MAXINE_LIPSYNC_LANGUAGE when set.
+    /// </summary>
+    string? MaxineLipSyncLanguage = null)
 {
     public const double DefaultTranscriptConfidenceThreshold = 0.75d;
 

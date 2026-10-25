@@ -72,6 +72,43 @@ public sealed class NvidiaMaxineLipSynthesisEngineTests : IDisposable
     }
 
     [Fact]
+    public void Options_prefer_settings_and_fall_back_to_environment_variables_per_value()
+    {
+        var environment = new Dictionary<string, string>
+        {
+            [NvidiaMaxineLipSyncOptions.HostExecutableEnvironmentVariable] = @"C:\env\LipSyncApp.exe",
+            [NvidiaMaxineLipSyncOptions.ArSdkRootEnvironmentVariable] = @"C:\env\ARSDK",
+            [NvidiaMaxineLipSyncOptions.LanguageEnvironmentVariable] = "de",
+        };
+        string? Lookup(string name) => environment.TryGetValue(name, out string? value) ? value : null;
+
+        NvidiaMaxineLipSyncOptions fromSettings = NvidiaMaxineLipSyncOptions.Resolve(@"D:\app\host.exe", "  ", "es", Lookup);
+        NvidiaMaxineLipSyncOptions fromEnvironment = NvidiaMaxineLipSyncOptions.Resolve(null, null, null, Lookup);
+        NvidiaMaxineLipSyncOptions unset = NvidiaMaxineLipSyncOptions.Resolve(null, null, "unknown", _ => null);
+
+        Assert.Equal(@"D:\app\host.exe", fromSettings.HostExecutablePath);
+        Assert.Equal(@"C:\env\ARSDK", fromSettings.ArSdkRoot);
+        Assert.Equal(NvidiaMaxineLipSyncLanguage.Spanish, fromSettings.DefaultLanguage);
+        Assert.Equal(@"C:\env\LipSyncApp.exe", fromEnvironment.HostExecutablePath);
+        Assert.Equal(NvidiaMaxineLipSyncLanguage.German, fromEnvironment.DefaultLanguage);
+        Assert.Null(unset.HostExecutablePath);
+        Assert.Equal(NvidiaMaxineLipSyncLanguage.Generic, unset.DefaultLanguage);
+    }
+
+    [Fact]
+    public void Engine_rereads_its_options_so_settings_changes_apply_without_a_restart()
+    {
+        var current = new NvidiaMaxineLipSyncOptions(null, null);
+        var engine = new NvidiaMaxineLipSynthesisEngine(() => current);
+        Assert.False(engine.IsAvailable);
+
+        current = CreateInstalledOptions();
+
+        Assert.True(engine.IsAvailable);
+        Assert.Null(engine.UnavailableReason);
+    }
+
+    [Fact]
     public void Engine_is_unavailable_until_host_runtime_feature_and_models_exist()
     {
         string host = Path.Join(root, "host", "LipSyncApp.exe");
