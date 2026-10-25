@@ -309,6 +309,36 @@ public sealed class NvidiaMaxineLipSynthesisEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task Disposing_the_engine_during_a_turn_stops_the_host_instead_of_waiting_for_the_timeout()
+    {
+        NvidiaMaxineLipSyncOptions options = CreateInstalledOptions();
+        var runner = new FakeRunner { ProtocolProbeReply = new ProcessResult(0, MaxineLipSyncHostSession.Handshake + "\n", string.Empty) };
+        var requestSeen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Answers the handshake and the RUN header, then never returns a frame, like a wedged GPU.
+        using var host = new ScriptedHost(async (input, output, token) =>
+        {
+            await output.WriteAsync(System.Text.Encoding.ASCII.GetBytes(MaxineLipSyncHostSession.Handshake + "\n"), token);
+            await ScriptedHost.ReadLineAsync(input);
+            requestSeen.SetResult();
+            await Task.Delay(Timeout.Infinite, token);
+        });
+        using var decoder = FakePipedProcess.Decoder(frames: 81, frameBytes: 64 * 48 * 3);
+        using var encoder = FakePipedProcess.Encoder();
+        var engine = new NvidiaMaxineLipSynthesisEngine(
+            () => options, runner, Environment.ProcessPath, Path.Join(root, "work"),
+            Launcher(options, host, decoder, encoder));
+        Task<LipSynthesisResult> turn = engine.SynthesizeTurnAsync(CreateRequest(), TestContext.Current.CancellationToken);
+        await requestSeen.Task.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+
+        Task dispose = Task.Run(engine.Dispose, TestContext.Current.CancellationToken);
+
+        await dispose.WaitAsync(TimeSpan.FromSeconds(8), TestContext.Current.CancellationToken);
+        LipSynthesisResult result = await turn.WaitAsync(TimeSpan.FromSeconds(8), TestContext.Current.CancellationToken);
+        Assert.True(host.Killed);
+        Assert.Equal(LipSynthesisEngineStatus.Failed, result.Status);
+    }
+
+    [Fact]
     public async Task Disposing_the_engine_after_a_persistent_turn_does_not_wedge_it()
     {
         NvidiaMaxineLipSyncOptions options = CreateInstalledOptions();

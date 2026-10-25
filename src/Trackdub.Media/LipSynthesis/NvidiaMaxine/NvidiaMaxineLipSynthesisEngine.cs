@@ -32,6 +32,7 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
     private static readonly TimeSpan DefaultPerTurnTimeout = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan HostProbeTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan DisposeGateTimeout = TimeSpan.FromSeconds(10);
 
     /// <summary>
     /// The host keeps a CUDA context while it waits, so it is stopped once lip synthesis has been
@@ -239,7 +240,16 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
         }
 
         disposed = true;
-        sessionGate.Wait();
+
+        // A turn in flight holds the gate for as long as the host takes. Stop the host first so that turn
+        // fails fast and releases it, instead of shutdown waiting for the per-turn timeout.
+        Volatile.Read(ref session)?.Abort();
+        if (!sessionGate.Wait(DisposeGateTimeout))
+        {
+            // The host is already killed, so nothing is left running; the in-flight turn cleans up its own state.
+            return;
+        }
+
         try
         {
             idleTimer?.Dispose();

@@ -54,6 +54,12 @@ internal sealed class MaxineLipSyncHostSession : IDisposable
     public bool IsAlive => !disposed && !process.HasExited;
 
     /// <summary>
+    /// Kills the host without the QUIT handshake. A turn in flight then fails with a protocol error, which
+    /// is how shutdown frees a turn that would otherwise run until its timeout.
+    /// </summary>
+    public void Abort() => process.Kill();
+
+    /// <summary>
     /// Waits for the handshake line. Returns null (and kills the process) when the executable is
     /// not a persistent host, for example the SDK's LipSyncApp sample.
     /// </summary>
