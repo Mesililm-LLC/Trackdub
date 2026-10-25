@@ -5,8 +5,10 @@ using Trackdub.Media.Process;
 
 namespace Trackdub.Media.Tests;
 
-public sealed class MaxineLipSyncHostSessionTests
+public sealed class MaxineLipSyncHostSessionTests : IDisposable
 {
+    private readonly List<CancellationTokenSource> timeouts = [];
+
     private const int Width = 64;
     private const int Height = 48;
     private const int FrameBytes = Width * Height * 3;
@@ -34,7 +36,9 @@ public sealed class MaxineLipSyncHostSessionTests
         byte[] source = Frames(12);
         using var sink = new MemoryStream();
 
-        MaxineLipSyncHostReply reply = await session.RunAsync(Job(12), new MemoryStream(source), sink, TestTimeout());
+        using var input = new MemoryStream(source);
+
+        MaxineLipSyncHostReply reply = await session.RunAsync(Job(12), input, sink, TestTimeout());
 
         Assert.True(reply.Succeeded, reply.Message);
         Assert.Equal(Invert(source), sink.ToArray());
@@ -49,7 +53,9 @@ public sealed class MaxineLipSyncHostSessionTests
         byte[] source = Frames(3);
         using var sink = new MemoryStream();
 
-        MaxineLipSyncHostReply reply = await session.RunAsync(Job(5), new MemoryStream(source), sink, TestTimeout());
+        using var input = new MemoryStream(source);
+
+        MaxineLipSyncHostReply reply = await session.RunAsync(Job(5), input, sink, TestTimeout());
 
         Assert.True(reply.Succeeded);
         byte[] lastFrame = source[(2 * FrameBytes)..];
@@ -66,7 +72,8 @@ public sealed class MaxineLipSyncHostSessionTests
         for (int turn = 0; turn < 3; turn++)
         {
             using var sink = new MemoryStream();
-            MaxineLipSyncHostReply reply = await session.RunAsync(Job(4), new MemoryStream(Frames(4)), sink, TestTimeout());
+            using var input = new MemoryStream(Frames(4));
+            MaxineLipSyncHostReply reply = await session.RunAsync(Job(4), input, sink, TestTimeout());
             Assert.True(reply.Succeeded);
             Assert.Equal(4 * FrameBytes, sink.Length);
         }
@@ -82,7 +89,9 @@ public sealed class MaxineLipSyncHostSessionTests
         using MaxineLipSyncHostSession session = await ConnectAsync(host);
         using var sink = new MemoryStream();
 
-        MaxineLipSyncHostReply reply = await session.RunAsync(Job(2), new MemoryStream(Frames(2)), sink, TestTimeout());
+        using var input = new MemoryStream(Frames(2));
+
+        MaxineLipSyncHostReply reply = await session.RunAsync(Job(2), input, sink, TestTimeout());
 
         Assert.False(reply.Succeeded);
         Assert.Equal("NvAR_Load failed: model not found", reply.Message);
@@ -103,8 +112,11 @@ public sealed class MaxineLipSyncHostSessionTests
         });
         using MaxineLipSyncHostSession session = await ConnectAsync(host);
 
+        using var input = new MemoryStream(Frames(4));
+        using var sink = new MemoryStream();
+
         var error = await Assert.ThrowsAsync<MaxineLipSyncHostProtocolException>(() =>
-            session.RunAsync(Job(4), new MemoryStream(Frames(4)), new MemoryStream(), TestTimeout()));
+            session.RunAsync(Job(4), input, sink, TestTimeout()));
 
         Assert.Contains("LipSync host", error.Message);
     }
@@ -123,7 +135,10 @@ public sealed class MaxineLipSyncHostSessionTests
         using MaxineLipSyncHostSession session = await ConnectAsync(host);
         using var cancellation = new CancellationTokenSource();
 
-        Task run = session.RunAsync(Job(4), new MemoryStream(Frames(4)), new MemoryStream(), cancellation.Token);
+        using var input = new MemoryStream(Frames(4));
+        using var sink = new MemoryStream();
+
+        Task run = session.RunAsync(Job(4), input, sink, cancellation.Token);
         await requestSeen.Task.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
         await cancellation.CancelAsync();
 
@@ -139,8 +154,11 @@ public sealed class MaxineLipSyncHostSessionTests
         using var host = ScriptedHost.Echo(lagFrames: 0);
         using MaxineLipSyncHostSession session = await ConnectAsync(host);
 
+        using var input = new MemoryStream();
+        using var sink = new MemoryStream();
+
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => session.RunAsync(
-            Job(1) with { Width = width, Height = height }, new MemoryStream(), new MemoryStream(), TestTimeout()));
+            Job(1) with { Width = width, Height = height }, input, sink, TestTimeout()));
         Assert.Empty(host.Requests);
     }
 
@@ -166,7 +184,19 @@ public sealed class MaxineLipSyncHostSessionTests
     private static MaxineLipSyncHostJob Job(int frames) =>
         new(Width, Height, 29.97, NvidiaMaxineLipSyncLanguage.Spanish, frames, Path.Join(Path.GetTempPath(), "turn 16k.wav"));
 
-    private static CancellationToken TestTimeout() => new CancellationTokenSource(TimeSpan.FromSeconds(20)).Token;
+    private CancellationToken TestTimeout()
+    {
+        timeouts.Add(new CancellationTokenSource(TimeSpan.FromSeconds(20)));
+        return timeouts[^1].Token;
+    }
+
+    public void Dispose()
+    {
+        foreach (CancellationTokenSource timeout in timeouts)
+        {
+            timeout.Dispose();
+        }
+    }
 
     private static byte[] Frames(int count)
     {
@@ -180,134 +210,4 @@ public sealed class MaxineLipSyncHostSessionTests
     }
 
     private static byte[] Invert(byte[] data) => data.Select(value => (byte)~value).ToArray();
-
-    /// <summary>A host process stand-in that runs a script over two anonymous pipes.</summary>
-    private sealed class ScriptedHost : IPipedProcess
-    {
-        private readonly AnonymousPipeServerStream toHost = new(PipeDirection.Out);
-        private readonly AnonymousPipeClientStream hostInput;
-        private readonly AnonymousPipeServerStream fromHost = new(PipeDirection.Out);
-        private readonly AnonymousPipeClientStream hostOutput;
-        private readonly CancellationTokenSource stop = new();
-        private readonly Task script;
-
-        public ScriptedHost(Func<Stream, Stream, CancellationToken, Task> run)
-        {
-            hostInput = new AnonymousPipeClientStream(PipeDirection.In, toHost.ClientSafePipeHandle);
-            hostOutput = new AnonymousPipeClientStream(PipeDirection.In, fromHost.ClientSafePipeHandle);
-            script = Task.Run(async () =>
-            {
-                try
-                {
-                    await run(hostInput, fromHost, stop.Token);
-                }
-                catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException)
-                {
-                }
-                finally
-                {
-                    fromHost.Dispose();
-                }
-            });
-        }
-
-        public List<string> Requests { get; } = [];
-
-        public bool Killed { get; private set; }
-
-        public bool Disposed { get; private set; }
-
-        public Stream Input => toHost;
-
-        public Stream Output => hostOutput;
-
-        public bool HasExited => script.IsCompleted;
-
-        public string ErrorTail => string.Empty;
-
-        /// <summary>Answers each RUN by inverting every frame, holding back the first output for a few frames.</summary>
-        public static ScriptedHost Echo(int lagFrames, string reply = "OK")
-        {
-            ScriptedHost? self = null;
-            self = new ScriptedHost(async (input, output, _) =>
-            {
-                await output.WriteAsync(Encoding.ASCII.GetBytes(MaxineLipSyncHostSession.Handshake + "\n"));
-                while (await ReadLineAsync(input) is { } line && line != "QUIT")
-                {
-                    lock (self!.Requests)
-                    {
-                        self.Requests.Add(line);
-                    }
-
-                    string[] parts = line.Split(' ');
-                    int frameBytes = int.Parse(parts[1]) * int.Parse(parts[2]) * 3;
-                    int frames = int.Parse(parts[5]);
-                    var pending = new Queue<byte[]>();
-                    for (int index = 0; index < frames; index++)
-                    {
-                        byte[] frame = new byte[frameBytes];
-                        await input.ReadExactlyAsync(frame);
-                        pending.Enqueue(frame.Select(value => (byte)~value).ToArray());
-                        if (pending.Count > lagFrames)
-                        {
-                            await output.WriteAsync(pending.Dequeue());
-                        }
-                    }
-
-                    while (pending.Count > 0)
-                    {
-                        await output.WriteAsync(pending.Dequeue());
-                    }
-
-                    await output.WriteAsync(Encoding.ASCII.GetBytes((reply == "OK" ? $"OK {frames} 1" : reply) + "\n"));
-                }
-            });
-            return self;
-        }
-
-        public static async Task<string?> ReadLineAsync(Stream stream)
-        {
-            var bytes = new List<byte>();
-            byte[] one = new byte[1];
-            while (await stream.ReadAsync(one) == 1)
-            {
-                if (one[0] == '\n')
-                {
-                    return Encoding.UTF8.GetString(bytes.ToArray());
-                }
-
-                bytes.Add(one[0]);
-            }
-
-            return bytes.Count == 0 ? null : Encoding.UTF8.GetString(bytes.ToArray());
-        }
-
-        public async Task<int> WaitForExitAsync(CancellationToken cancellationToken)
-        {
-            await script.WaitAsync(cancellationToken);
-            return 0;
-        }
-
-        public void Kill()
-        {
-            Killed = true;
-            stop.Cancel();
-            toHost.Dispose();
-            hostInput.Dispose();
-            fromHost.Dispose();
-            hostOutput.Dispose();
-        }
-
-        public void Dispose()
-        {
-            Disposed = true;
-            if (!script.IsCompleted)
-            {
-                Kill();
-            }
-
-            toHost.Dispose();
-            hostOutput.Dispose();
-        }
-    }
 }

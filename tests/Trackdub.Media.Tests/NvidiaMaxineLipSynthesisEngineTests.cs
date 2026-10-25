@@ -265,6 +265,69 @@ public sealed class NvidiaMaxineLipSynthesisEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task SynthesizeTurnAsync_streams_the_turn_through_a_persistent_host_when_it_answers_the_probe()
+    {
+        NvidiaMaxineLipSyncOptions options = CreateInstalledOptions(NvidiaMaxineLipSyncLanguage.Spanish);
+        var runner = new FakeRunner { ProtocolProbeReply = new ProcessResult(0, MaxineLipSyncHostSession.Handshake + "\n", string.Empty) };
+        using var host = ScriptedHost.Echo(lagFrames: 5);
+        using var decoder = FakePipedProcess.Decoder(frames: 81, frameBytes: 64 * 48 * 3);
+        using var encoder = FakePipedProcess.Encoder();
+        int hostLaunches = 0;
+        using var engine = new NvidiaMaxineLipSynthesisEngine(
+            () => options, runner, Environment.ProcessPath, Path.Join(root, "work"),
+            Launcher(options, host, decoder, encoder, () => hostLaunches++));
+
+        LipSynthesisResult result = await engine.SynthesizeTurnAsync(CreateRequest(), TestContext.Current.CancellationToken);
+
+        Assert.Equal(LipSynthesisEngineStatus.Synthesized, result.Status);
+        Assert.Equal(1, hostLaunches);
+        Assert.Empty(HostRuns(runner, options));
+        Assert.Equal(81 * 64 * 48 * 3, encoder.Written.Length);
+        Assert.True(File.Exists(result.PatchedClipPath));
+        Assert.Contains("RUN 64 48 30 3 81 ", host.Requests.Single(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SynthesizeTurnAsync_fails_the_turn_when_the_frame_decoder_exits_with_an_error()
+    {
+        NvidiaMaxineLipSyncOptions options = CreateInstalledOptions();
+        var runner = new FakeRunner { ProtocolProbeReply = new ProcessResult(0, MaxineLipSyncHostSession.Handshake + "\n", string.Empty) };
+        using var host = ScriptedHost.Echo(lagFrames: 0);
+        using var decoder = FakePipedProcess.Decoder(frames: 10, frameBytes: 64 * 48 * 3, exitCode: 1, errorTail: "moov atom not found");
+        using var encoder = FakePipedProcess.Encoder();
+        using var engine = new NvidiaMaxineLipSynthesisEngine(
+            () => options, runner, Environment.ProcessPath, Path.Join(root, "work"),
+            Launcher(options, host, decoder, encoder));
+
+        LipSynthesisResult result = await engine.SynthesizeTurnAsync(CreateRequest(), TestContext.Current.CancellationToken);
+
+        Assert.Equal(LipSynthesisEngineStatus.Failed, result.Status);
+        Assert.Contains("decode turn video failed with exit code 1", result.FailureReason);
+        Assert.Contains("moov atom not found", result.FailureReason);
+        Assert.Null(result.PatchedClipPath);
+        Assert.Empty(Directory.EnumerateFiles(Path.Join(root, "work"), "patched-*"));
+    }
+
+    [Fact]
+    public async Task Disposing_the_engine_after_a_persistent_turn_does_not_wedge_it()
+    {
+        NvidiaMaxineLipSyncOptions options = CreateInstalledOptions();
+        var runner = new FakeRunner { ProtocolProbeReply = new ProcessResult(0, MaxineLipSyncHostSession.Handshake + "\n", string.Empty) };
+        using var host = ScriptedHost.Echo(lagFrames: 0);
+        using var decoder = FakePipedProcess.Decoder(frames: 81, frameBytes: 64 * 48 * 3);
+        using var encoder = FakePipedProcess.Encoder();
+        var engine = new NvidiaMaxineLipSynthesisEngine(
+            () => options, runner, Environment.ProcessPath, Path.Join(root, "work"),
+            Launcher(options, host, decoder, encoder));
+        await engine.SynthesizeTurnAsync(CreateRequest(), TestContext.Current.CancellationToken);
+
+        Task dispose = Task.Run(engine.Dispose, TestContext.Current.CancellationToken);
+
+        await dispose.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.True(host.Disposed);
+    }
+
+    [Fact]
     public async Task SynthesizeTurnAsync_prefers_the_language_named_by_the_model_alias()
     {
         var runner = new FakeRunner();
@@ -359,6 +422,135 @@ public sealed class NvidiaMaxineLipSynthesisEngineTests : IDisposable
     private static IEnumerable<RunnerCall> HostRuns(FakeRunner runner, NvidiaMaxineLipSyncOptions options) =>
         runner.Calls.Where(call => call.ExecutablePath == options.HostExecutablePath && !call.Arguments.Contains("--protocol"));
 
+    private static PipedProcessLauncher Launcher(
+        NvidiaMaxineLipSyncOptions options,
+        ScriptedHost host,
+        FakePipedProcess decoder,
+        FakePipedProcess encoder,
+        Action? onHostLaunch = null) =>
+        (path, arguments, _, redirectInput, _) =>
+        {
+            if (path == options.HostExecutablePath)
+            {
+                onHostLaunch?.Invoke();
+                return host;
+            }
+
+            if (!redirectInput)
+            {
+                return decoder;
+            }
+
+            encoder.OutputPath = arguments[^1];
+            return encoder;
+        };
+
+    /// <summary>An FFmpeg stand-in: a decoder that yields raw frames, or an encoder that records its input.</summary>
+    private sealed class FakePipedProcess : IPipedProcess
+    {
+        private readonly int exitCode;
+        private readonly string errorTail;
+
+        private FakePipedProcess(Stream input, Stream output, int exitCode, string errorTail, bool outputIsFrames)
+        {
+            Input = input;
+            Output = output;
+            this.exitCode = exitCode;
+            this.errorTail = errorTail;
+            OutputIsFrames = outputIsFrames;
+        }
+
+        public bool OutputIsFrames { get; }
+
+        public string? OutputPath { get; set; }
+
+        public MemoryStream Written { get; private init; } = new();
+
+        public Stream Input { get; }
+
+        public Stream Output { get; }
+
+        public bool HasExited => true;
+
+        public string ErrorTail => errorTail;
+
+        public static FakePipedProcess Decoder(int frames, int frameBytes, int exitCode = 0, string errorTail = "")
+        {
+            byte[] data = new byte[frames * frameBytes];
+            for (int i = 0; i < data.Length; i++)
+            {
+                data[i] = (byte)(i % 251);
+            }
+
+            return new FakePipedProcess(Stream.Null, new MemoryStream(data), exitCode, errorTail, outputIsFrames: true);
+        }
+
+        public static FakePipedProcess Encoder()
+        {
+            var written = new MemoryStream();
+            return new FakePipedProcess(new NonClosingStream(written), Stream.Null, 0, string.Empty, outputIsFrames: false)
+            {
+                Written = written,
+            };
+        }
+
+        public Task<int> WaitForExitAsync(CancellationToken cancellationToken)
+        {
+            if (!OutputIsFrames)
+            {
+                // The encoder writes its output file when its input closes, like FFmpeg.
+                string path = OutputPath ?? string.Empty;
+                if (path.Length > 0)
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                    File.WriteAllBytes(path, [0]);
+                }
+            }
+
+            return Task.FromResult(exitCode);
+        }
+
+        public void Kill()
+        {
+        }
+
+        // The engine disposes its processes when a turn ends, but tests read Written afterwards, and a
+        // MemoryStream holds no unmanaged resources, so it is left to the garbage collector.
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class NonClosingStream(Stream inner) : Stream
+    {
+        public override bool CanRead => false;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => true;
+
+        public override long Length => inner.Length;
+
+        public override long Position
+        {
+            get => inner.Position;
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush() => inner.Flush();
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => inner.Write(buffer, offset, count);
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) =>
+            inner.WriteAsync(buffer, cancellationToken);
+    }
+
     private sealed record RunnerCall(string ExecutablePath, IReadOnlyList<string> Arguments, ProcessRunOptions? Options);
 
     /// <summary>Answers ffprobe with 30 fps and creates each step's output file, like the real tools.</summary>
@@ -381,6 +573,11 @@ public sealed class NvidiaMaxineLipSynthesisEngineTests : IDisposable
             if (arguments.Contains("--protocol"))
             {
                 return Task.FromResult(ProtocolProbeReply);
+            }
+
+            if (arguments.Contains("stream=width,height:stream_side_data=rotation"))
+            {
+                return Task.FromResult(new ProcessResult(0, "width=64\nheight=48\n", string.Empty));
             }
 
             if (arguments.Contains("stream=avg_frame_rate,r_frame_rate"))
