@@ -198,7 +198,22 @@ internal sealed class LanguageModel : IDisposable
         var flatPosIds = ArrayPool<long>.Shared.Rent(3 * 1 * prefillLen);
 
         float[] logits, hiddenStates;
-        float[] pastKeys, pastValues;
+
+        // Pre-allocated KV buffers for the talker and code predictor.
+        //
+        // Copying the whole cache out of every decoder output costs O(T) per step and therefore
+        // O(T^2) per generation: at 28 layers x 8 heads x 128 head_dim that is ~229 KB per token
+        // of K+V, so a 500-frame utterance copies on the order of tens of GB and allocates a fresh
+        // large-object-heap array every step. Both caches grow by positions per step, so one
+        // max-size buffer each is filled in place instead and no per-step allocation happens.
+        // Values are copied in the same element order ORT produced, so numerics are unchanged.
+        int kvElementCountPerPosition = _numLayers * _numKvHeads * _headDim;
+        int kvCapacityPositions = prefillLen + maxNewTokens + 1;
+        var kvKeys = ArrayPool<float>.Shared.Rent(kvElementCountPerPosition * kvCapacityPositions);
+        var kvValues = ArrayPool<float>.Shared.Rent(kvElementCountPerPosition * kvCapacityPositions);
+        int cpKvElementCountPerPosition = _cpNumLayers * _cpNumKvHeads * _cpHeadDim;
+        var cpKvKeys = ArrayPool<float>.Shared.Rent(cpKvElementCountPerPosition * kvCapacityPositions);
+        var cpKvValues = ArrayPool<float>.Shared.Rent(cpKvElementCountPerPosition * kvCapacityPositions);
 
         try
         {
@@ -219,7 +234,7 @@ internal sealed class LanguageModel : IDisposable
                 ColdStartCapture.MarkInferenceCompleted(PrefillRunSource);
                 logits = prefillOutputs[0].GetTensorDataAsSpan<float>().ToArray();
                 hiddenStates = prefillOutputs[1].GetTensorDataAsSpan<float>().ToArray();
-                (pastKeys, pastValues) = StackPrefillKVFromOrtValues(prefillOutputs, prefillLen);
+                StackPrefillKVFromOrtValues(prefillOutputs, prefillLen, kvKeys, kvValues);
             }
         }
         finally
@@ -304,7 +319,7 @@ internal sealed class LanguageModel : IDisposable
                     BuildCpPrefillDirect(pooledCpInputs, hiddenStates.AsSpan(), hOffset, group0EmbedBuf, cpInputDim);
                 }
 
-                var (cpPastKeys, cpPastValues) = InitCPKV();
+                // The CP prefill starts with an empty cache and grows in the reserved buffer.
                 int cpPastLen = 0;
 
                 for (int groupIdx = 1; groupIdx < 16; groupIdx++)
@@ -322,8 +337,8 @@ internal sealed class LanguageModel : IDisposable
                         {
                             NamedOnnxValue.CreateFromTensor("inputs_embeds", new DenseTensor<float>(flatCpEmbeds.AsMemory(0, flatCpSize), [1, cpInputSeqLen, cpInputDim])),
                             NamedOnnxValue.CreateFromTensor("generation_steps", new DenseTensor<long>(new long[] { groupIdx - 1 }, [1])),
-                            NamedOnnxValue.CreateFromTensor("past_keys", new DenseTensor<float>(cpPastKeys, [_cpNumLayers, 1, _cpNumKvHeads, cpPastLen, _cpHeadDim])),
-                            NamedOnnxValue.CreateFromTensor("past_values", new DenseTensor<float>(cpPastValues, [_cpNumLayers, 1, _cpNumKvHeads, cpPastLen, _cpHeadDim]))
+                            NamedOnnxValue.CreateFromTensor("past_keys", new DenseTensor<float>(cpKvKeys.AsMemory(0, cpKvElementCountPerPosition * cpPastLen), [_cpNumLayers, 1, _cpNumKvHeads, cpPastLen, _cpHeadDim])),
+                            NamedOnnxValue.CreateFromTensor("past_values", new DenseTensor<float>(cpKvValues.AsMemory(0, cpKvElementCountPerPosition * cpPastLen), [_cpNumLayers, 1, _cpNumKvHeads, cpPastLen, _cpHeadDim]))
                         };
 
                         using var cpOutputs = GetCpSession().Run(cpInputsList);
@@ -334,8 +349,16 @@ internal sealed class LanguageModel : IDisposable
 
                         // Update CP KV
                         cpPastLen += cpInputSeqLen;
-                        cpPastKeys = cpOutputs.First(x => x.Name == "present_keys").AsEnumerable<float>().ToArray();
-                        cpPastValues = cpOutputs.First(x => x.Name == "present_values").AsEnumerable<float>().ToArray();
+                        // Same in-place growth as the talker: the CP cache also gains only new
+                        // positions, so copy into the reserved buffer rather than reallocating.
+                        CopyTensorInto(
+                            cpOutputs.First(x => x.Name == "present_keys").AsTensor<float>(),
+                            cpKvKeys,
+                            cpKvElementCountPerPosition * cpPastLen);
+                        CopyTensorInto(
+                            cpOutputs.First(x => x.Name == "present_values").AsTensor<float>(),
+                            cpKvValues,
+                            cpKvElementCountPerPosition * cpPastLen);
 
                         // Next input
                         if (groupIdx < 15)
@@ -401,22 +424,34 @@ internal sealed class LanguageModel : IDisposable
                     NamedOnnxValue.CreateFromTensor("inputs_embeds", new DenseTensor<float>(nextInputBuf, [1, 1, _hiddenSize])),
                     NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<long>(pooledMask.AsMemory(0, newLen), [1, newLen])),
                     NamedOnnxValue.CreateFromTensor("position_ids", new DenseTensor<long>(flatDecodePos, [3, 1, 1])),
-                    NamedOnnxValue.CreateFromTensor("past_keys", new DenseTensor<float>(pastKeys, [_numLayers, 1, _numKvHeads, prefillLen + step, _headDim])),
-                    NamedOnnxValue.CreateFromTensor("past_values", new DenseTensor<float>(pastValues, [_numLayers, 1, _numKvHeads, prefillLen + step, _headDim]))
+                    NamedOnnxValue.CreateFromTensor("past_keys", new DenseTensor<float>(kvKeys.AsMemory(0, kvElementCountPerPosition * (prefillLen + step)), [_numLayers, 1, _numKvHeads, prefillLen + step, _headDim])),
+                    NamedOnnxValue.CreateFromTensor("past_values", new DenseTensor<float>(kvValues.AsMemory(0, kvElementCountPerPosition * (prefillLen + step)), [_numLayers, 1, _numKvHeads, prefillLen + step, _headDim]))
                 };
 
                 using var decodeOutputs = GetDecodeSession().Run(decodeInputs);
                 ColdStartCapture.MarkInferenceCompleted(DecodeRunSource);
                 logits = decodeOutputs.First(x => x.Name == "logits").AsEnumerable<float>().ToArray();
                 hiddenStates = decodeOutputs.First(x => x.Name == "hidden_states").AsEnumerable<float>().ToArray();
-                pastKeys = decodeOutputs.First(x => x.Name == "present_keys").AsEnumerable<float>().ToArray();
-                pastValues = decodeOutputs.First(x => x.Name == "present_values").AsEnumerable<float>().ToArray();
+                // Copy the grown caches into the pre-allocated buffers instead of allocating
+                // a new array per step (see the buffer comment above).
+                CopyTensorInto(
+                    decodeOutputs.First(x => x.Name == "present_keys").AsTensor<float>(),
+                    kvKeys,
+                    kvElementCountPerPosition * (prefillLen + step + 1));
+                CopyTensorInto(
+                    decodeOutputs.First(x => x.Name == "present_values").AsTensor<float>(),
+                    kvValues,
+                    kvElementCountPerPosition * (prefillLen + step + 1));
             }
         }
         finally
         {
             ArrayPool<long>.Shared.Return(pooledMask);
             ArrayPool<float>.Shared.Return(pooledCpInputs);
+            ArrayPool<float>.Shared.Return(kvKeys);
+            ArrayPool<float>.Shared.Return(kvValues);
+            ArrayPool<float>.Shared.Return(cpKvKeys);
+            ArrayPool<float>.Shared.Return(cpKvValues);
         }
 
         // Convert to (1, 16, T)
@@ -684,14 +719,20 @@ internal sealed class LanguageModel : IDisposable
         return (keys, values);
     }
 
-    private (float[], float[]) StackPrefillKVFromOrtValues(IReadOnlyList<OrtValue> outputs, int seqLen)
+    /// <summary>
+    /// Stacks the per-layer prefill cache outputs into caller-provided buffers, preserving the
+    /// contiguous (layers, 1, kvHeads, seq, headDim) layout the decode step expects. Writes into
+    /// buffers instead of allocating so the same storage carries through the whole generation.
+    /// </summary>
+    private void StackPrefillKVFromOrtValues(
+        IReadOnlyList<OrtValue> outputs,
+        int seqLen,
+        float[] keys,
+        float[] values)
     {
         // Output order: [0]=logits, [1]=hidden_states, then 56 KV tensors alternating key/value per layer
         // present_key_0 at [2], present_value_0 at [3], present_key_1 at [4], ...
-        var keys = new float[_numLayers * 1 * _numKvHeads * seqLen * _headDim];
-        var values = new float[_numLayers * 1 * _numKvHeads * seqLen * _headDim];
         int layerSize = 1 * _numKvHeads * seqLen * _headDim;
-
         for (int layer = 0; layer < _numLayers; layer++)
         {
             var keySpan = outputs[2 + (layer * 2)].GetTensorDataAsSpan<float>();
@@ -699,14 +740,34 @@ internal sealed class LanguageModel : IDisposable
             keySpan.CopyTo(keys.AsSpan(layer * layerSize));
             valSpan.CopyTo(values.AsSpan(layer * layerSize));
         }
-
-        return (keys, values);
     }
 
-    private (float[], float[]) InitCPKV()
+    /// <summary>
+    /// Copies a decoder output tensor into a caller buffer without materializing an intermediate
+    /// array. Falls back to element-wise copy for tensor types the dense fast path cannot serve.
+    /// </summary>
+    private static void CopyTensorInto(Tensor<float> source, float[] destination, int count)
     {
-        // Empty KV for CP prefill: (_cpNumLayers, 1, _cpNumKvHeads, 0, _cpHeadDim)
-        return (Array.Empty<float>(), Array.Empty<float>());
+        if (source is DenseTensor<float> dense)
+        {
+            ReadOnlySpan<float> buffer = dense.Buffer.Span;
+            if (buffer.Length >= count)
+            {
+                buffer[..count].CopyTo(destination);
+                return;
+            }
+        }
+
+        int index = 0;
+        foreach (float value in source)
+        {
+            if (index >= count)
+            {
+                break;
+            }
+
+            destination[index++] = value;
+        }
     }
 
     private int SampleToken(float[] logits, float temperature, int topK, float topP, float repPenalty,
