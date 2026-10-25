@@ -254,9 +254,22 @@ internal sealed class LanguageModel : IDisposable
             }
         }
 
-        // Release prefill session to free memory before loading decode + CP sessions
-        _prefillSession?.Dispose();
-        _prefillSession = null;
+        // Release prefill session to free memory before loading decode + CP sessions. This runs
+        // outside the prefill try, so a throw here would strand the rented KV buffers: hand them
+        // back before rethrowing, since the generation loop's finally never runs in that case.
+        try
+        {
+            _prefillSession?.Dispose();
+            _prefillSession = null;
+        }
+        catch
+        {
+            ArrayPool<float>.Shared.Return(kvKeys);
+            ArrayPool<float>.Shared.Return(kvValues);
+            ArrayPool<float>.Shared.Return(cpKvKeys);
+            ArrayPool<float>.Shared.Return(cpKvValues);
+            throw;
+        }
 
         // Generation loop
         var generatedCodes = new List<long[]>();
