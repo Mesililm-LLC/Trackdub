@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Media.Process;
@@ -10,11 +11,13 @@ namespace Trackdub.Media.LipSynthesis.NvidiaMaxine;
 /// Trackdub's process, where other CUDA/TensorRT runtimes may already be loaded.
 /// </summary>
 /// <remarks>
-/// The host is started once per turn and loads its models every time (about 12 s on an RTX 5070).
-/// The patched clip is a full-frame video that starts at the turn start and lasts the whole turn,
-/// which is what the video recomposer overlays.
+/// When the configured host is Trackdub's persistent host (<c>tools/native/maxine-lipsync-host</c>),
+/// one process serves every turn and frames stream through it without intermediate files. Any other
+/// host, such as the SDK's LipSyncApp sample, is started once per turn with file arguments. The
+/// patched clip is a full-frame video that starts at the turn start and lasts the whole turn, which
+/// is what the video recomposer overlays.
 /// </remarks>
-public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine
+public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDisposable
 {
     public const string ProviderIdValue = "nvidia-maxine-lipsync";
     public const string ModelAliasPrefix = "nvidia-maxine-lipsync";
@@ -27,11 +30,19 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine
     internal const int MinimumTurnFrames = 15;
 
     private static readonly TimeSpan DefaultPerTurnTimeout = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan HostProbeTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(30);
 
     private readonly Func<NvidiaMaxineLipSyncOptions> optionsProvider;
     private readonly IProcessRunner processRunner;
+    private readonly PipedProcessLauncher launcher;
     private readonly FfmpegToolResolver toolResolver;
     private readonly string workRoot;
+    private readonly ConcurrentDictionary<string, bool> persistentHostSupport = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim sessionGate = new(1, 1);
+    private MaxineLipSyncHostSession? session;
+    private string? sessionKey;
+    private bool disposed;
 
     public NvidiaMaxineLipSynthesisEngine(NvidiaMaxineLipSyncOptions options, string? ffmpegPath = null)
         : this(ConstantOptions(options), new ProcessRunner(), ffmpegPath, workRoot: null)
@@ -59,10 +70,12 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine
         Func<NvidiaMaxineLipSyncOptions> optionsProvider,
         IProcessRunner processRunner,
         string? ffmpegPath,
-        string? workRoot)
+        string? workRoot,
+        PipedProcessLauncher? launcher = null)
     {
         this.optionsProvider = optionsProvider ?? throw new ArgumentNullException(nameof(optionsProvider));
         this.processRunner = processRunner ?? throw new ArgumentNullException(nameof(processRunner));
+        this.launcher = launcher ?? PipedProcess.Start;
         toolResolver = new FfmpegToolResolver(ffmpegPath);
         this.workRoot = workRoot ?? Path.Join(Path.GetTempPath(), "trackdub-maxine-lipsync");
     }
@@ -152,13 +165,20 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine
                     $"Turn is {window.FrameCount} frames; Maxine LipSync needs at least {MinimumTurnFrames} to animate the mouth.");
             }
 
-            await RunOrThrowAsync(ffmpegPath, BuildTurnVideoArguments(request.OriginalVideoPath, window, turnVideoPath),
-                "extract turn video", options: null, cancellationToken).ConfigureAwait(false);
             await RunOrThrowAsync(ffmpegPath, BuildTurnAudioArguments(request.DubbedAudioPath, window, turnAudioPath),
                 "extract turn audio", options: null, cancellationToken).ConfigureAwait(false);
 
             NvidiaMaxineLipSyncLanguage language =
                 NvidiaMaxineLipSyncLanguages.FromModelAlias(request.PreferredModelAlias) ?? options.DefaultLanguage;
+            if (await SupportsPersistentHostAsync(options, cancellationToken).ConfigureAwait(false))
+            {
+                return await SynthesizeWithPersistentHostAsync(
+                        request, options, ffmpegPath, window, language, turnAudioPath, patchedClipPath, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            await RunOrThrowAsync(ffmpegPath, BuildTurnVideoArguments(request.OriginalVideoPath, window, turnVideoPath),
+                "extract turn video", options: null, cancellationToken).ConfigureAwait(false);
             await RunOrThrowAsync(
                     options.HostExecutablePath!,
                     BuildHostArguments(options.ModelDirectory!, turnVideoPath, turnAudioPath, hostOutputPath, language),
@@ -177,14 +197,7 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine
             await RunOrThrowAsync(ffmpegPath, BuildPatchedClipArguments(hostOutputPath, window, patchedClipPath),
                 "encode patched clip", options: null, cancellationToken).ConfigureAwait(false);
 
-            return new LipSynthesisResult(
-                request.SegmentId,
-                LipSynthesisEngineStatus.Synthesized,
-                patchedClipPath,
-                SkipReason: null,
-                FailureReason: null,
-                ProviderId,
-                ModelId);
+            return Synthesized(request, patchedClipPath);
         }
         catch (OperationCanceledException)
         {
@@ -203,6 +216,256 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine
             TryDelete(hostOutputPath);
         }
     }
+
+    public void Dispose()
+    {
+        if (disposed)
+        {
+            return;
+        }
+
+        disposed = true;
+        sessionGate.Wait();
+        try
+        {
+            DropSession();
+        }
+        finally
+        {
+            sessionGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Asks the host for its protocol handshake once per executable. The persistent host prints it
+    /// and exits; LipSyncApp rejects the unknown flag and exits within a second. The missing input
+    /// paths keep any host from falling back to a camera.
+    /// </summary>
+    private async Task<bool> SupportsPersistentHostAsync(
+        NvidiaMaxineLipSyncOptions options,
+        CancellationToken cancellationToken)
+    {
+        string hostPath = Path.GetFullPath(options.HostExecutablePath!);
+        string cacheKey = $"{hostPath}|{File.GetLastWriteTimeUtc(hostPath).Ticks}";
+        if (persistentHostSupport.TryGetValue(cacheKey, out bool supported))
+        {
+            return supported;
+        }
+
+        string missing = Path.Join(workRoot, "probe-missing");
+        try
+        {
+            ProcessResult result = await processRunner.RunAsync(
+                    hostPath,
+                    ["--protocol", $"--in_video={missing}.mp4", $"--in_audio={missing}.wav"],
+                    cancellationToken,
+                    new ProcessRunOptions(Timeout: HostProbeTimeout, EnvironmentVariables: BuildHostEnvironment(options)))
+                .ConfigureAwait(false);
+            supported = IsHandshake(result.StandardOutput);
+        }
+        catch (ProcessRunnerTimeoutException)
+        {
+            supported = false;
+        }
+
+        persistentHostSupport[cacheKey] = supported;
+        return supported;
+    }
+
+    internal static bool IsHandshake(string standardOutput) =>
+        standardOutput.Split('\n', StringSplitOptions.TrimEntries).FirstOrDefault() == MaxineLipSyncHostSession.Handshake;
+
+    private async Task<LipSynthesisResult> SynthesizeWithPersistentHostAsync(
+        LipSynthesisRequest request,
+        NvidiaMaxineLipSyncOptions options,
+        string ffmpegPath,
+        TurnFrameWindow window,
+        NvidiaMaxineLipSyncLanguage language,
+        string turnAudioPath,
+        string patchedClipPath,
+        CancellationToken cancellationToken)
+    {
+        (int width, int height) = await ProbeFrameSizeAsync(request.OriginalVideoPath, cancellationToken).ConfigureAwait(false);
+        if (width > MaxineLipSyncHostJob.MaxDimension || height > MaxineLipSyncHostJob.MaxDimension)
+        {
+            return Failed(request,
+                $"Video is {width}x{height}; Maxine LipSync accepts up to {MaxineLipSyncHostJob.MaxDimension} pixels per side.");
+        }
+
+        var job = new MaxineLipSyncHostJob(
+            width, height, window.FramesPerSecond, language, checked((int)window.FrameCount), Path.GetFullPath(turnAudioPath));
+
+        await sessionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            MaxineLipSyncHostSession hostSession = await GetSessionAsync(options, cancellationToken).ConfigureAwait(false);
+            using IPipedProcess decoder = launcher(
+                ffmpegPath, BuildFrameDecodeArguments(request.OriginalVideoPath, window), null, false, true);
+            using IPipedProcess encoder = launcher(
+                ffmpegPath, BuildFrameEncodeArguments(width, height, window, patchedClipPath), null, true, false);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(options.PerTurnTimeout ?? DefaultPerTurnTimeout);
+
+            MaxineLipSyncHostReply reply;
+            try
+            {
+                reply = await hostSession.RunAsync(job, decoder.Output, encoder.Input, timeout.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                DropSession();
+                return Failed(request, "Maxine LipSync exceeded the per-turn timeout.");
+            }
+            catch (OperationCanceledException)
+            {
+                DropSession();
+                throw;
+            }
+            catch (MaxineLipSyncHostProtocolException ex)
+            {
+                DropSession();
+                string decoderError = decoder.ErrorTail;
+                return Failed(request, decoderError.Length == 0 ? ex.Message : $"{ex.Message} Decoder: {Trim(decoderError)}");
+            }
+
+            await encoder.Input.DisposeAsync().ConfigureAwait(false);
+            int encoderExit = await encoder.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            if (!reply.Succeeded)
+            {
+                return Failed(request, $"Maxine LipSync failed: {reply.Message}");
+            }
+
+            if (encoderExit != 0 || !File.Exists(patchedClipPath))
+            {
+                return Failed(request, $"encode patched clip failed with exit code {encoderExit}: {Trim(encoder.ErrorTail)}");
+            }
+
+            return Synthesized(request, patchedClipPath);
+        }
+        finally
+        {
+            sessionGate.Release();
+        }
+    }
+
+    /// <summary>Starts the persistent host, or reuses it while the host path and models are unchanged.</summary>
+    private async Task<MaxineLipSyncHostSession> GetSessionAsync(
+        NvidiaMaxineLipSyncOptions options,
+        CancellationToken cancellationToken)
+    {
+        string key = $"{Path.GetFullPath(options.HostExecutablePath!)}|{options.ModelDirectory}";
+        if (session is { IsAlive: true } && sessionKey == key)
+        {
+            return session;
+        }
+
+        DropSession();
+        IPipedProcess process = launcher(
+            options.HostExecutablePath!, [$"--model_path={options.ModelDirectory}"], BuildHostEnvironment(options), true, true);
+        session = await MaxineLipSyncHostSession.ConnectAsync(process, HandshakeTimeout, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("The Maxine LipSync host did not start (no handshake).");
+        sessionKey = key;
+        return session;
+    }
+
+    private void DropSession()
+    {
+        session?.Dispose();
+        session = null;
+        sessionKey = null;
+    }
+
+    private async Task<(int Width, int Height)> ProbeFrameSizeAsync(string videoPath, CancellationToken cancellationToken)
+    {
+        ProcessResult result = await processRunner.RunAsync(
+            toolResolver.ResolveFfprobePath(),
+            [
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height:stream_side_data=rotation",
+                "-of", "default=noprint_wrappers=1",
+                Path.GetFullPath(videoPath),
+            ],
+            cancellationToken).ConfigureAwait(false);
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"ffprobe failed on the source video: {Trim(result.StandardError)}");
+        }
+
+        return ParseDisplayFrameSize(result.StandardOutput)
+            ?? throw new InvalidOperationException("Could not read the source video frame size.");
+    }
+
+    /// <summary>
+    /// Frame size as FFmpeg decodes it. FFmpeg applies rotation metadata, so a quarter turn swaps the
+    /// stored width and height.
+    /// </summary>
+    internal static (int Width, int Height)? ParseDisplayFrameSize(string ffprobeOutput)
+    {
+        int? width = null, height = null;
+        double rotation = 0;
+        foreach (string line in ffprobeOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            int separator = line.IndexOf('=');
+            if (separator <= 0)
+            {
+                continue;
+            }
+
+            string key = line[..separator];
+            string value = line[(separator + 1)..];
+            if (key == "width" && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int w) && w > 0)
+            {
+                width ??= w;
+            }
+            else if (key == "height" && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int h) && h > 0)
+            {
+                height ??= h;
+            }
+            else if (key == "rotation" && double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double r))
+            {
+                rotation = r;
+            }
+        }
+
+        if (width is null || height is null)
+        {
+            return null;
+        }
+
+        bool quarterTurn = Math.Abs(Math.Round(rotation / 90.0)) % 2 == 1;
+        return quarterTurn ? (height.Value, width.Value) : (width.Value, height.Value);
+    }
+
+    internal static IReadOnlyList<string> BuildFrameDecodeArguments(string sourceVideoPath, TurnFrameWindow window) =>
+    [
+        "-hide_banner", "-loglevel", "error",
+        "-ss", FormatSeconds(window.StartSeconds),
+        "-i", Path.GetFullPath(sourceVideoPath),
+        "-frames:v", window.FrameCount.ToString(CultureInfo.InvariantCulture),
+        "-an",
+        "-vf", $"fps={FormatSeconds(window.FramesPerSecond)}",
+        "-f", "rawvideo", "-pix_fmt", "bgr24",
+        "-",
+    ];
+
+    internal static IReadOnlyList<string> BuildFrameEncodeArguments(
+        int width,
+        int height,
+        TurnFrameWindow window,
+        string outputPath) =>
+    [
+        "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "rawvideo", "-pix_fmt", "bgr24",
+        "-s", string.Create(CultureInfo.InvariantCulture, $"{width}x{height}"),
+        "-r", FormatSeconds(window.FramesPerSecond),
+        "-i", "-",
+        "-frames:v", window.FrameCount.ToString(CultureInfo.InvariantCulture),
+        "-an",
+        "-c:v", "libx264", "-crf", "12", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        Path.GetFullPath(outputPath),
+    ];
 
     internal static IReadOnlyList<string> BuildTurnVideoArguments(
         string sourceVideoPath,
@@ -379,6 +642,9 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine
         {
         }
     }
+
+    private LipSynthesisResult Synthesized(LipSynthesisRequest request, string patchedClipPath) =>
+        new(request.SegmentId, LipSynthesisEngineStatus.Synthesized, patchedClipPath, null, null, ProviderId, ModelId);
 
     private LipSynthesisResult Skipped(LipSynthesisRequest request, string reason) =>
         new(request.SegmentId, LipSynthesisEngineStatus.Skipped, null, reason, null, ProviderId, ModelId);

@@ -205,7 +205,7 @@ public sealed class NvidiaMaxineLipSynthesisEngineTests : IDisposable
         Assert.Equal(LipSynthesisEngineStatus.Synthesized, result.Status);
         Assert.True(File.Exists(result.PatchedClipPath));
         Assert.Equal(NvidiaMaxineLipSynthesisEngine.ProviderIdValue, result.ProviderId);
-        RunnerCall host = Assert.Single(runner.Calls, call => call.ExecutablePath == options.HostExecutablePath);
+        RunnerCall host = Assert.Single(HostRuns(runner, options));
         Assert.Contains("--language=3", host.Arguments);
         Assert.Equal("USE_APP_PATH", host.Options!.EnvironmentVariables!["NV_AR_SDK_PATH"]);
     }
@@ -219,7 +219,7 @@ public sealed class NvidiaMaxineLipSynthesisEngineTests : IDisposable
 
         await engine.SynthesizeTurnAsync(CreateRequest() with { PreferredModelAlias = "nvidia-maxine-lipsync-fr" }, CancellationToken.None);
 
-        RunnerCall host = Assert.Single(runner.Calls, call => call.ExecutablePath == options.HostExecutablePath);
+        RunnerCall host = Assert.Single(HostRuns(runner, options));
         Assert.Contains("--language=2", host.Arguments);
     }
 
@@ -251,7 +251,7 @@ public sealed class NvidiaMaxineLipSynthesisEngineTests : IDisposable
 
         Assert.Equal(LipSynthesisEngineStatus.Skipped, result.Status);
         Assert.Contains("2 frames", result.SkipReason);
-        Assert.DoesNotContain(runner.Calls, call => call.ExecutablePath == options.HostExecutablePath);
+        Assert.Empty(HostRuns(runner, options));
     }
 
     [Fact]
@@ -302,6 +302,9 @@ public sealed class NvidiaMaxineLipSynthesisEngineTests : IDisposable
         Assert.Equal(expectedValue, args[index + 1]);
     }
 
+    private static IEnumerable<RunnerCall> HostRuns(FakeRunner runner, NvidiaMaxineLipSyncOptions options) =>
+        runner.Calls.Where(call => call.ExecutablePath == options.HostExecutablePath && !call.Arguments.Contains("--protocol"));
+
     private sealed record RunnerCall(string ExecutablePath, IReadOnlyList<string> Arguments, ProcessRunOptions? Options);
 
     /// <summary>Answers ffprobe with 30 fps and creates each step's output file, like the real tools.</summary>
@@ -311,6 +314,9 @@ public sealed class NvidiaMaxineLipSynthesisEngineTests : IDisposable
 
         public int HostExitCode { get; init; }
 
+        /// <summary>LipSyncApp's answer to the persistent-host probe: it rejects the flag.</summary>
+        public ProcessResult ProtocolProbeReply { get; init; } = new(100, "Unknown flag: \"--protocol\"", string.Empty);
+
         public Task<ProcessResult> RunAsync(
             string executablePath,
             IReadOnlyList<string> arguments,
@@ -318,6 +324,11 @@ public sealed class NvidiaMaxineLipSynthesisEngineTests : IDisposable
             ProcessRunOptions? options = null)
         {
             Calls.Add(new RunnerCall(executablePath, arguments.ToArray(), options));
+            if (arguments.Contains("--protocol"))
+            {
+                return Task.FromResult(ProtocolProbeReply);
+            }
+
             if (arguments.Contains("stream=avg_frame_rate,r_frame_rate"))
             {
                 return Task.FromResult(new ProcessResult(0, "30/1\n30/1\n", string.Empty));

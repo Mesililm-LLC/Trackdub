@@ -341,7 +341,7 @@ bool ParseRun(const std::string& line, Job* job) {
   if (verb != "RUN" || !input) return false;
   std::getline(input, job->wav_path);
   job->wav_path.erase(0, job->wav_path.find_first_not_of(' '));
-  return job->width > 0 && job->height > 0 && job->width <= 4096 && job->height <= 2160 && job->fps > 0.0f &&
+  return job->width > 0 && job->height > 0 && job->width <= 4096 && job->height <= 4096 && job->fps > 0.0f &&
          job->frames > 0 && !job->wav_path.empty();
 }
 
