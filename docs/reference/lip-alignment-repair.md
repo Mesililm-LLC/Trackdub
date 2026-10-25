@@ -40,6 +40,11 @@ On Windows, GeForce RTX 50 cards (compute capability 120) use the sm100 model
 packages, as NVIDIA's `install_feature.ps1` does. A model alias with a language
 suffix, such as `nvidia-maxine-lipsync-es`, overrides the default language.
 
+Every engine is driven by the dubbed speech alone: before running, the stage
+renders the saved mix plan with the original-audio bed, extra timeline media and
+timbre polish turned off, to `artifacts/lip-synthesis/driver/dubbed-speech.wav`.
+If there is no mix plan, it falls back to the exported dubbed mix.
+
 The engine runs the host out of process, because the AR SDK loads its own CUDA
 and TensorRT DLLs. For each speaker turn it snaps the turn to whole video frames,
 cuts that video and the matching dubbed audio (16 kHz mono PCM), runs the host,
@@ -54,8 +59,6 @@ Known limits:
 - The host starts and loads its models for every turn (about 12 s on an
   RTX 5070). Steady-state speed is roughly 7–10 fps, and peak GPU use is about
   2.6 GB above idle.
-- The driving audio is the rendered dubbed mix, including ambiance; Maxine works
-  best on clean speech.
 - The mouth returns to the original footage at each turn end, which can show a
   visible snap, and a turn can end on one repeated frame when the host returns a
   frame short.
