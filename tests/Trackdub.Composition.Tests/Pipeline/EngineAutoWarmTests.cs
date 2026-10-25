@@ -127,43 +127,93 @@ public class EngineAutoWarmTests
         coordinator.RequestWarmAfterInstall("onnx-community/whisper-small");
         await coordinator.DrainAsync(TestContext.Current.CancellationToken);
 
-        Assert.Single(warmup.Requests);
+        // The worker survived the failure and still accepts work: queue a second, different model.
+        warmup.ShouldThrow = false;
+        coordinator.RequestWarmAfterInstall("onnx-community/opus-mt-en-es");
+        await coordinator.DrainAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, warmup.Requests.Count);
+        Assert.Contains(warmup.Requests, request => request.Stages.Contains(RuntimeStage.Translation));
     }
 
     [Fact]
     public async Task Draining_waits_for_work_already_queued()
     {
+        // The gate is released by the test, so a drain that does not actually wait would return
+        // before the warm finished; asserting on the record (not on task completion state) keeps
+        // this free of timing races on fast hardware.
         var warmup = new RecordingWarmupService { Gate = new TaskCompletionSource<bool>() };
         using var coordinator = CreateCoordinator(warmup);
 
         coordinator.RequestWarmAfterInstall("onnx-community/whisper-small");
-        Task drain = coordinator.DrainAsync(TestContext.Current.CancellationToken);
+        await WaitUntilAsync(() => warmup.Requests.Count == 1);
 
-        Assert.False(drain.IsCompleted);
+        Task drain = coordinator.DrainAsync(TestContext.Current.CancellationToken);
+        await Task.Delay(50, TestContext.Current.CancellationToken);
+        Assert.False(drain.IsCompleted, "drain must not complete while a warm is gated");
+
         warmup.Gate!.SetResult(true);
         await drain;
         Assert.Single(warmup.Requests);
     }
 
     [Fact]
-    public void Installer_warms_only_on_transition_into_an_installed_state()
+    public async Task Draining_does_not_seal_the_queue_and_later_installs_still_warm()
     {
-        Assert.True(EngineAutoWarmInstaller.IsInstalled(ModelCacheState.Installed));
-        Assert.True(EngineAutoWarmInstaller.IsInstalled(ModelCacheState.Ready));
-        Assert.False(EngineAutoWarmInstaller.IsInstalled(ModelCacheState.Downloading));
-        Assert.False(EngineAutoWarmInstaller.IsInstalled(ModelCacheState.Missing));
-        Assert.False(EngineAutoWarmInstaller.IsInstalled(ModelCacheState.Corrupt));
-        Assert.False(EngineAutoWarmInstaller.IsInstalled(ModelCacheState.Blocked));
+        // A drain is a flush point, not a shutdown. Sealing the channel writer here would make
+        // every subsequent install silently drop its warm request.
+        var warmup = new RecordingWarmupService();
+        using var coordinator = CreateCoordinator(warmup);
+
+        coordinator.RequestWarmAfterInstall("onnx-community/whisper-small");
+        await coordinator.DrainAsync(TestContext.Current.CancellationToken);
+        Assert.Single(warmup.Requests);
+
+        coordinator.RequestWarmAfterInstall("onnx-community/opus-mt-en-es");
+        await coordinator.DrainAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, warmup.Requests.Count);
+        Assert.Contains(warmup.Requests, request => request.Stages.Contains(RuntimeStage.Translation));
     }
 
     [Fact]
-    public async Task Installer_wires_download_notifications_to_the_queue()
+    public void Every_warmed_stage_is_pinned_to_the_installed_model()
     {
-        var warmup = new RecordingWarmupService();
-        using var coordinator = CreateCoordinator(warmup);
-        var orchestrator = new FakeModelDownloadOrchestrator();
+        RuntimeModelSelections selections = EngineAutoWarmCoordinator.BuildSelectionsForModel(
+            "ResembleAI/chatterbox-turbo-ONNX",
+            [RuntimeStage.Tts]);
 
-        using var installer = new EngineAutoWarmInstaller(orchestrator, coordinator);
+        Assert.Equal("ResembleAI/chatterbox-turbo-ONNX", selections.TtsModelAlias);
+        // Stages that are not being warmed must not be pinned, or unrelated stages would be
+        // forced onto this model.
+        Assert.Null(selections.AsrModelAlias);
+        Assert.Null(selections.TranslationModelAlias);
+        Assert.Null(selections.VadModelAlias);
+        // A set alias is what makes the planner treat the selection as explicit rather than ranked.
+        Assert.Equal(RuntimeModelSelectionIntent.Explicit, selections.GetSelectionIntent(RuntimeStage.Tts));
+        Assert.Equal(RuntimeModelSelectionIntent.Automatic, selections.GetSelectionIntent(RuntimeStage.Asr));
+    }
+
+    [Fact]
+    public void Only_a_usable_model_state_counts_as_installed()
+    {
+        Assert.True(EngineAutoWarmCoordinator.IsInstalled(ModelCacheState.Installed));
+        Assert.True(EngineAutoWarmCoordinator.IsInstalled(ModelCacheState.Ready));
+        Assert.False(EngineAutoWarmCoordinator.IsInstalled(ModelCacheState.Downloading));
+        Assert.False(EngineAutoWarmCoordinator.IsInstalled(ModelCacheState.Missing));
+        Assert.False(EngineAutoWarmCoordinator.IsInstalled(ModelCacheState.Corrupt));
+        Assert.False(EngineAutoWarmCoordinator.IsInstalled(ModelCacheState.Blocked));
+    }
+
+    [Fact]
+    public async Task Install_notifications_drive_the_queue_through_the_coordinator_subscription()
+    {
+        // The subscription lives in the coordinator's constructor, so constructing it with an
+        // orchestrator is all the wiring production needs. An earlier design registered a separate
+        // installer that nothing resolved, which left the feature silently dead at runtime.
+        var warmup = new RecordingWarmupService();
+        var orchestrator = new FakeModelDownloadOrchestrator();
+        using var coordinator = CreateCoordinator(warmup, orchestrator: orchestrator);
 
         // A failed download must not warm (nothing installed).
         orchestrator.Emit(new ModelStateChange(
@@ -173,11 +223,10 @@ public class EngineAutoWarmTests
             DateTimeOffset.UtcNow,
             "network"));
 
-        // Give the worker a chance to (incorrectly) act on the failed download.
         await Task.Delay(50, TestContext.Current.CancellationToken);
         Assert.Empty(warmup.Requests);
 
-        // Reaching Installed does warm. Drain exactly once, after both notifications.
+        // Reaching Installed does warm.
         orchestrator.Emit(new ModelStateChange(
             "onnx-community/whisper-small",
             ModelCacheState.Downloading,
@@ -197,7 +246,6 @@ public class EngineAutoWarmTests
             new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true });
 
         Assert.IsType<EngineAutoWarmCoordinator>(provider.GetRequiredService<IEngineAutoWarmQueue>());
-        Assert.IsType<EngineAutoWarmInstaller>(provider.GetRequiredService<EngineAutoWarmInstaller>());
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition, int timeoutMs = 2000)
@@ -216,12 +264,18 @@ public class EngineAutoWarmTests
 
     private static EngineAutoWarmCoordinator CreateCoordinator(
         RecordingWarmupService warmup,
-        Func<string, string?>? environment = null)
+        Func<string, string?>? environment = null,
+        IModelDownloadOrchestrator? orchestrator = null)
     {
         Assert.True(
             BundledModelManifestRegistry.TryLoadDefault(out BundledModelManifestRegistry? registry, out string? error),
             error);
-        return new EngineAutoWarmCoordinator(warmup, registry!, logger: null, readEnvironment: environment ?? (_ => null));
+        return new EngineAutoWarmCoordinator(
+            warmup,
+            registry!,
+            orchestrator,
+            logger: null,
+            readEnvironment: environment ?? (_ => null));
     }
 
     private sealed record WarmCall(IReadOnlyList<RuntimeStage> Stages);
@@ -231,7 +285,7 @@ public class EngineAutoWarmTests
         private readonly List<WarmCall> requests = [];
         private readonly object gate = new();
 
-        public bool ShouldThrow { get; init; }
+        public bool ShouldThrow { get; set; }
         public TaskCompletionSource<bool>? Gate { get; init; }
 
         public IReadOnlyList<WarmCall> Requests

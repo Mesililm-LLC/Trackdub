@@ -664,15 +664,15 @@ public static class CompositionRoot
                 sp.GetRequiredService<IHardwareProfileProvider>()));
         // Post-install engine warming: a freshly installed model has no EP-context artifact, so
         // without this its engines rebuild from source on every launch until something warms it.
+        // The coordinator subscribes to install notifications in its own constructor: resolving
+        // the queue is what a download path must do to warm at all, so the subscription cannot be
+        // skipped by a graph that never resolves some separate installer type.
         services.TryAddSingleton<IEngineAutoWarmQueue>(sp =>
             new Trackdub.Composition.Pipeline.EngineAutoWarmCoordinator(
                 sp.GetRequiredService<IResidentWarmupService>(),
                 sp.GetRequiredService<BundledModelManifestRegistry>(),
+                sp.GetRequiredService<IModelDownloadOrchestrator>(),
                 sp.GetService<IApplicationLogger>()));
-        services.TryAddSingleton(sp => new Trackdub.Composition.Pipeline.EngineAutoWarmInstaller(
-            sp.GetRequiredService<IModelDownloadOrchestrator>(),
-            sp.GetRequiredService<IEngineAutoWarmQueue>(),
-            sp.GetService<IApplicationLogger>()));
         // Wire the model cache directory explicitly: the bare-type registration would fall back
         // to the constructor default (no cache), making downloaded models invisible to alias
         // resolution (e.g. the kokoro voice catalog) even when the planner reports them ready.

@@ -34,11 +34,16 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
         new UnboundedChannelOptions { SingleReader = true });
     private readonly CancellationTokenSource lifetime = new();
     private readonly Task worker;
+    private readonly object idleGate = new();
+    private readonly IDisposable? subscription;
+    private TaskCompletionSource idleSignal = CreateCompletedSignal();
+    private int outstanding;
     private int disposed;
 
     public EngineAutoWarmCoordinator(
         IResidentWarmupService warmupService,
         BundledModelManifestRegistry manifestRegistry,
+        IModelDownloadOrchestrator? downloadOrchestrator = null,
         IApplicationLogger? logger = null,
         Func<string, string?>? readEnvironment = null)
     {
@@ -47,6 +52,12 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
         this.logger = logger;
         this.readEnvironment = readEnvironment ?? Environment.GetEnvironmentVariable;
         worker = Task.Run(ProcessQueueAsync);
+
+        // Subscribe here, in the coordinator's own constructor, so the wiring cannot be missed.
+        // A separate installer registered only as a concrete singleton was never resolved by the
+        // production graph, leaving the feature a silent no-op; whoever resolves the queue — which
+        // is the thing installs must reach — now gets the subscription as a side effect.
+        subscription = downloadOrchestrator?.StateChanges.Subscribe(new InstalledModelObserver(this));
     }
 
     public void RequestWarmAfterInstall(string modelId, CancellationToken cancellationToken = default)
@@ -65,16 +76,62 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
             return;
         }
 
+        // Counted before the write so a drain that starts right after this call still observes
+        // the work; the worker's finally releases it.
+        MarkBusy();
         if (!queue.Writer.TryWrite(modelId))
         {
             pending.TryRemove(modelId, out _);
+            MarkIdle();
         }
     }
 
+    /// <summary>
+    /// Waits until every queued and in-flight warm has finished. The queue stays open: a drain is
+    /// a flush point, not a shutdown, so a model installed after a drain still warms. Sealing the
+    /// writer here would make every later <see cref="RequestWarmAfterInstall"/> silently drop.
+    /// </summary>
     public async Task DrainAsync(CancellationToken cancellationToken = default)
     {
-        queue.Writer.TryComplete();
-        await worker.WaitAsync(cancellationToken).ConfigureAwait(false);
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Task idle;
+            lock (idleGate)
+            {
+                if (outstanding == 0)
+                {
+                    return;
+                }
+
+                idle = idleSignal.Task;
+            }
+
+            await idle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private void MarkBusy()
+    {
+        lock (idleGate)
+        {
+            if (++outstanding == 1)
+            {
+                idleSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+        }
+    }
+
+    private void MarkIdle()
+    {
+        lock (idleGate)
+        {
+            if (--outstanding == 0)
+            {
+                idleSignal.TrySetResult();
+            }
+        }
     }
 
     /// <summary>
@@ -136,6 +193,7 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
                 finally
                 {
                     pending.TryRemove(modelId, out _);
+                    MarkIdle();
                 }
             }
         }
@@ -166,7 +224,7 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
             ResidentWarmupReport report = await warmupService.WarmAsync(
                     new ResidentWarmupRequest(
                         stages,
-                        new RuntimeModelSelections(AsrModelOverride.Auto, IsDevBuild: false, new Dictionary<string, ExecutionProviderKind>())),
+                        BuildSelectionsForModel(modelId, stages)),
                     progress: null,
                     lifetime.Token)
                 .ConfigureAwait(false);
@@ -189,6 +247,83 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
         }
     }
 
+    /// <summary>
+    /// Selections that pin every warmed stage to <paramref name="modelId"/> by alias. Without a
+    /// per-stage alias the planner ranks freely and warms whichever compatible model it prefers,
+    /// which is the wrong graph when the installed model is a non-default choice for that task
+    /// (several TTS, translation, and forced-alignment models ship). Each stage alias field is
+    /// stage-specific, so the pin must be applied per stage rather than through one shared field.
+    /// </summary>
+    internal static RuntimeModelSelections BuildSelectionsForModel(string modelId, IReadOnlyList<RuntimeStage> stages)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(modelId);
+        ArgumentNullException.ThrowIfNull(stages);
+
+        string? aliasFor(RuntimeStage stage) => stages.Contains(stage) ? modelId : null;
+
+        return new RuntimeModelSelections(
+            AsrModelOverride: AsrModelOverride.Auto,
+            IsDevBuild: false,
+            HardwareOverrides: new Dictionary<string, ExecutionProviderKind>(),
+            DiarizationModelAlias: aliasFor(RuntimeStage.Diarization),
+            SeparationModelAlias: aliasFor(RuntimeStage.Separation),
+            OverlapRescueModelAlias: aliasFor(RuntimeStage.OverlapRescue),
+            AsrModelAlias: aliasFor(RuntimeStage.Asr),
+            TranslationModelAlias: aliasFor(RuntimeStage.Translation),
+            TtsModelAlias: aliasFor(RuntimeStage.Tts),
+            TextRefinementModelAlias: aliasFor(RuntimeStage.TextRefinement),
+            LipSyncModelAlias: aliasFor(RuntimeStage.LipSync),
+            LipSynthesisModelAlias: aliasFor(RuntimeStage.LipSynthesis),
+            VadModelAlias: aliasFor(RuntimeStage.Vad));
+    }
+
+    /// <summary>
+    /// Only a transition into a usable model state should warm: a failed download, an uninstall
+    /// (back to Missing), or a repair still in progress must not build engines.
+    /// </summary>
+    internal static bool IsInstalled(ModelCacheState state) =>
+        state is ModelCacheState.Installed or ModelCacheState.Ready;
+
+    private void OnInstalledStateChanged(ModelStateChange change)
+    {
+        if (!IsInstalled(change.NewState))
+        {
+            return;
+        }
+
+        try
+        {
+            RequestWarmAfterInstall(change.ModelId);
+        }
+        catch (Exception ex)
+        {
+            // Warming is an optimization; an observer must never break the download path.
+            logger?.LogWarning($"Post-install engine warm could not be queued for '{change.ModelId}'.", ex);
+        }
+    }
+
+    /// <summary>
+    /// Minimal <see cref="IObserver{T}"/> adapter: this layer has no System.Reactive dependency.
+    /// </summary>
+    private sealed class InstalledModelObserver(EngineAutoWarmCoordinator owner) : IObserver<ModelStateChange>
+    {
+        public void OnNext(ModelStateChange value) => owner.OnInstalledStateChanged(value);
+
+        public void OnError(Exception error) =>
+            owner.logger?.LogWarning("Model state change stream faulted; post-install engine warming stops.", error);
+
+        public void OnCompleted()
+        {
+        }
+    }
+
+    private static TaskCompletionSource CreateCompletedSignal()
+    {
+        var signal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        signal.SetResult();
+        return signal;
+    }
+
     private static bool IsDisabled(string? value) =>
         value is not null
         && (value.Trim() == "0" || value.Trim().Equals("false", StringComparison.OrdinalIgnoreCase));
@@ -200,6 +335,7 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
             return;
         }
 
+        subscription?.Dispose();
         queue.Writer.TryComplete();
         try
         {
