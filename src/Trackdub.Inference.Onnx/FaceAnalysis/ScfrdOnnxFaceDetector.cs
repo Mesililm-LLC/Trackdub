@@ -70,6 +70,7 @@ public sealed class ScfrdOnnxFaceDetector(
                 return NoFace;
 
             byte[] rgba = await File.ReadAllBytesAsync(framePath, cancellationToken).ConfigureAwait(false);
+            float letterboxScale = LetterboxScale(extracted.FrameWidth, extracted.FrameHeight);
             float[] inputData = NormalizeFrameBgr(rgba, extracted.FrameWidth, extracted.FrameHeight);
 
             var opts = new SessionOptions
@@ -93,13 +94,11 @@ public sealed class ScfrdOnnxFaceDetector(
             var nmsResults = ApplyNms(detections);
             var best = nmsResults.MaxBy(d => d.Score);
 
-            float sx = (float)extracted.FrameWidth / InferSize;
-            float sy = (float)extracted.FrameHeight / InferSize;
             var region = new FaceRegion(
-                X: (int)(best.X1 * sx),
-                Y: (int)(best.Y1 * sy),
-                Width: (int)((best.X2 - best.X1) * sx),
-                Height: (int)((best.Y2 - best.Y1) * sy));
+                X: (int)(best.X1 / letterboxScale),
+                Y: (int)(best.Y1 / letterboxScale),
+                Width: (int)((best.X2 - best.X1) / letterboxScale),
+                Height: (int)((best.Y2 - best.Y1) / letterboxScale));
 
             return new FaceDetectionResult(FaceFound: true, Confidence: best.Score, PrimaryFace: region);
         }
@@ -127,19 +126,31 @@ public sealed class ScfrdOnnxFaceDetector(
         return LatentSyncModelPaths.ScfrdModelPath(modelRoot);
     }
 
-    // SCRFD expects BGR CHW, normalized (pixel - 127.5) / 128.0
-    private static float[] NormalizeFrameBgr(byte[] rgba, int srcW, int srcH)
-    {
-        float[] tensor = new float[3 * InferSize * InferSize];
-        float scaleX = (float)srcW / InferSize;
-        float scaleY = (float)srcH / InferSize;
+    /// <summary>
+    /// Uniform scale that fits the frame inside the square detector input. Stretching each axis
+    /// separately squashes faces in portrait or ultra-wide video until SCRFD no longer finds them.
+    /// </summary>
+    internal static float LetterboxScale(int srcW, int srcH) =>
+        Math.Min((float)InferSize / srcW, (float)InferSize / srcH);
 
-        for (int y = 0; y < InferSize; y++)
+    // SCRFD expects CHW, normalized (pixel - 127.5) / 128.0
+    internal static float[] NormalizeFrameBgr(byte[] rgba, int srcW, int srcH)
+    {
+        // Letterbox: scale uniformly into the top-left corner and leave the rest as black padding,
+        // matching InsightFace's SCRFD preprocessing.
+        const float padValue = (0f - 127.5f) / 128.0f;
+        float[] tensor = new float[3 * InferSize * InferSize];
+        Array.Fill(tensor, padValue);
+        float scale = LetterboxScale(srcW, srcH);
+        int scaledW = Math.Min(InferSize, (int)Math.Round(srcW * scale));
+        int scaledH = Math.Min(InferSize, (int)Math.Round(srcH * scale));
+
+        for (int y = 0; y < scaledH; y++)
         {
-            int sy = Math.Min((int)(y * scaleY), srcH - 1);
-            for (int x = 0; x < InferSize; x++)
+            int sy = Math.Min((int)(y / scale), srcH - 1);
+            for (int x = 0; x < scaledW; x++)
             {
-                int sx = Math.Min((int)(x * scaleX), srcW - 1);
+                int sx = Math.Min((int)(x / scale), srcW - 1);
                 int srcIdx = ((sy * srcW) + sx) * 4;
 
                 // CHW layout, RGB channel order (SCRFD trained with swapRB=True → expects RGB)

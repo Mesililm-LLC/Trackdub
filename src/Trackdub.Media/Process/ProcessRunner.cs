@@ -16,7 +16,8 @@ internal interface IProcessRunner
 internal sealed record ProcessRunOptions(
     TimeSpan? Timeout = null,
     int MaxStandardOutputCharacters = 16 * 1024 * 1024,
-    int MaxStandardErrorCharacters = 4 * 1024 * 1024);
+    int MaxStandardErrorCharacters = 4 * 1024 * 1024,
+    IReadOnlyDictionary<string, string>? EnvironmentVariables = null);
 
 internal sealed record ProcessResult(
     int ExitCode,
@@ -68,6 +69,14 @@ internal sealed class ProcessRunner : IProcessRunner
         foreach (string argument in arguments)
         {
             startInfo.ArgumentList.Add(argument);
+        }
+
+        if (options.EnvironmentVariables is not null)
+        {
+            foreach ((string name, string value) in options.EnvironmentVariables)
+            {
+                startInfo.Environment[name] = value;
+            }
         }
 
         using var process = new System.Diagnostics.Process { StartInfo = startInfo };

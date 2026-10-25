@@ -7,6 +7,7 @@ using Trackdub.Inference.Onnx.LipSynthesis;
 using Trackdub.Inference.Runtime.ModelManifest;
 using Trackdub.Inference.Runtime.Planning;
 using Trackdub.Media.Extraction;
+using Trackdub.Media.LipSynthesis.NvidiaMaxine;
 
 namespace Trackdub.Composition.LipSynthesis;
 
@@ -22,7 +23,7 @@ internal static class LatentSyncLipSynthesisRegistration
 
         services.TryAddSingleton<IAudioSegmentExtractor, FfmpegAudioSegmentExtractor>();
 
-        services.TryAddSingleton<ILipSynthesisEngine>(sp =>
+        services.TryAddSingleton(sp =>
             new LatentSyncOnnxLipSynthesisEngine(
                 sp.GetRequiredService<IRuntimePlanner>(),
                 sp.GetRequiredService<BenchmarkModelPathResolver>(),
@@ -30,6 +31,15 @@ internal static class LatentSyncLipSynthesisRegistration
                 sp.GetRequiredService<IVideoFrameAssembler>(),
                 sp.GetRequiredService<IAudioSegmentExtractor>(),
                 sp.GetRequiredService<BundledModelManifestRegistry>()));
+        services.TryAddSingleton(_ => new NvidiaMaxineLipSynthesisEngine(NvidiaMaxineLipSyncOptions.FromEnvironment()));
+
+        // Maxine first: it runs whenever a local AR SDK is configured; LatentSync stays the fallback.
+        services.TryAddSingleton<ILipSynthesisEngine>(sp =>
+            new PreferredLipSynthesisEngine(
+            [
+                sp.GetRequiredService<NvidiaMaxineLipSynthesisEngine>(),
+                sp.GetRequiredService<LatentSyncOnnxLipSynthesisEngine>(),
+            ]));
 
         services.TryAddSingleton<IFaceDetector>(sp =>
             new ScfrdOnnxFaceDetector(

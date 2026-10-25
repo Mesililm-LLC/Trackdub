@@ -19,6 +19,44 @@ repair model. `run stage --stage lip-synthesis --model latentsync-1.6` takes a
 bare alias. A successful standalone repair refreshes the final Export and
 reports its outcome and artifact paths.
 
+## NVIDIA Maxine LipSync engine
+
+Video repair can run through NVIDIA Maxine AR SDK LipSync on a local install.
+When it is configured, the stage prefers it and falls back to LatentSync
+otherwise. Pass `--model nvidia-maxine-lipsync` to pick it explicitly, or
+`--model latentsync-1.6` to pick LatentSync.
+
+Nothing NVIDIA ships is bundled with Trackdub. Configure it with:
+
+| Variable | Value |
+| --- | --- |
+| `TRACKDUB_MAXINE_ARSDK_ROOT` | AR SDK root containing `bin/nvARPose.dll`, `bin/models/` and `features/` |
+| `TRACKDUB_MAXINE_LIPSYNC_HOST` | LipSync host executable (today, the `LipSyncApp` sample from [NVIDIA-Maxine/AR-SDK-Samples](https://github.com/NVIDIA-Maxine/AR-SDK-Samples)) |
+| `TRACKDUB_MAXINE_LIPSYNC_LANGUAGE` | Optional: `es`, `de`, `fr` or `generic` (default) |
+
+The AR SDK needs the `nvarlipsync`, `nvarfaceboxdetection`,
+`nvarlandmarkdetection` and `nvarfaceexpressions` features and their models.
+On Windows, GeForce RTX 50 cards (compute capability 120) use the sm100 model
+packages, as NVIDIA's `install_feature.ps1` does. A model alias with a language
+suffix, such as `nvidia-maxine-lipsync-es`, overrides the default language.
+
+The engine runs the host out of process, because the AR SDK loads its own CUDA
+and TensorRT DLLs. For each speaker turn it snaps the turn to whole video frames,
+cuts that video and the matching dubbed audio (16 kHz mono PCM), runs the host,
+and returns a full-frame clip of exactly the turn's frame count for the video
+recomposer to overlay.
+
+Known limits:
+
+- The host starts and loads its models for every turn (about 12 s on an
+  RTX 5070). Steady-state speed is roughly 7–10 fps, and peak GPU use is about
+  2.6 GB above idle.
+- The driving audio is the rendered dubbed mix, including ambiance; Maxine works
+  best on clean speech.
+- The mouth returns to the original footage at each turn end, which can show a
+  visible snap, and a turn can end on one repeated frame when the host returns a
+  frame short.
+
 ## Current model boundary
 
 The published `latentsync` alias still resolves to 1.6. The shipped ONNX
