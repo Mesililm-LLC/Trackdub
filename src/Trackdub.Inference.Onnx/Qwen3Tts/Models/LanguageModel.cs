@@ -180,293 +180,306 @@ internal sealed class LanguageModel : IDisposable
             tokenIds, speakerId, language, cfg, speakerEmbedding,
             refTokenIds, refAudioCodes);
         int prefillLen = inputsEmbeds.GetLength(1);
-
-        // Attention mask: all 1s
-        var attentionMask = new long[1, prefillLen];
-        for (int i = 0; i < prefillLen; i++)
-            attentionMask[0, i] = 1;
-
-        // Position IDs: cumsum(mask) - 1, broadcast to (3, 1, T)
-        var positionIds = new long[3, 1, prefillLen];
-        for (int ax = 0; ax < 3; ax++)
-            for (int i = 0; i < prefillLen; i++)
-                positionIds[ax, 0, i] = i;
-
-        // Run prefill
-        var flatEmbeds = ArrayPool<float>.Shared.Rent(1 * prefillLen * _hiddenSize);
-        var flatMask = ArrayPool<long>.Shared.Rent(1 * prefillLen);
-        var flatPosIds = ArrayPool<long>.Shared.Rent(3 * 1 * prefillLen);
-
-        float[] logits, hiddenStates;
-        float[] prefillKeys, prefillValues;
-
-        try
-        {
-            Buffer.BlockCopy(inputsEmbeds, 0, flatEmbeds, 0, 1 * prefillLen * _hiddenSize * sizeof(float));
-            Buffer.BlockCopy(attentionMask, 0, flatMask, 0, 1 * prefillLen * sizeof(long));
-            Buffer.BlockCopy(positionIds, 0, flatPosIds, 0, 3 * 1 * prefillLen * sizeof(long));
-
-            var prefillSession = GetPrefillSession();
-            using var embedsOrt = OrtValue.CreateTensorValueFromMemory<float>(flatEmbeds, [1, prefillLen, _hiddenSize]);
-            using var maskOrt = OrtValue.CreateTensorValueFromMemory<long>(flatMask, [1, prefillLen]);
-            using var posOrt = OrtValue.CreateTensorValueFromMemory<long>(flatPosIds, [3, 1, prefillLen]);
-
-            var inputNames = new[] { "inputs_embeds", "attention_mask", "position_ids" };
-            using var runOptions = new RunOptions();
-            using (var prefillOutputs = prefillSession.Run(runOptions, inputNames,
-                new[] { embedsOrt, maskOrt, posOrt }, prefillSession.OutputNames))
-            {
-                ColdStartCapture.MarkInferenceCompleted(PrefillRunSource);
-                logits = prefillOutputs[0].GetTensorDataAsSpan<float>().ToArray();
-                hiddenStates = prefillOutputs[1].GetTensorDataAsSpan<float>().ToArray();
-                StackPrefillKVFromOrtValues(prefillOutputs, prefillLen, out prefillKeys, out prefillValues);
-            }
-        }
-        finally
-        {
-            ArrayPool<float>.Shared.Return(flatEmbeds);
-            ArrayPool<long>.Shared.Return(flatMask);
-            ArrayPool<long>.Shared.Return(flatPosIds);
-        }
-
-        // Release prefill session to free memory before loading decode + CP sessions
-        _prefillSession?.Dispose();
-        _prefillSession = null;
-
-        // Generation loop
-        var generatedCodes = new List<long[]>();
-        var generatedTokens = new List<int>();
-
-        Span<float> tempEmbed2048 = stackalloc float[2048];
-        var ttsEosEmbed = new float[_hiddenSize];
-        var ttsPadEmbed = new float[_hiddenSize];
-        _embeddings.TextEmbedding(cfg.tts.tts_eos_token_id, tempEmbed2048);
-        _embeddings.TextProjection(tempEmbed2048, ttsEosEmbed);
-        _embeddings.TextEmbedding(cfg.tts.tts_pad_token_id, tempEmbed2048);
-        _embeddings.TextProjection(tempEmbed2048, ttsPadEmbed);
-
-        // Reusable buffers for the generation loop
-        var group0EmbedBuf = new float[_hiddenSize];
-        var cpEmbedBuf = new float[_cpHiddenSize];
-        var nextInputBuf = new float[_hiddenSize];
-
-        // CP input dimension: use config-driven value when projection exists, else full hiddenSize
-        int cpInputDim = _embeddings.HasCpProjection ? _embeddings.CpModelHiddenSize : _hiddenSize;
-
-        // Rent per-step buffers before loop — size mask to max possible sequence length
-        var pooledMask = ArrayPool<long>.Shared.Rent(prefillLen + maxNewTokens + 1);
-        var pooledCpInputs = ArrayPool<float>.Shared.Rent(2 * cpInputDim);
-        Debug.Assert(pooledCpInputs.Length >= 2 * cpInputDim, "CP prefill buffer too small");
-
-        // Pre-allocated KV buffers for the talker and code predictor.
-        //
-        // Copying the whole cache out of every decoder output costs O(T) per step and therefore
-        // O(T^2) per generation: at 28 layers x 8 heads x 128 head_dim that is ~229 KB per token
-        // of K+V, so a 500-frame utterance copies on the order of tens of GB and allocates a fresh
-        // large-object-heap array every step. Both caches only gain positions, so one max-size
-        // buffer each is filled in place and no per-step allocation happens. Values are copied in
-        // the same element order ORT produced, so numerics are unchanged.
         int kvElementCountPerPosition = _numLayers * _numKvHeads * _headDim;
         int kvCapacityPositions = prefillLen + maxNewTokens + 1;
-        var kvKeys = ArrayPool<float>.Shared.Rent(kvElementCountPerPosition * kvCapacityPositions);
-        var kvValues = ArrayPool<float>.Shared.Rent(kvElementCountPerPosition * kvCapacityPositions);
-        int cpKvElementCountPerPosition = _cpNumLayers * _cpNumKvHeads * _cpHeadDim;
-        var cpKvKeys = ArrayPool<float>.Shared.Rent(cpKvElementCountPerPosition * kvCapacityPositions);
-        var cpKvValues = ArrayPool<float>.Shared.Rent(cpKvElementCountPerPosition * kvCapacityPositions);
-
-        // Seed the talker buffers from the prefill cache.
-        prefillKeys.CopyTo(kvKeys, 0);
-        prefillValues.CopyTo(kvValues, 0);
+        float[]? rentedKvKeys = null;
+        float[]? rentedKvValues = null;
 
         try
         {
-            for (int step = 0; step < maxNewTokens; step++)
+            rentedKvKeys = ArrayPool<float>.Shared.Rent(kvElementCountPerPosition * kvCapacityPositions);
+            rentedKvValues = ArrayPool<float>.Shared.Rent(kvElementCountPerPosition * kvCapacityPositions);
+            float[] kvKeys = rentedKvKeys;
+            float[] kvValues = rentedKvValues;
+
+            // Attention mask: all 1s
+            var attentionMask = new long[1, prefillLen];
+            for (int i = 0; i < prefillLen; i++)
+                attentionMask[0, i] = 1;
+
+            // Position IDs: cumsum(mask) - 1, broadcast to (3, 1, T)
+            var positionIds = new long[3, 1, prefillLen];
+            for (int ax = 0; ax < 3; ax++)
+                for (int i = 0; i < prefillLen; i++)
+                    positionIds[ax, 0, i] = i;
+
+            // Run prefill
+            var flatEmbeds = ArrayPool<float>.Shared.Rent(1 * prefillLen * _hiddenSize);
+            var flatMask = ArrayPool<long>.Shared.Rent(1 * prefillLen);
+            var flatPosIds = ArrayPool<long>.Shared.Rent(3 * 1 * prefillLen);
+
+            float[] logits, hiddenStates;
+
+            try
             {
-                // Suppress EOS for min_new_tokens=2 (matching Python reference)
-                if (step < 2)
+                Buffer.BlockCopy(inputsEmbeds, 0, flatEmbeds, 0, 1 * prefillLen * _hiddenSize * sizeof(float));
+                Buffer.BlockCopy(attentionMask, 0, flatMask, 0, 1 * prefillLen * sizeof(long));
+                Buffer.BlockCopy(positionIds, 0, flatPosIds, 0, 3 * 1 * prefillLen * sizeof(long));
+
+                var prefillSession = GetPrefillSession();
+                using var embedsOrt = OrtValue.CreateTensorValueFromMemory<float>(flatEmbeds, [1, prefillLen, _hiddenSize]);
+                using var maskOrt = OrtValue.CreateTensorValueFromMemory<long>(flatMask, [1, prefillLen]);
+                using var posOrt = OrtValue.CreateTensorValueFromMemory<long>(flatPosIds, [3, 1, prefillLen]);
+
+                var inputNames = new[] { "inputs_embeds", "attention_mask", "position_ids" };
+                using var runOptions = new RunOptions();
+                using (var prefillOutputs = prefillSession.Run(runOptions, inputNames,
+                    new[] { embedsOrt, maskOrt, posOrt }, prefillSession.OutputNames))
                 {
-                    int eosIdx = logits.Length - cfg.talker.vocab_size + cfg.talker.codec_eos_token_id;
-                    logits[eosIdx] = float.NegativeInfinity;
+                    ColdStartCapture.MarkInferenceCompleted(PrefillRunSource);
+                    logits = prefillOutputs[0].GetTensorDataAsSpan<float>().ToArray();
+                    hiddenStates = prefillOutputs[1].GetTensorDataAsSpan<float>().ToArray();
+                    StackPrefillKVFromOrtValues(prefillOutputs, prefillLen, kvKeys, kvValues);
                 }
+            }
+            finally
+            {
+                ArrayPool<float>.Shared.Return(flatEmbeds);
+                ArrayPool<long>.Shared.Return(flatMask);
+                ArrayPool<long>.Shared.Return(flatPosIds);
+            }
 
-                // Sample group 0
-                var group0Token = SampleToken(logits, temperature, topK, topP, repetitionPenalty, generatedTokens, cfg);
-                if (group0Token == cfg.talker.codec_eos_token_id)
-                    break;
+            // Release prefill session to free memory before loading decode + CP sessions
+            _prefillSession?.Dispose();
+            _prefillSession = null;
 
-                generatedTokens.Add(group0Token);
+            // Generation loop
+            var generatedCodes = new List<long[]>();
+            var generatedTokens = new List<int>();
 
-                // Generate groups 1-15 via Code Predictor
-                var codes = new long[16];
-                codes[0] = group0Token;
+            Span<float> tempEmbed2048 = stackalloc float[2048];
+            var ttsEosEmbed = new float[_hiddenSize];
+            var ttsPadEmbed = new float[_hiddenSize];
+            _embeddings.TextEmbedding(cfg.tts.tts_eos_token_id, tempEmbed2048);
+            _embeddings.TextProjection(tempEmbed2048, ttsEosEmbed);
+            _embeddings.TextEmbedding(cfg.tts.tts_pad_token_id, tempEmbed2048);
+            _embeddings.TextProjection(tempEmbed2048, ttsPadEmbed);
 
-                _embeddings.TalkerCodecEmbedding(group0Token, group0EmbedBuf);
+            // Reusable buffers for the generation loop
+            var group0EmbedBuf = new float[_hiddenSize];
+            var cpEmbedBuf = new float[_cpHiddenSize];
+            var nextInputBuf = new float[_hiddenSize];
 
-                // CP prefill: concat(hidden_states[:,-1,:], group0_embed)
-                if (_embeddings.HasCpProjection)
+            // CP input dimension: use config-driven value when projection exists, else full hiddenSize
+            int cpInputDim = _embeddings.HasCpProjection ? _embeddings.CpModelHiddenSize : _hiddenSize;
+
+            // Rent per-step buffers before loop — size mask to max possible sequence length
+            var pooledMask = ArrayPool<long>.Shared.Rent(prefillLen + maxNewTokens + 1);
+            var pooledCpInputs = ArrayPool<float>.Shared.Rent(2 * cpInputDim);
+            Debug.Assert(pooledCpInputs.Length >= 2 * cpInputDim, "CP prefill buffer too small");
+
+            // Pre-allocated KV buffers for the talker and code predictor.
+            //
+            // Copying the whole cache out of every decoder output costs O(T) per step and therefore
+            // O(T^2) per generation: at 28 layers x 8 heads x 128 head_dim that is ~229 KB per token
+            // of K+V, so a 500-frame utterance copies on the order of tens of GB and allocates a fresh
+            // large-object-heap array every step. Both caches only gain positions, so one max-size
+            // buffer each is filled in place and no per-step allocation happens. Values are copied in
+            // the same element order ORT produced, so numerics are unchanged.
+            int cpKvElementCountPerPosition = _cpNumLayers * _cpNumKvHeads * _cpHeadDim;
+            var cpKvKeys = ArrayPool<float>.Shared.Rent(cpKvElementCountPerPosition * kvCapacityPositions);
+            var cpKvValues = ArrayPool<float>.Shared.Rent(cpKvElementCountPerPosition * kvCapacityPositions);
+
+            try
+            {
+                for (int step = 0; step < maxNewTokens; step++)
                 {
-                    Debug.Assert(cpInputDim <= pooledCpInputs.Length / 2, "cpInputDim exceeds half buffer");
-
-                    // Project hidden state: _hiddenSize → cpInputDim
-                    int hOffset = hiddenStates.Length - _hiddenSize;
-                    var lastHidden = new ReadOnlySpan<float>(hiddenStates, hOffset, _hiddenSize);
-                    var projectedHidden = new Span<float>(pooledCpInputs, 0, cpInputDim);
-                    _embeddings.CpProjection(lastHidden, projectedHidden);
-
-                    // Use pre-projected talker codec embedding (computed at init)
-                    var projectedGroup0 = new Span<float>(pooledCpInputs, cpInputDim, cpInputDim);
-                    _embeddings.ProjectedTalkerCodecEmbedding(group0Token, projectedGroup0);
-                }
-                else
-                {
-                    // No projection: copy full cpInputDim elements directly
-                    int hOffset = hiddenStates.Length - _hiddenSize;
-                    BuildCpPrefillDirect(pooledCpInputs, hiddenStates.AsSpan(), hOffset, group0EmbedBuf, cpInputDim);
-                }
-
-                // The CP prefill starts with an empty cache and grows in the reserved buffer.
-                int cpPastLen = 0;
-
-                for (int groupIdx = 1; groupIdx < 16; groupIdx++)
-                {
-                    int cpInputSeqLen = groupIdx == 1 ? 2 : 1;
-                    int flatCpSize = cpInputSeqLen * cpInputDim;
-
-                    var flatCpEmbeds = ArrayPool<float>.Shared.Rent(flatCpSize);
-                    try
+                    // Suppress EOS for min_new_tokens=2 (matching Python reference)
+                    if (step < 2)
                     {
-                        Debug.Assert(flatCpSize <= flatCpEmbeds.Length, "flatCpSize exceeds rented buffer");
-                        Buffer.BlockCopy(pooledCpInputs, 0, flatCpEmbeds, 0, flatCpSize * sizeof(float));
+                        int eosIdx = logits.Length - cfg.talker.vocab_size + cfg.talker.codec_eos_token_id;
+                        logits[eosIdx] = float.NegativeInfinity;
+                    }
 
-                        var cpInputsList = new List<NamedOnnxValue>
+                    // Sample group 0
+                    var group0Token = SampleToken(logits, temperature, topK, topP, repetitionPenalty, generatedTokens, cfg);
+                    if (group0Token == cfg.talker.codec_eos_token_id)
+                        break;
+
+                    generatedTokens.Add(group0Token);
+
+                    // Generate groups 1-15 via Code Predictor
+                    var codes = new long[16];
+                    codes[0] = group0Token;
+
+                    _embeddings.TalkerCodecEmbedding(group0Token, group0EmbedBuf);
+
+                    // CP prefill: concat(hidden_states[:,-1,:], group0_embed)
+                    if (_embeddings.HasCpProjection)
+                    {
+                        Debug.Assert(cpInputDim <= pooledCpInputs.Length / 2, "cpInputDim exceeds half buffer");
+
+                        // Project hidden state: _hiddenSize → cpInputDim
+                        int hOffset = hiddenStates.Length - _hiddenSize;
+                        var lastHidden = new ReadOnlySpan<float>(hiddenStates, hOffset, _hiddenSize);
+                        var projectedHidden = new Span<float>(pooledCpInputs, 0, cpInputDim);
+                        _embeddings.CpProjection(lastHidden, projectedHidden);
+
+                        // Use pre-projected talker codec embedding (computed at init)
+                        var projectedGroup0 = new Span<float>(pooledCpInputs, cpInputDim, cpInputDim);
+                        _embeddings.ProjectedTalkerCodecEmbedding(group0Token, projectedGroup0);
+                    }
+                    else
+                    {
+                        // No projection: copy full cpInputDim elements directly
+                        int hOffset = hiddenStates.Length - _hiddenSize;
+                        BuildCpPrefillDirect(pooledCpInputs, hiddenStates.AsSpan(), hOffset, group0EmbedBuf, cpInputDim);
+                    }
+
+                    // The CP prefill starts with an empty cache and grows in the reserved buffer.
+                    int cpPastLen = 0;
+
+                    for (int groupIdx = 1; groupIdx < 16; groupIdx++)
+                    {
+                        int cpInputSeqLen = groupIdx == 1 ? 2 : 1;
+                        int flatCpSize = cpInputSeqLen * cpInputDim;
+
+                        var flatCpEmbeds = ArrayPool<float>.Shared.Rent(flatCpSize);
+                        try
                         {
-                            NamedOnnxValue.CreateFromTensor("inputs_embeds", new DenseTensor<float>(flatCpEmbeds.AsMemory(0, flatCpSize), [1, cpInputSeqLen, cpInputDim])),
-                            NamedOnnxValue.CreateFromTensor("generation_steps", new DenseTensor<long>(new long[] { groupIdx - 1 }, [1])),
-                            NamedOnnxValue.CreateFromTensor("past_keys", new DenseTensor<float>(cpKvKeys.AsMemory(0, cpKvElementCountPerPosition * cpPastLen), [_cpNumLayers, 1, _cpNumKvHeads, cpPastLen, _cpHeadDim])),
-                            NamedOnnxValue.CreateFromTensor("past_values", new DenseTensor<float>(cpKvValues.AsMemory(0, cpKvElementCountPerPosition * cpPastLen), [_cpNumLayers, 1, _cpNumKvHeads, cpPastLen, _cpHeadDim]))
-                        };
+                            Debug.Assert(flatCpSize <= flatCpEmbeds.Length, "flatCpSize exceeds rented buffer");
+                            Buffer.BlockCopy(pooledCpInputs, 0, flatCpEmbeds, 0, flatCpSize * sizeof(float));
 
-                        using var cpOutputs = GetCpSession().Run(cpInputsList);
-                        ColdStartCapture.MarkInferenceCompleted(CodePredictorRunSource);
-                        var cpLogits = cpOutputs.First(x => x.Name == "logits").AsEnumerable<float>().ToArray();
-                        var cpToken = SampleTokenSimple(cpLogits, temperature);
-                        codes[groupIdx] = cpToken;
-
-                        // Update CP KV
-                        cpPastLen += cpInputSeqLen;
-                        // Same in-place growth as the talker: the CP cache also gains only new
-                        // positions, so copy into the reserved buffer rather than reallocating.
-                        CopyTensorInto(
-                            cpOutputs.First(x => x.Name == "present_keys").AsTensor<float>(),
-                            cpKvKeys,
-                            cpKvElementCountPerPosition * cpPastLen);
-                        CopyTensorInto(
-                            cpOutputs.First(x => x.Name == "present_values").AsTensor<float>(),
-                            cpKvValues,
-                            cpKvElementCountPerPosition * cpPastLen);
-
-                        // Next input
-                        if (groupIdx < 15)
-                        {
-                            Debug.Assert(cpInputDim <= pooledCpInputs.Length, "cpInputDim exceeds pooled buffer for next input");
-                            if (_embeddings.HasCpProjection)
+                            var cpInputsList = new List<NamedOnnxValue>
                             {
-                                // Use pre-projected embedding (computed at init, avoids per-step matrix multiply)
-                                _embeddings.ProjectedCpCodecEmbedding(groupIdx - 1, cpToken, new Span<float>(pooledCpInputs, 0, cpInputDim));
-                            }
-                            else
+                                NamedOnnxValue.CreateFromTensor("inputs_embeds", new DenseTensor<float>(flatCpEmbeds.AsMemory(0, flatCpSize), [1, cpInputSeqLen, cpInputDim])),
+                                NamedOnnxValue.CreateFromTensor("generation_steps", new DenseTensor<long>(new long[] { groupIdx - 1 }, [1])),
+                                NamedOnnxValue.CreateFromTensor("past_keys", new DenseTensor<float>(cpKvKeys.AsMemory(0, cpKvElementCountPerPosition * cpPastLen), [_cpNumLayers, 1, _cpNumKvHeads, cpPastLen, _cpHeadDim])),
+                                NamedOnnxValue.CreateFromTensor("past_values", new DenseTensor<float>(cpKvValues.AsMemory(0, cpKvElementCountPerPosition * cpPastLen), [_cpNumLayers, 1, _cpNumKvHeads, cpPastLen, _cpHeadDim]))
+                            };
+
+                            using var cpOutputs = GetCpSession().Run(cpInputsList);
+                            ColdStartCapture.MarkInferenceCompleted(CodePredictorRunSource);
+                            var cpLogits = cpOutputs.First(x => x.Name == "logits").AsEnumerable<float>().ToArray();
+                            var cpToken = SampleTokenSimple(cpLogits, temperature);
+                            codes[groupIdx] = cpToken;
+
+                            // Update CP KV
+                            cpPastLen += cpInputSeqLen;
+                            // Same in-place growth as the talker: the CP cache also gains only new
+                            // positions, so copy into the reserved buffer rather than reallocating.
+                            CopyTensorInto(
+                                cpOutputs.First(x => x.Name == "present_keys").AsTensor<float>(),
+                                cpKvKeys,
+                                cpKvElementCountPerPosition * cpPastLen);
+                            CopyTensorInto(
+                                cpOutputs.First(x => x.Name == "present_values").AsTensor<float>(),
+                                cpKvValues,
+                                cpKvElementCountPerPosition * cpPastLen);
+
+                            // Next input
+                            if (groupIdx < 15)
                             {
-                                // No projection needed (0.6B: embedding dim matches CP input dim)
-                                _embeddings.CpCodecEmbedding(groupIdx - 1, cpToken, cpEmbedBuf);
-                                for (int i = 0; i < cpInputDim; i++)
-                                    pooledCpInputs[i] = i < _cpHiddenSize ? cpEmbedBuf[i] : 0f;
+                                Debug.Assert(cpInputDim <= pooledCpInputs.Length, "cpInputDim exceeds pooled buffer for next input");
+                                if (_embeddings.HasCpProjection)
+                                {
+                                    // Use pre-projected embedding (computed at init, avoids per-step matrix multiply)
+                                    _embeddings.ProjectedCpCodecEmbedding(groupIdx - 1, cpToken, new Span<float>(pooledCpInputs, 0, cpInputDim));
+                                }
+                                else
+                                {
+                                    // No projection needed (0.6B: embedding dim matches CP input dim)
+                                    _embeddings.CpCodecEmbedding(groupIdx - 1, cpToken, cpEmbedBuf);
+                                    for (int i = 0; i < cpInputDim; i++)
+                                        pooledCpInputs[i] = i < _cpHiddenSize ? cpEmbedBuf[i] : 0f;
+                                }
                             }
                         }
+                        finally
+                        {
+                            ArrayPool<float>.Shared.Return(flatCpEmbeds);
+                        }
                     }
-                    finally
+
+                    generatedCodes.Add(codes);
+
+                    // Build next Talker input: sum all group embeddings + trailing text
+                    _embeddings.TalkerCodecEmbedding((int)codes[0], nextInputBuf);
+                    for (int g = 1; g < 16; g++)
                     {
-                        ArrayPool<float>.Shared.Return(flatCpEmbeds);
+                        _embeddings.CpCodecEmbedding(g - 1, (int)codes[g], cpEmbedBuf);
+                        AccumulateCpEmbedding(nextInputBuf, cpEmbedBuf, _cpHiddenSize);
                     }
+
+                    // Add trailing text hidden or tts_pad
+                    if (step < trailingTextHidden.GetLength(0))
+                    {
+                        for (int i = 0; i < _hiddenSize; i++)
+                            nextInputBuf[i] += trailingTextHidden[step, i];
+                    }
+                    else
+                    {
+                        for (int i = 0; i < _hiddenSize; i++)
+                            nextInputBuf[i] += ttsPadEmbed[i];
+                    }
+
+                    // Update attention mask and position IDs
+                    int newLen = prefillLen + step + 1;
+                    for (int i = 0; i < newLen; i++)
+                        pooledMask[i] = 1;
+
+                    var newPositionIds = new long[3, 1, 1];
+                    for (int ax = 0; ax < 3; ax++)
+                        newPositionIds[ax, 0, 0] = prefillLen + step;
+
+                    // Run decode
+                    var flatDecodePos = new long[3];
+                    Buffer.BlockCopy(newPositionIds, 0, flatDecodePos, 0, 3 * sizeof(long));
+
+                    var decodeInputs = new List<NamedOnnxValue>
+                    {
+                        NamedOnnxValue.CreateFromTensor("inputs_embeds", new DenseTensor<float>(nextInputBuf, [1, 1, _hiddenSize])),
+                        NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<long>(pooledMask.AsMemory(0, newLen), [1, newLen])),
+                        NamedOnnxValue.CreateFromTensor("position_ids", new DenseTensor<long>(flatDecodePos, [3, 1, 1])),
+                        NamedOnnxValue.CreateFromTensor("past_keys", new DenseTensor<float>(kvKeys.AsMemory(0, kvElementCountPerPosition * (prefillLen + step)), [_numLayers, 1, _numKvHeads, prefillLen + step, _headDim])),
+                        NamedOnnxValue.CreateFromTensor("past_values", new DenseTensor<float>(kvValues.AsMemory(0, kvElementCountPerPosition * (prefillLen + step)), [_numLayers, 1, _numKvHeads, prefillLen + step, _headDim]))
+                    };
+
+                    using var decodeOutputs = GetDecodeSession().Run(decodeInputs);
+                    ColdStartCapture.MarkInferenceCompleted(DecodeRunSource);
+                    logits = decodeOutputs.First(x => x.Name == "logits").AsEnumerable<float>().ToArray();
+                    hiddenStates = decodeOutputs.First(x => x.Name == "hidden_states").AsEnumerable<float>().ToArray();
+                    // Copy the grown caches into the pre-allocated buffers instead of allocating
+                    // a new array per step (see the buffer comment above).
+                    CopyTensorInto(
+                        decodeOutputs.First(x => x.Name == "present_keys").AsTensor<float>(),
+                        kvKeys,
+                        kvElementCountPerPosition * (prefillLen + step + 1));
+                    CopyTensorInto(
+                        decodeOutputs.First(x => x.Name == "present_values").AsTensor<float>(),
+                        kvValues,
+                        kvElementCountPerPosition * (prefillLen + step + 1));
                 }
-
-                generatedCodes.Add(codes);
-
-                // Build next Talker input: sum all group embeddings + trailing text
-                _embeddings.TalkerCodecEmbedding((int)codes[0], nextInputBuf);
-                for (int g = 1; g < 16; g++)
-                {
-                    _embeddings.CpCodecEmbedding(g - 1, (int)codes[g], cpEmbedBuf);
-                    AccumulateCpEmbedding(nextInputBuf, cpEmbedBuf, _cpHiddenSize);
-                }
-
-                // Add trailing text hidden or tts_pad
-                if (step < trailingTextHidden.GetLength(0))
-                {
-                    for (int i = 0; i < _hiddenSize; i++)
-                        nextInputBuf[i] += trailingTextHidden[step, i];
-                }
-                else
-                {
-                    for (int i = 0; i < _hiddenSize; i++)
-                        nextInputBuf[i] += ttsPadEmbed[i];
-                }
-
-                // Update attention mask and position IDs
-                int newLen = prefillLen + step + 1;
-                for (int i = 0; i < newLen; i++)
-                    pooledMask[i] = 1;
-
-                var newPositionIds = new long[3, 1, 1];
-                for (int ax = 0; ax < 3; ax++)
-                    newPositionIds[ax, 0, 0] = prefillLen + step;
-
-                // Run decode
-                var flatDecodePos = new long[3];
-                Buffer.BlockCopy(newPositionIds, 0, flatDecodePos, 0, 3 * sizeof(long));
-
-                var decodeInputs = new List<NamedOnnxValue>
-                {
-                    NamedOnnxValue.CreateFromTensor("inputs_embeds", new DenseTensor<float>(nextInputBuf, [1, 1, _hiddenSize])),
-                    NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<long>(pooledMask.AsMemory(0, newLen), [1, newLen])),
-                    NamedOnnxValue.CreateFromTensor("position_ids", new DenseTensor<long>(flatDecodePos, [3, 1, 1])),
-                    NamedOnnxValue.CreateFromTensor("past_keys", new DenseTensor<float>(kvKeys.AsMemory(0, kvElementCountPerPosition * (prefillLen + step)), [_numLayers, 1, _numKvHeads, prefillLen + step, _headDim])),
-                    NamedOnnxValue.CreateFromTensor("past_values", new DenseTensor<float>(kvValues.AsMemory(0, kvElementCountPerPosition * (prefillLen + step)), [_numLayers, 1, _numKvHeads, prefillLen + step, _headDim]))
-                };
-
-                using var decodeOutputs = GetDecodeSession().Run(decodeInputs);
-                ColdStartCapture.MarkInferenceCompleted(DecodeRunSource);
-                logits = decodeOutputs.First(x => x.Name == "logits").AsEnumerable<float>().ToArray();
-                hiddenStates = decodeOutputs.First(x => x.Name == "hidden_states").AsEnumerable<float>().ToArray();
-                // Copy the grown caches into the pre-allocated buffers instead of allocating
-                // a new array per step (see the buffer comment above).
-                CopyTensorInto(
-                    decodeOutputs.First(x => x.Name == "present_keys").AsTensor<float>(),
-                    kvKeys,
-                    kvElementCountPerPosition * (prefillLen + step + 1));
-                CopyTensorInto(
-                    decodeOutputs.First(x => x.Name == "present_values").AsTensor<float>(),
-                    kvValues,
-                    kvElementCountPerPosition * (prefillLen + step + 1));
             }
+            finally
+            {
+                ArrayPool<long>.Shared.Return(pooledMask);
+                ArrayPool<float>.Shared.Return(pooledCpInputs);
+                ArrayPool<float>.Shared.Return(cpKvKeys);
+                ArrayPool<float>.Shared.Return(cpKvValues);
+            }
+
+            // Convert to (1, 16, T)
+            int T = generatedCodes.Count;
+            var result = new long[1, 16, T];
+            for (int t = 0; t < T; t++)
+                for (int g = 0; g < 16; g++)
+                    result[0, g, t] = generatedCodes[t][g];
+
+            return result;
         }
         finally
         {
-            ArrayPool<long>.Shared.Return(pooledMask);
-            ArrayPool<float>.Shared.Return(pooledCpInputs);
-            ArrayPool<float>.Shared.Return(kvKeys);
-            ArrayPool<float>.Shared.Return(kvValues);
-            ArrayPool<float>.Shared.Return(cpKvKeys);
-            ArrayPool<float>.Shared.Return(cpKvValues);
+            if (rentedKvValues is not null)
+            {
+                ArrayPool<float>.Shared.Return(rentedKvValues);
+            }
+
+            if (rentedKvKeys is not null)
+            {
+                ArrayPool<float>.Shared.Return(rentedKvKeys);
+            }
         }
-
-        // Convert to (1, 16, T)
-        int T = generatedCodes.Count;
-        var result = new long[1, 16, T];
-        for (int t = 0; t < T; t++)
-            for (int g = 0; g < 16; g++)
-                result[0, g, t] = generatedCodes[t][g];
-
-        return result;
     }
 
     private (float[,,], float[,]) BuildPrefillEmbedding(int[] tokenIds, int speakerId, string language, ModelConfig cfg,
@@ -732,14 +745,15 @@ internal sealed class LanguageModel : IDisposable
     private void StackPrefillKVFromOrtValues(
         IReadOnlyList<OrtValue> outputs,
         int seqLen,
-        out float[] keys,
-        out float[] values)
+        float[] keys,
+        float[] values)
     {
         // Output order: [0]=logits, [1]=hidden_states, then 56 KV tensors alternating key/value per layer
         // present_key_0 at [2], present_value_0 at [3], present_key_1 at [4], ...
         int layerSize = 1 * _numKvHeads * seqLen * _headDim;
-        keys = new float[_numLayers * layerSize];
-        values = new float[_numLayers * layerSize];
+        int requiredLength = _numLayers * layerSize;
+        ArgumentOutOfRangeException.ThrowIfLessThan(keys.Length, requiredLength);
+        ArgumentOutOfRangeException.ThrowIfLessThan(values.Length, requiredLength);
         for (int layer = 0; layer < _numLayers; layer++)
         {
             var keySpan = outputs[2 + (layer * 2)].GetTensorDataAsSpan<float>();

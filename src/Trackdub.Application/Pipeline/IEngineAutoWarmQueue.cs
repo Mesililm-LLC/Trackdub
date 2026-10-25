@@ -29,10 +29,10 @@ public interface IEngineAutoWarmQueue
     Task DrainAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Activates the queue for the hosting process and returns whether this call performed the
-    /// activation (false when it was already active). A host calls this at startup so that a
-    /// misconfigured host — one that never activates — is detectable rather than silently
-    /// accepting requests that no worker will ever process.
+    /// Marks the queue active for the hosting process and returns whether this call performed
+    /// the transition (false when it was already active). The background worker starts when the
+    /// queue is constructed, and <see cref="RequestWarmAfterInstall"/> self-activates, so an
+    /// unactivated queue still processes requests. Activation is an observability marker, not a gate.
     /// </summary>
     bool Activate();
 

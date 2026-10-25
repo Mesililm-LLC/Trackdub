@@ -8,6 +8,7 @@ using Trackdub.Domain;
 using Trackdub.Infrastructure.Persistence.Repositories;
 using Trackdub.Infrastructure.Settings;
 using Trackdub.Inference.Runtime.ModelManifest;
+using Trackdub.Inference.Onnx.Whisper;
 using Trackdub.TestDoubles;
 
 namespace Trackdub.Composition.Tests;
@@ -50,12 +51,22 @@ public sealed class ModelDownloadOrchestratorTests : IDisposable
         var queue = new RecordingWarmQueue();
         using var orchestrator = new ModelDownloadOrchestrator(
             registry, store, downloader, storagePaths, engineAutoWarmQueue: queue);
+        string modelRootDirectory = Path.GetFullPath(Path.Join(
+            storagePaths.ModelCacheDirectory, "example", "model"));
+        WhisperSidecarCaches.MelBins.GetOrAdd(modelRootDirectory, static () => 80);
+        try
+        {
+            ModelDownloadResult result = await orchestrator.DownloadAsync(
+                "example/model", cancellationToken: TestContext.Current.CancellationToken);
 
-        ModelDownloadResult result = await orchestrator.DownloadAsync(
-            "example/model", cancellationToken: TestContext.Current.CancellationToken);
-
-        Assert.True(result.Success, result.FailureReason);
-        Assert.Equal(["example/model"], queue.Requests);
+            Assert.True(result.Success, result.FailureReason);
+            Assert.Equal(["example/model"], queue.Requests);
+            Assert.Equal(128, WhisperSidecarCaches.MelBins.GetOrAdd(modelRootDirectory, static () => 128));
+        }
+        finally
+        {
+            WhisperSidecarCaches.Remove(modelRootDirectory);
+        }
     }
 
     [Fact]

@@ -110,7 +110,10 @@ public sealed class Qwen3AsrOnnxAudioTranscriptionEngine
         // Cache keyed by model root: re-reading the fp16 embedding table per request costs a
         // ~300 MB file read that expands into a LOH-sized float[,] and is identical every time.
         var tokenizer = await tokenizerCache
-            .GetOrAddAsync(modelPaths.ModelRootPath, path => Qwen3AsrTokenizer.LoadAsync(path, cancellationToken))
+            .GetOrAddAsync(
+                modelPaths.ModelRootPath,
+                path => Qwen3AsrTokenizer.LoadAsync(path, CancellationToken.None),
+                cancellationToken)
             .ConfigureAwait(false);
         Qwen3AsrEmbedTokens embedTokens = embedTokensCache
             .GetOrAdd(modelPaths.EmbedTokensPath, () => Qwen3AsrEmbedTokens.Load(modelPaths.EmbedTokensPath));

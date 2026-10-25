@@ -245,6 +245,33 @@ public sealed class SidecarCacheTests
     }
 
     [Fact]
+    public async Task GetOrAddAsync_CallerCancellationDoesNotCancelSharedLoad()
+    {
+        var cache = new SidecarCache<string>();
+        var load = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cancellation = new CancellationTokenSource();
+        int factoryCalls = 0;
+
+        Task<string> callerWait = cache.GetOrAddAsync(
+            "model",
+            _ =>
+            {
+                factoryCalls++;
+                return load.Task;
+            },
+            cancellation.Token);
+
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => callerWait);
+
+        load.SetResult("loaded");
+        string sharedValue = await cache.GetOrAddAsync("model", _ => Task.FromResult("replacement"));
+
+        Assert.Equal("loaded", sharedValue);
+        Assert.Equal(1, factoryCalls);
+    }
+
+    [Fact]
     public async Task Clear_WithEvictionCallback_DoesNotForceInFlightAsyncValueCreation()
     {
         var cache = new SidecarCache<string>();

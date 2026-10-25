@@ -14,9 +14,9 @@ public sealed class EngineAutoWarmInstaller : IHostedService
         this.queue = queue ?? throw new ArgumentNullException(nameof(queue));
 
     /// <summary>
-    /// Activates the warm queue. Hosting is what makes post-install warming live in production, so
-    /// this is the activation point rather than a no-op: a host that never starts this service
-    /// leaves the queue inactive, which is observable instead of silently dropping every request.
+    /// Marks the warm queue active for the host. The worker starts with queue construction, and
+    /// requests self-activate if host startup did not run this service; activation records host
+    /// startup and selects the Information-level activation log rather than gating processing.
     /// </summary>
     public Task StartAsync(CancellationToken cancellationToken)
     {

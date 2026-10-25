@@ -6,6 +6,7 @@ using Trackdub.Contracts.Licensing;
 using Trackdub.Domain;
 using Trackdub.Infrastructure.Persistence.Repositories;
 using Trackdub.Infrastructure.Settings;
+using Trackdub.Inference.Onnx.Whisper;
 using Trackdub.Inference.Runtime.ModelManifest;
 
 namespace Trackdub.Composition.Runtime;
@@ -222,6 +223,7 @@ public sealed class ModelDownloadOrchestrator(
 
                 await RegisterCacheRecordAsync(entry, modelRootDirectory, hashResult, cancellationToken).ConfigureAwait(false);
                 EmitStateChange(modelId, ModelCacheState.Downloading, ModelCacheState.Installed);
+                WhisperSidecarCaches.Remove(modelRootDirectory);
                 // Trigger engine warming here, on the install path itself, rather than from a
                 // subscriber type the DI graph may never construct: this method only runs because
                 // an install actually happened, so the request cannot be silently skipped.

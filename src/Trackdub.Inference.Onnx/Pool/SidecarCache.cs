@@ -205,6 +205,16 @@ internal sealed class SidecarCache<T>
         }
     }
 
+    /// <summary>
+    /// Waits for a shared asynchronous cache load with caller-scoped cancellation. Cancelling this
+    /// wait does not cancel the cached factory or affect other callers waiting for the same value.
+    /// </summary>
+    public Task<T> GetOrAddAsync(
+        string key,
+        Func<string, Task<T>> valueFactory,
+        CancellationToken cancellationToken) =>
+        GetOrAddAsync(key, valueFactory).WaitAsync(cancellationToken);
+
     /// <summary>Number of entries currently cached.</summary>
     public int Count => store.Count + storeAsync.Count;
 
