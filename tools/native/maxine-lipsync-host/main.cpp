@@ -168,10 +168,10 @@ class LipSyncHost {
 
   ~LipSyncHost() { Unload(); }
 
-  // Reloads only when the frame rate or language changes, because both are load-time settings.
-  // Otherwise resets the temporal state so turns never bleed into each other.
+  // Loads when nothing is loaded or the frame rate or language changed, both load-time settings.
+  // FinishJob already reset or released the previous job's temporal state.
   bool Prepare(float fps, unsigned language, unsigned width, unsigned height, std::string* error) {
-    if (handle_ == nullptr || fps != fps_ || language != language_ || !ResetState(handle_)) {
+    if (handle_ == nullptr || fps != fps_ || language != language_) {
       Unload();
       if (!Load(fps, language, error)) return false;
     }
@@ -201,6 +201,13 @@ class LipSyncHost {
         status != NVCV_SUCCESS)
       return Fail(error, "set ready output", status);
     return true;
+  }
+
+  // Clears the temporal state so the next turn never bleeds into this one. When the feature cannot
+  // reset, it is released instead: the next job reloads either way, and the GPU memory is free
+  // while the process waits.
+  void FinishJob() {
+    if (handle_ != nullptr && !ResetState(handle_)) Unload();
   }
 
   unsigned sample_rate() const { return sample_rate_; }
@@ -276,6 +283,10 @@ class LipSyncHost {
       NvAR_Destroy(handle_);
       handle_ = nullptr;
     }
+    NvCVImage_Dealloc(&gpu_src_);
+    NvCVImage_Dealloc(&gpu_dst_);
+    NvCVImage_Dealloc(&cpu_dst_);
+    NvCVImage_Dealloc(&staging_);
     if (stream_ != nullptr) {
       NvAR_CudaStreamDestroy(stream_);
       stream_ = nullptr;
@@ -296,14 +307,18 @@ class LipSyncHost {
       return runtime ? reinterpret_cast<ResetStateFn>(dlsym(runtime, "NvAR_ResetState")) : nullptr;
 #endif
     }();
+    static bool reported = false;
     if (reset == nullptr) {
-      std::cerr << "maxine-lipsync-host: NvAR_ResetState not found; reloading instead" << std::endl;
+      if (!reported) std::cerr << "maxine-lipsync-host: NvAR_ResetState not found; reloading per job" << std::endl;
+      reported = true;
       return false;
     }
     NvCV_Status status = reset(handle, nullptr);
     if (status != NVCV_SUCCESS) {
-      std::cerr << "maxine-lipsync-host: NvAR_ResetState failed (" << NvCV_GetErrorStringFromCode(status)
-                << "); reloading instead" << std::endl;
+      if (!reported)
+        std::cerr << "maxine-lipsync-host: NvAR_ResetState failed (" << NvCV_GetErrorStringFromCode(status)
+                  << "); reloading per job" << std::endl;
+      reported = true;
       return false;
     }
     return true;
@@ -396,6 +411,7 @@ void HandleJob(LipSyncHost* host, const Job& job) {
     WriteExact(stdout, have_output ? last_output.data() : output.data(), frame_bytes);
     ++written;
   }
+  host->FinishJob();
 
   const long long elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                    std::chrono::steady_clock::now() - started).count();

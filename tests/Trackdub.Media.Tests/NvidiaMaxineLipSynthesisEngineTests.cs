@@ -184,6 +184,26 @@ public sealed class NvidiaMaxineLipSynthesisEngineTests : IDisposable
     }
 
     [Fact]
+    public void Streaming_decode_and_encode_carry_exactly_the_turn_frames_as_raw_bgr24()
+    {
+        var window = new TurnFrameWindow(33, 81, 30);
+
+        IReadOnlyList<string> decode = NvidiaMaxineLipSynthesisEngine.BuildFrameDecodeArguments("source.mp4", window);
+        IReadOnlyList<string> encode = NvidiaMaxineLipSynthesisEngine.BuildFrameEncodeArguments(704, 1280, window, "patched.mp4");
+
+        Assert.Equal("-nostdin", decode[0]);
+        AssertOption(decode, "-ss", "1.1");
+        AssertOption(decode, "-frames:v", "81");
+        AssertOption(decode, "-pix_fmt", "bgr24");
+        Assert.Equal("-", decode[^1]);
+        AssertOption(encode, "-s", "704x1280");
+        AssertOption(encode, "-r", "30");
+        AssertOption(encode, "-i", "-");
+        AssertOption(encode, "-frames:v", "81");
+        Assert.Equal(Path.GetFullPath("patched.mp4"), encode[^1]);
+    }
+
+    [Fact]
     public void Patched_clip_is_cut_to_exactly_the_turn_frame_count()
     {
         IReadOnlyList<string> args = NvidiaMaxineLipSynthesisEngine.BuildPatchedClipArguments(

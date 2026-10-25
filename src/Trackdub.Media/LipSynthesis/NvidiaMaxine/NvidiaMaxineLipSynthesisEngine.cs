@@ -33,6 +33,12 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
     private static readonly TimeSpan HostProbeTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(30);
 
+    /// <summary>
+    /// The host keeps a CUDA context while it waits, so it is stopped once lip synthesis has been
+    /// idle this long instead of holding GPU memory for the rest of a desktop session.
+    /// </summary>
+    internal static readonly TimeSpan SessionIdleTimeout = TimeSpan.FromMinutes(2);
+
     private readonly Func<NvidiaMaxineLipSyncOptions> optionsProvider;
     private readonly IProcessRunner processRunner;
     private readonly PipedProcessLauncher launcher;
@@ -42,6 +48,7 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
     private readonly SemaphoreSlim sessionGate = new(1, 1);
     private MaxineLipSyncHostSession? session;
     private string? sessionKey;
+    private Timer? idleTimer;
     private bool disposed;
 
     public NvidiaMaxineLipSynthesisEngine(NvidiaMaxineLipSyncOptions options, string? ffmpegPath = null)
@@ -225,6 +232,7 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
         }
 
         disposed = true;
+        idleTimer?.Dispose();
         sessionGate.Wait();
         try
         {
@@ -345,6 +353,39 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
         }
         finally
         {
+            ScheduleIdleShutdown();
+            sessionGate.Release();
+        }
+    }
+
+    private void ScheduleIdleShutdown()
+    {
+        if (session is null)
+        {
+            return;
+        }
+
+        idleTimer ??= new Timer(_ => StopIdleSession(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        idleTimer.Change(SessionIdleTimeout, Timeout.InfiniteTimeSpan);
+    }
+
+    private void StopIdleSession()
+    {
+        // A turn in progress reschedules the shutdown when it finishes.
+        if (!sessionGate.Wait(0))
+        {
+            return;
+        }
+
+        try
+        {
+            if (!disposed)
+            {
+                DropSession();
+            }
+        }
+        finally
+        {
             sessionGate.Release();
         }
     }
@@ -440,7 +481,8 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
 
     internal static IReadOnlyList<string> BuildFrameDecodeArguments(string sourceVideoPath, TurnFrameWindow window) =>
     [
-        "-hide_banner", "-loglevel", "error",
+        // stdin is not redirected, so keep FFmpeg from reading keystrokes from the console.
+        "-nostdin", "-hide_banner", "-loglevel", "error",
         "-ss", FormatSeconds(window.StartSeconds),
         "-i", Path.GetFullPath(sourceVideoPath),
         "-frames:v", window.FrameCount.ToString(CultureInfo.InvariantCulture),
