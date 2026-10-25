@@ -13,12 +13,39 @@ using Microsoft.ML.OnnxRuntime.Tensors;
 
 namespace Trackdub.Inference.Onnx.Whisper;
 
-public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimePlanner,
-    BenchmarkModelPathResolver modelPathResolver,
-    IRuntimePlanningPreferences? runtimePlanningPreferences = null,
-    IPipelineDeviceExclusionProvider? deviceExclusionProvider = null)
-    : IAudioTranscriptionEngineAdapter, IStageRuntimeExecutionReporter, IDeviceDegradationReporter
+public sealed class WhisperOnnxAudioTranscriptionEngine : IAudioTranscriptionEngineAdapter, IStageRuntimeExecutionReporter, IDeviceDegradationReporter
 {
+    private readonly IRuntimePlanner runtimePlanner;
+    private readonly IRuntimePlanningPreferences? runtimePlanningPreferences;
+    private readonly BenchmarkModelPathResolver modelPathResolver;
+    private readonly IPipelineDeviceExclusionProvider? deviceExclusionProvider;
+    private readonly SidecarCache<WhisperTokenizerDecoder> tokenizerCache;
+
+    /// <summary>Production constructor: the tokenizer cache defaults to the process-wide instance.</summary>
+    public WhisperOnnxAudioTranscriptionEngine(
+        IRuntimePlanner runtimePlanner,
+        BenchmarkModelPathResolver modelPathResolver,
+        IRuntimePlanningPreferences? runtimePlanningPreferences = null,
+        IPipelineDeviceExclusionProvider? deviceExclusionProvider = null)
+        : this(runtimePlanner, modelPathResolver, runtimePlanningPreferences, deviceExclusionProvider, null)
+    {
+    }
+
+    /// <summary>Test seam: allows injecting a cache so load counts can be asserted.</summary>
+    internal WhisperOnnxAudioTranscriptionEngine(
+        IRuntimePlanner runtimePlanner,
+        BenchmarkModelPathResolver modelPathResolver,
+        IRuntimePlanningPreferences? runtimePlanningPreferences,
+        IPipelineDeviceExclusionProvider? deviceExclusionProvider,
+        SidecarCache<WhisperTokenizerDecoder>? tokenizerCache)
+    {
+        this.runtimePlanner = runtimePlanner ?? throw new ArgumentNullException(nameof(runtimePlanner));
+        this.modelPathResolver = modelPathResolver ?? throw new ArgumentNullException(nameof(modelPathResolver));
+        this.runtimePlanningPreferences = runtimePlanningPreferences;
+        this.deviceExclusionProvider = deviceExclusionProvider;
+        this.tokenizerCache = tokenizerCache ?? WhisperSidecarCaches.Tokenizers;
+    }
+
     public const string EngineFamilyName = "whisper-onnx";
 
     private const int DefaultMelBins = 80;
@@ -31,9 +58,6 @@ public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimeP
     private const double TranscriptionContextPaddingSeconds = 0.5;
     private const double MinTranscriptionRegionSeconds = 3.0;
     private const string RepetitionGuardBootstrapDetail = "Decoder repetition guard flagged output for review.";
-    private readonly IRuntimePlanner runtimePlanner = runtimePlanner ?? throw new ArgumentNullException(nameof(runtimePlanner));
-    private readonly BenchmarkModelPathResolver modelPathResolver = modelPathResolver ?? throw new ArgumentNullException(nameof(modelPathResolver));
-    private readonly IPipelineDeviceExclusionProvider? deviceExclusionProvider = deviceExclusionProvider;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<int, WhisperFeatureExtractor> featureExtractors = new();
 
     public StageRuntimeExecutionSummary? LastExecutionSummary { get; private set; }
@@ -128,8 +152,11 @@ public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimeP
         LastDeviceDegradation = acquired.Degradation;
         StageRuntimePlan effectivePlan = acquired.Plan;
         using OnnxExecutionSessionFactory.WhisperSessionLease sessionLease = acquired.Lease.Lease;
-        WhisperTokenizerDecoder tokenizer = await WhisperTokenizerDecoder
-            .LoadAsync(acquired.Lease.ModelRootPath).ConfigureAwait(false);
+        // Cached per model root: the tokenizer is a ~52k-entry JSON parse that does not depend on
+        // the audio, so it should not be repeated for every transcription.
+        WhisperTokenizerDecoder tokenizer = await tokenizerCache
+            .GetOrAddAsync(acquired.Lease.ModelRootPath, path => WhisperTokenizerDecoder.LoadAsync(path))
+            .ConfigureAwait(false);
         WhisperFeatureExtractor featureExtractor = featureExtractors.GetOrAdd(
             ReadMelBins(acquired.Lease.ModelRootPath),
             static melBins => new WhisperFeatureExtractor(melBins));
@@ -907,7 +934,15 @@ public sealed class WhisperOnnxAudioTranscriptionEngine(IRuntimePlanner runtimeP
         HashSet<string> InputNames);
 
     // large-v3 uses 128 mel bins; earlier sizes use 80.
-    internal static int ReadMelBins(string modelRootPath)
+    /// <summary>
+    /// Mel-bin count declared by <c>preprocessor_config.json</c>, cached per model root: the value
+    /// is fixed for a model and was previously re-parsed from disk on every transcription and on
+    /// every TensorRT profile build.
+    /// </summary>
+    internal static int ReadMelBins(string modelRootPath) =>
+        WhisperSidecarCaches.MelBins.GetOrAdd(modelRootPath, () => ParseMelBins(modelRootPath));
+
+    private static int ParseMelBins(string modelRootPath)
     {
         string configPath = Path.Join(modelRootPath, "preprocessor_config.json");
         if (!File.Exists(configPath))
