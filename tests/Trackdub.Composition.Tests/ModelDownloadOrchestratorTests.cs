@@ -74,6 +74,49 @@ public sealed class ModelDownloadOrchestratorTests : IDisposable
     }
 
     [Fact]
+    public void InvalidateSidecarCaches_flushes_every_cache_for_the_root()
+    {
+        // Pins the full flush set, not just mel bins: dropping any one of these calls would leave
+        // a stale entry serving pre-install state. Sentinels stand in for the tokenizer types,
+        // which cannot be constructed without loading real model files.
+        string root = Path.Join(Path.GetTempPath(), "trackdub-invalidate", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            // These are process-wide static caches, so assert on the delta from this test's own
+            // seeds rather than on absolute counts (other tests may have populated them).
+            int melBinsBefore = Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.MelBins.Count;
+            int whisperTokBefore = Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.Tokenizers.Count;
+            int asrTokBefore = Trackdub.Inference.Onnx.Qwen3Asr.Qwen3AsrSidecarCaches.Tokenizers.Count;
+            int asrEmbBefore = Trackdub.Inference.Onnx.Qwen3Asr.Qwen3AsrSidecarCaches.EmbedTokens.Count;
+
+            Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.MelBins.GetOrAdd(root, () => 80);
+            Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.Tokenizers.GetOrAdd(root, () => null!);
+            Trackdub.Inference.Onnx.Qwen3Asr.Qwen3AsrSidecarCaches.Tokenizers.GetOrAdd(root, () => null!);
+            // Embed table is keyed by file path inside the root, so it needs the prefix flush.
+            Trackdub.Inference.Onnx.Qwen3Asr.Qwen3AsrSidecarCaches.EmbedTokens.GetOrAdd(
+                Path.Join(root, "embeddings", "embed_tokens.bin"),
+                () => null!);
+
+            Assert.Equal(melBinsBefore + 1, Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.MelBins.Count);
+            Assert.Equal(whisperTokBefore + 1, Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.Tokenizers.Count);
+            Assert.Equal(asrTokBefore + 1, Trackdub.Inference.Onnx.Qwen3Asr.Qwen3AsrSidecarCaches.Tokenizers.Count);
+            Assert.Equal(asrEmbBefore + 1, Trackdub.Inference.Onnx.Qwen3Asr.Qwen3AsrSidecarCaches.EmbedTokens.Count);
+
+            ModelDownloadOrchestrator.InvalidateSidecarCaches(root);
+
+            Assert.Equal(melBinsBefore, Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.MelBins.Count);
+            Assert.Equal(whisperTokBefore, Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.Tokenizers.Count);
+            Assert.Equal(asrTokBefore, Trackdub.Inference.Onnx.Qwen3Asr.Qwen3AsrSidecarCaches.Tokenizers.Count);
+            Assert.Equal(asrEmbBefore, Trackdub.Inference.Onnx.Qwen3Asr.Qwen3AsrSidecarCaches.EmbedTokens.Count);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Successful_install_requests_engine_warming_for_the_installed_model()
     {
         // End-to-end proof of the wiring: a real download must reach the warm queue. An earlier

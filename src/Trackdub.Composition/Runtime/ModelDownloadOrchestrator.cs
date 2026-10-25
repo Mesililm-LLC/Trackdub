@@ -500,7 +500,8 @@ public sealed class ModelDownloadOrchestrator(
     /// are keyed by path only, so an install over an existing path would otherwise keep serving
     /// pre-install state (notably a mel-bin count read before the config file existed).
     /// </summary>
-    private static void InvalidateSidecarCaches(string modelRootDirectory)
+    /// <remarks>Internal so the flush set is testable without driving a full download.</remarks>
+    internal static void InvalidateSidecarCaches(string modelRootDirectory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(modelRootDirectory);
         Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.Remove(modelRootDirectory);

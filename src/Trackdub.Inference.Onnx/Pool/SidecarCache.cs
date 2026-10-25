@@ -228,20 +228,14 @@ internal sealed class SidecarCache<T>
         // reload of that key between passes would otherwise be removed by the second pass and
         // counted again, breaking the distinct-key contract and discarding a fresh entry.
         var keys = new HashSet<string>(CreatePathComparer());
-        foreach (string key in store.Keys)
+        foreach (string key in store.Keys.Where(k => k.StartsWith(prefix, comparison)))
         {
-            if (key.StartsWith(prefix, comparison))
-            {
-                keys.Add(key);
-            }
+            keys.Add(key);
         }
 
-        foreach (string key in storeAsync.Keys)
+        foreach (string key in storeAsync.Keys.Where(k => k.StartsWith(prefix, comparison)))
         {
-            if (key.StartsWith(prefix, comparison))
-            {
-                keys.Add(key);
-            }
+            keys.Add(key);
         }
 
         int removed = 0;
