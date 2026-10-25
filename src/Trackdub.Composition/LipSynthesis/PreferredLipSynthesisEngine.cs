@@ -5,8 +5,8 @@ namespace Trackdub.Composition.LipSynthesis;
 
 /// <summary>
 /// Picks the lip-synthesis engine for each call: the one a model alias names, otherwise the first
-/// available engine in preference order. Availability is re-read on every call, so configuring
-/// Maxine (or removing it) takes effect without rebuilding the service provider.
+/// available engine in preference order. Availability is re-checked on every call, so installing
+/// or removing files is picked up; the engines' configuration itself is read once at startup.
 /// </summary>
 internal sealed class PreferredLipSynthesisEngine : ILipSynthesisEngine, IStageRuntimeExecutionReporter
 {

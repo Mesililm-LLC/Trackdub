@@ -201,6 +201,23 @@ public sealed class NvidiaMaxineLipSynthesisEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task SynthesizeTurnAsync_skips_turns_shorter_than_the_lipsync_startup_window()
+    {
+        NvidiaMaxineLipSyncOptions options = CreateInstalledOptions();
+        var runner = new FakeRunner();
+        var engine = new NvidiaMaxineLipSynthesisEngine(options, runner, Environment.ProcessPath, Path.Join(root, "work"));
+
+        // 9.926..10.005 s at 30 fps is 2 frames, the last turn of the EN->ES test clip.
+        LipSynthesisResult result = await engine.SynthesizeTurnAsync(
+            CreateRequest() with { TurnStart = TimeSpan.FromSeconds(9.926), TurnEnd = TimeSpan.FromSeconds(10.005) },
+            CancellationToken.None);
+
+        Assert.Equal(LipSynthesisEngineStatus.Skipped, result.Status);
+        Assert.Contains("2 frames", result.SkipReason);
+        Assert.DoesNotContain(runner.Calls, call => call.ExecutablePath == options.HostExecutablePath);
+    }
+
+    [Fact]
     public async Task SynthesizeTurnAsync_skips_without_running_anything_when_not_installed()
     {
         var runner = new FakeRunner();

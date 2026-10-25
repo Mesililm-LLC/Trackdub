@@ -20,6 +20,12 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine
     public const string ModelAliasPrefix = "nvidia-maxine-lipsync";
     public const string ModelIdValue = "nvidia/maxine/nvarlipsync";
 
+    /// <summary>
+    /// LipSync buffers 14 frames (its NumInitialFrames) before it outputs an animated frame, so
+    /// shorter turns would come back unchanged or as flush frames.
+    /// </summary>
+    internal const int MinimumTurnFrames = 15;
+
     private static readonly TimeSpan DefaultPerTurnTimeout = TimeSpan.FromMinutes(30);
 
     private readonly NvidiaMaxineLipSyncOptions options;
@@ -119,9 +125,10 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine
             double framesPerSecond = await ProbeFrameRateAsync(request.OriginalVideoPath, cancellationToken)
                 .ConfigureAwait(false);
             TurnFrameWindow window = TurnFrameWindow.Create(request.TurnStart, request.TurnEnd, framesPerSecond);
-            if (window.FrameCount <= 0)
+            if (window.FrameCount < MinimumTurnFrames)
             {
-                return Skipped(request, "Turn is shorter than one video frame.");
+                return Skipped(request,
+                    $"Turn is {window.FrameCount} frames; Maxine LipSync needs at least {MinimumTurnFrames} to animate the mouth.");
             }
 
             await RunOrThrowAsync(ffmpegPath, BuildTurnVideoArguments(request.OriginalVideoPath, window, turnVideoPath),

@@ -48,6 +48,9 @@ recomposer to overlay.
 
 Known limits:
 
+- Turns shorter than 15 frames are skipped: LipSync buffers 14 frames before
+  it outputs an animated one.
+- Configuration is read when Trackdub starts; there is no Settings UI yet.
 - The host starts and loads its models for every turn (about 12 s on an
   RTX 5070). Steady-state speed is roughly 7–10 fps, and peak GPU use is about
   2.6 GB above idle.
