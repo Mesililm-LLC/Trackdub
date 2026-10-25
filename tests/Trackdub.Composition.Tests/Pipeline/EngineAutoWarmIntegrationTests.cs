@@ -35,15 +35,56 @@ public class EngineAutoWarmIntegrationTests
     }
 
     [Fact]
-    public async Task Application_host_startup_activates_the_engine_auto_warm_installer()
+    public async Task Application_host_startup_activates_the_engine_auto_warm_queue()
     {
+        // Asserts on activation state, not on resolvability: the queue is registered as a plain
+        // singleton, so resolving it proves nothing about the hosted-service wiring. This fails if
+        // AddHostedService (or the installer's StartAsync) is removed.
         using IHost host = new HostBuilder()
             .ConfigureServices(services => services.AddTrackdub())
             .Build();
 
+        var queue = (EngineAutoWarmCoordinator)host.Services.GetRequiredService<IEngineAutoWarmQueue>();
+
+        // A hosted service is only started by StartAsync, so the queue must be inactive until then.
+        Assert.False(queue.IsActive);
+
         await host.StartAsync(TestContext.Current.CancellationToken);
 
-        Assert.NotNull(host.Services.GetRequiredService<IEngineAutoWarmQueue>());
+        Assert.True(queue.IsActive, "host startup must activate the warm queue via EngineAutoWarmInstaller");
+    }
+
+    [Fact]
+    public async Task Installer_start_activates_the_queue_and_activation_is_idempotent()
+    {
+        var queue = new RecordingQueue();
+        var installer = new EngineAutoWarmInstaller(queue);
+
+        await installer.StartAsync(TestContext.Current.CancellationToken);
+        Assert.True(queue.IsActive);
+
+        // A second activation reports that it changed nothing, so callers can tell the difference.
+        Assert.False(queue.Activate());
+        Assert.True(queue.IsActive);
+    }
+
+    private sealed class RecordingQueue : IEngineAutoWarmQueue
+    {
+        public List<string> Requests { get; } = [];
+
+        public bool IsActive { get; private set; }
+
+        public bool Activate()
+        {
+            bool changed = !IsActive;
+            IsActive = true;
+            return changed;
+        }
+
+        public void RequestWarmAfterInstall(string modelId, CancellationToken cancellationToken = default) =>
+            Requests.Add(modelId);
+
+        public Task DrainAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     [Fact]

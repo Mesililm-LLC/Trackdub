@@ -8,12 +8,20 @@ namespace Trackdub.Composition.Pipeline;
 /// </summary>
 public sealed class EngineAutoWarmInstaller : IHostedService
 {
-    public EngineAutoWarmInstaller(IEngineAutoWarmQueue queue) =>
-        ArgumentNullException.ThrowIfNull(queue);
+    private readonly IEngineAutoWarmQueue queue;
 
+    public EngineAutoWarmInstaller(IEngineAutoWarmQueue queue) =>
+        this.queue = queue ?? throw new ArgumentNullException(nameof(queue));
+
+    /// <summary>
+    /// Activates the warm queue. Hosting is what makes post-install warming live in production, so
+    /// this is the activation point rather than a no-op: a host that never starts this service
+    /// leaves the queue inactive, which is observable instead of silently dropping every request.
+    /// </summary>
     public Task StartAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        queue.Activate();
         return Task.CompletedTask;
     }
 

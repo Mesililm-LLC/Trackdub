@@ -38,6 +38,7 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
     private TaskCompletionSource idleSignal = CreateCompletedSignal();
     private int outstanding;
     private int disposed;
+    private int active;
 
     public EngineAutoWarmCoordinator(
         IResidentWarmupService warmupService,
@@ -59,6 +60,26 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
     /// </summary>
     public void OnModelInstalled(string modelId) => RequestWarmAfterInstall(modelId);
 
+    public bool Activate()
+    {
+        if (Volatile.Read(ref disposed) != 0)
+        {
+            return false;
+        }
+
+        bool activated = Interlocked.Exchange(ref active, 1) == 0;
+        if (activated)
+        {
+            logger?.LogInformation(
+                "Post-install engine warming activated; installed models will build engine artifacts "
+                + "in the background instead of on the first run.");
+        }
+
+        return activated;
+    }
+
+    public bool IsActive => Volatile.Read(ref active) != 0;
+
     public void RequestWarmAfterInstall(string modelId, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(modelId);
@@ -67,6 +88,18 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
         if (IsDisabled(readEnvironment(DisableEnvironmentVariable)) || Volatile.Read(ref disposed) != 0)
         {
             return;
+        }
+
+        // An inactive queue means the host never started the installer. Non-hosted hosts (the CLI
+        // builds a bare ServiceProvider, so no IHostedService ever runs) would otherwise lose
+        // warming entirely, so the first request self-activates and says so. Hosts that do run the
+        // installer activate earlier and never take this path.
+        if (!IsActive)
+        {
+            Activate();
+            logger?.LogDebug(
+                $"Post-install engine warm requested for '{modelId}' before host activation; "
+                + "the queue activated on demand.");
         }
 
         // Coalesce: a model that is already queued or warming needs no second pass.

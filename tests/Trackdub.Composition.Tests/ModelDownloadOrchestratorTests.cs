@@ -1403,6 +1403,15 @@ public sealed class ModelDownloadOrchestratorTests : IDisposable
     {
         public List<string> Requests { get; } = [];
 
+        public bool IsActive { get; private set; }
+
+        public bool Activate()
+        {
+            bool changed = !IsActive;
+            IsActive = true;
+            return changed;
+        }
+
         public void RequestWarmAfterInstall(string modelId, CancellationToken cancellationToken = default) =>
             Requests.Add(modelId);
 
