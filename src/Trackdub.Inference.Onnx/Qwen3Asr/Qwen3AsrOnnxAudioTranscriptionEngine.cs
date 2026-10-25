@@ -11,12 +11,37 @@ using Microsoft.ML.OnnxRuntime.Tensors;
 
 namespace Trackdub.Inference.Onnx.Qwen3Asr;
 
-public sealed class Qwen3AsrOnnxAudioTranscriptionEngine(
-    IRuntimePlanner runtimePlanner,
-    BenchmarkModelPathResolver modelPathResolver,
-    IRuntimePlanningPreferences? runtimePlanningPreferences = null)
+public sealed class Qwen3AsrOnnxAudioTranscriptionEngine
     : IAudioTranscriptionEngineAdapter, IStageRuntimeExecutionReporter
 {
+    private readonly IRuntimePlanner runtimePlanner;
+    private readonly IRuntimePlanningPreferences? runtimePlanningPreferences;
+    private readonly BenchmarkModelPathResolver modelPathResolver;
+
+    /// <summary>Production constructor: sidecar caches default to the process-wide instances.</summary>
+    public Qwen3AsrOnnxAudioTranscriptionEngine(
+        IRuntimePlanner runtimePlanner,
+        BenchmarkModelPathResolver modelPathResolver,
+        IRuntimePlanningPreferences? runtimePlanningPreferences = null)
+        : this(runtimePlanner, modelPathResolver, runtimePlanningPreferences, null, null)
+    {
+    }
+
+    /// <summary>Test seam: allows injecting caches so load counts can be asserted.</summary>
+    internal Qwen3AsrOnnxAudioTranscriptionEngine(
+        IRuntimePlanner runtimePlanner,
+        BenchmarkModelPathResolver modelPathResolver,
+        IRuntimePlanningPreferences? runtimePlanningPreferences,
+        SidecarCache<Qwen3AsrTokenizer>? tokenizerCache,
+        SidecarCache<Qwen3AsrEmbedTokens>? embedTokensCache)
+    {
+        this.runtimePlanner = runtimePlanner ?? throw new ArgumentNullException(nameof(runtimePlanner));
+        this.modelPathResolver = modelPathResolver ?? throw new ArgumentNullException(nameof(modelPathResolver));
+        this.runtimePlanningPreferences = runtimePlanningPreferences;
+        this.tokenizerCache = tokenizerCache ?? Qwen3AsrSidecarCaches.Tokenizers;
+        this.embedTokensCache = embedTokensCache ?? Qwen3AsrSidecarCaches.EmbedTokens;
+    }
+
     public const string EngineFamilyName = "qwen3-asr";
 
     internal static readonly IReadOnlyDictionary<string, string> TrtEncoderOptions = new Dictionary<string, string>
@@ -26,9 +51,12 @@ public sealed class Qwen3AsrOnnxAudioTranscriptionEngine(
         ["trt_profile_opt_shapes"] = "mel:1x128x3000",
     };
 
-    private readonly IRuntimePlanner runtimePlanner = runtimePlanner ?? throw new ArgumentNullException(nameof(runtimePlanner));
-    private readonly BenchmarkModelPathResolver modelPathResolver = modelPathResolver ?? throw new ArgumentNullException(nameof(modelPathResolver));
     private readonly Qwen3AsrMelFeatureExtractor featureExtractor = new();
+
+    // Tokenizer and embedding table are audio-independent, so they are loaded once per model root
+    // instead of on every transcription.
+    private readonly SidecarCache<Qwen3AsrTokenizer> tokenizerCache;
+    private readonly SidecarCache<Qwen3AsrEmbedTokens> embedTokensCache;
 
     public StageRuntimeExecutionSummary? LastExecutionSummary { get; private set; }
 
@@ -79,8 +107,13 @@ public sealed class Qwen3AsrOnnxAudioTranscriptionEngine(
         EnsurePlanReady(plan, RuntimeStage.Asr);
 
         Qwen3AsrModelPaths modelPaths = ResolveModelPaths(ResolvePlannedModelPath(plan));
-        var tokenizer = await Qwen3AsrTokenizer.LoadAsync(modelPaths.ModelRootPath, cancellationToken).ConfigureAwait(false);
-        Qwen3AsrEmbedTokens embedTokens = Qwen3AsrEmbedTokens.Load(modelPaths.EmbedTokensPath);
+        // Cache keyed by model root: re-reading the fp16 embedding table per request costs a
+        // ~300 MB file read that expands into a LOH-sized float[,] and is identical every time.
+        var tokenizer = await tokenizerCache
+            .GetOrAddAsync(modelPaths.ModelRootPath, path => Qwen3AsrTokenizer.LoadAsync(path, cancellationToken))
+            .ConfigureAwait(false);
+        Qwen3AsrEmbedTokens embedTokens = embedTokensCache
+            .GetOrAdd(modelPaths.EmbedTokensPath, () => Qwen3AsrEmbedTokens.Load(modelPaths.EmbedTokensPath));
 
         IAudioSamples audio = await WaveAudioReader.ReadMonoPcm16Async(request.NormalizedAudioPath, cancellationToken).ConfigureAwait(false);
         using IAudioSamples targetAudio = AudioResampler.CreateResampledStream(audio, 16000);
