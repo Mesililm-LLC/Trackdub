@@ -90,10 +90,10 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
             return;
         }
 
-        // An inactive queue means the host never started the installer. Non-hosted hosts (the CLI
-        // builds a bare ServiceProvider, so no IHostedService ever runs) would otherwise lose
-        // warming entirely, so the first request self-activates and says so. Hosts that do run the
-        // installer activate earlier and never take this path.
+        // Activation is an observability marker, not a gate: the worker already runs and this
+        // request will be processed either way. Non-hosted callers (the CLI builds a bare
+        // ServiceProvider, so no IHostedService runs) self-activate here so the log does not
+        // imply warming is off when it is not.
         if (!IsActive)
         {
             Activate();

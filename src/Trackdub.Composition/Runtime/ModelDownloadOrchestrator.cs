@@ -222,6 +222,11 @@ public sealed class ModelDownloadOrchestrator(
 
                 await RegisterCacheRecordAsync(entry, modelRootDirectory, hashResult, cancellationToken).ConfigureAwait(false);
                 EmitStateChange(modelId, ModelCacheState.Downloading, ModelCacheState.Installed);
+                // Sidecar caches are keyed by model root, so a fresh install of the same model id
+                // can differ from whatever was cached for that path (e.g. a mel-bin count read
+                // from a config file that did not exist yet). Invalidate before warming so the
+                // warm and every later transcription read the installed files, not stale state.
+                InvalidateSidecarCaches(modelRootDirectory);
                 // Trigger engine warming here, on the install path itself, rather than from a
                 // subscriber type the DI graph may never construct: this method only runs because
                 // an install actually happened, so the request cannot be silently skipped.
@@ -488,6 +493,18 @@ public sealed class ModelDownloadOrchestrator(
         }
 
         return (benchmarkRelativePath, benchmarkResult ?? lastResult);
+    }
+
+    /// <summary>
+    /// Drops any process-cached sidecar data for a model root that just changed on disk. Caches
+    /// are keyed by path only, so an install over an existing path would otherwise keep serving
+    /// pre-install state (notably a mel-bin count read before the config file existed).
+    /// </summary>
+    private static void InvalidateSidecarCaches(string modelRootDirectory)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(modelRootDirectory);
+        Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.Remove(modelRootDirectory);
+        Trackdub.Inference.Onnx.Qwen3Asr.Qwen3AsrSidecarCaches.RemoveForModelRoot(modelRootDirectory);
     }
 
     private static string NormalizeRelativePath(string relativePath) =>

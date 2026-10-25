@@ -205,6 +205,41 @@ internal sealed class SidecarCache<T>
         }
     }
 
+    /// <summary>Removes all cached entries whose key is rooted at <paramref name="pathPrefix"/>.</summary>
+    /// <returns>The number of entries removed.</returns>
+    public int RemoveByPathPrefix(string pathPrefix)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pathPrefix);
+        string prefix = Path.GetFullPath(pathPrefix);
+        if (!prefix.EndsWith(Path.DirectorySeparatorChar))
+        {
+            prefix += Path.DirectorySeparatorChar;
+        }
+
+        StringComparison comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        int removed = 0;
+        foreach (string key in store.Keys)
+        {
+            if (key.StartsWith(prefix, comparison) && TryRemove(key, out _))
+            {
+                removed++;
+            }
+        }
+
+        foreach (string key in storeAsync.Keys)
+        {
+            if (key.StartsWith(prefix, comparison) && TryRemove(key, out _))
+            {
+                removed++;
+            }
+        }
+
+        return removed;
+    }
+
     /// <summary>Number of entries currently cached.</summary>
     public int Count => store.Count + storeAsync.Count;
 

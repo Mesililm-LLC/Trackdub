@@ -30,4 +30,15 @@ internal static class Qwen3AsrSidecarCaches
         Tokenizers.Remove(modelRootPath);
         EmbedTokens.Remove(embedTokensPath);
     }
+
+    /// <summary>
+    /// Flushes everything cached under <paramref name="modelRootPath"/>. The embed table is keyed by
+    /// its own file path, which is unknown to install callers, so its entries are matched by prefix.
+    /// </summary>
+    public static void RemoveForModelRoot(string modelRootPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(modelRootPath);
+        Tokenizers.Remove(modelRootPath);
+        EmbedTokens.RemoveByPathPrefix(modelRootPath);
+    }
 }
