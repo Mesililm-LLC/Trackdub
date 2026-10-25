@@ -57,6 +57,24 @@ public sealed class SidecarCacheInvalidationTests
     }
 
     [Fact]
+    public async Task RemoveByPathPrefix_counts_a_shared_key_once_and_clears_both_stores()
+    {
+        // A key can exist in both the sync and async dictionaries. TryRemove clears both and
+        // reports success once, so the count is distinct keys, not per-store entries. The
+        // snapshot matters because TryRemove mutates the dictionaries the loops enumerate.
+        var cache = new SidecarCache<string>();
+        string root = Path.Join(Path.GetTempPath(), "trackdub-sidecar-shared");
+        string key = Path.Join(root, "tokenizer.json");
+
+        cache.GetOrAdd(key, () => "sync");
+        await cache.GetOrAddAsync(key, _ => Task.FromResult("async"));
+        Assert.Equal(2, cache.Count);
+
+        Assert.Equal(1, cache.RemoveByPathPrefix(root));
+        Assert.Equal(0, cache.Count);
+    }
+
+    [Fact]
     public void RemoveByPathPrefix_rejects_a_blank_prefix()
     {
         var cache = new SidecarCache<string>();

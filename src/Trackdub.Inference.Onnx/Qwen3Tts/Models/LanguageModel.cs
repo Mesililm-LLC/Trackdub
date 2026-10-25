@@ -210,6 +210,7 @@ internal sealed class LanguageModel : IDisposable
         var cpKvKeys = ArrayPool<float>.Shared.Rent(cpKvElementCountPerPosition * kvCapacityPositions);
         var cpKvValues = ArrayPool<float>.Shared.Rent(cpKvElementCountPerPosition * kvCapacityPositions);
 
+        bool prefillSucceeded = false;
         try
         {
             Buffer.BlockCopy(inputsEmbeds, 0, flatEmbeds, 0, 1 * prefillLen * _hiddenSize * sizeof(float));
@@ -231,12 +232,26 @@ internal sealed class LanguageModel : IDisposable
                 hiddenStates = prefillOutputs[1].GetTensorDataAsSpan<float>().ToArray();
                 StackPrefillKVFromOrtValues(prefillOutputs, prefillLen, kvKeys, kvValues);
             }
+
+            prefillSucceeded = true;
         }
         finally
         {
             ArrayPool<float>.Shared.Return(flatEmbeds);
             ArrayPool<long>.Shared.Return(flatMask);
             ArrayPool<long>.Shared.Return(flatPosIds);
+
+            // The KV buffers are rented above this try so the prefill can write straight into
+            // them, but they are only handed to the generation loop's finally once the prefill
+            // succeeds. Returning them here on failure keeps a prefill throw from leaking four
+            // pooled arrays.
+            if (!prefillSucceeded)
+            {
+                ArrayPool<float>.Shared.Return(kvKeys);
+                ArrayPool<float>.Shared.Return(kvValues);
+                ArrayPool<float>.Shared.Return(cpKvKeys);
+                ArrayPool<float>.Shared.Return(cpKvValues);
+            }
         }
 
         // Release prefill session to free memory before loading decode + CP sessions

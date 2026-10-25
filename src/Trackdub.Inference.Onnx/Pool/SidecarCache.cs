@@ -206,7 +206,10 @@ internal sealed class SidecarCache<T>
     }
 
     /// <summary>Removes all cached entries whose key is rooted at <paramref name="pathPrefix"/>.</summary>
-    /// <returns>The number of entries removed.</returns>
+    /// <returns>
+    /// The number of distinct keys removed. A key present in both the sync and async stores counts
+    /// once, because <see cref="TryRemove"/> clears both.
+    /// </returns>
     public int RemoveByPathPrefix(string pathPrefix)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(pathPrefix);
@@ -220,8 +223,14 @@ internal sealed class SidecarCache<T>
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
 
+        // Snapshot both key sets before removing anything: TryRemove clears a key from both
+        // stores, so enumerating the live async dictionary after the sync pass would skip entries
+        // that shared a key and silently under-report the count.
+        string[] syncKeys = store.Keys.ToArray();
+        string[] asyncKeys = storeAsync.Keys.ToArray();
+
         int removed = 0;
-        foreach (string key in store.Keys)
+        foreach (string key in syncKeys)
         {
             if (key.StartsWith(prefix, comparison) && TryRemove(key, out _))
             {
@@ -229,7 +238,7 @@ internal sealed class SidecarCache<T>
             }
         }
 
-        foreach (string key in storeAsync.Keys)
+        foreach (string key in asyncKeys)
         {
             if (key.StartsWith(prefix, comparison) && TryRemove(key, out _))
             {
