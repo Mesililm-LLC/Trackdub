@@ -330,3 +330,13 @@ qodana.sarif.json
 
 # Local process lock files (PID-keyed, never shared)
 /state/*.lock
+/.agents/skills/connect-recommend
+/.agents/skills/metronome
+/.agents/skills/connect-required-verification-information
+/.agents/skills/stripe-apps
+/.agents/skills/stripe-best-practices
+/.agents/skills/stripe-directory
+/.agents/skills/stripe-docs
+/.agents/skills/stripe-pay
+/.agents/skills/stripe-projects
+/.agents/skills/upgrade-stripe
