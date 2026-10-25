@@ -50,6 +50,8 @@
 #include <fcntl.h>
 #include <io.h>
 #include <windows.h>
+#else
+#include <dlfcn.h>
 #endif
 
 #include "nvAR.h"
@@ -169,11 +171,9 @@ class LipSyncHost {
   // Reloads only when the frame rate or language changes, because both are load-time settings.
   // Otherwise resets the temporal state so turns never bleed into each other.
   bool Prepare(float fps, unsigned language, unsigned width, unsigned height, std::string* error) {
-    if (handle_ == nullptr || fps != fps_ || language != language_) {
+    if (handle_ == nullptr || fps != fps_ || language != language_ || !ResetState(handle_)) {
       Unload();
       if (!Load(fps, language, error)) return false;
-    } else if (NvCV_Status status = NvAR_ResetState(handle_, nullptr); status != NVCV_SUCCESS) {
-      return Fail(error, "NvAR_ResetState", status);
     }
 
     if (width != width_ || height != height_) {
@@ -241,6 +241,7 @@ class LipSyncHost {
 
  private:
   bool Load(float fps, unsigned language, std::string* error) {
+    const auto started = std::chrono::steady_clock::now();
     if (NvCV_Status status = NvAR_Create(NvAR_Feature_LipSync, &handle_); status != NVCV_SUCCESS)
       return Fail(error, "NvAR_Create(LipSync)", status);
     if (NvCV_Status status = NvAR_CudaStreamCreate(&stream_); status != NVCV_SUCCESS)
@@ -264,7 +265,9 @@ class LipSyncHost {
     language_ = language;
     width_ = height_ = 0;
     std::cerr << "maxine-lipsync-host: loaded LipSync (fps " << fps << ", language " << language << ", "
-              << initial_frames_ << " initial frames)" << std::endl;
+              << initial_frames_ << " initial frames) in "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count()
+              << " ms" << std::endl;
     return true;
   }
 
@@ -278,6 +281,32 @@ class LipSyncHost {
       stream_ = nullptr;
     }
     width_ = height_ = 0;
+  }
+
+  // The SDK's proxy loader does not forward NvAR_ResetState, so resolve it from the runtime the
+  // proxy already loaded. Returns false (and the caller reloads instead) if it is unavailable.
+  static bool ResetState(NvAR_FeatureHandle handle) {
+    using ResetStateFn = NvCV_Status(NvAR_API*)(NvAR_FeatureHandle, NvAR_StateHandle);
+    static ResetStateFn reset = [] {
+#ifdef _WIN32
+      HMODULE runtime = GetModuleHandleW(L"nvARPose.dll");
+      return runtime ? reinterpret_cast<ResetStateFn>(GetProcAddress(runtime, "NvAR_ResetState")) : nullptr;
+#else
+      void* runtime = dlopen("libnvARPose.so", RTLD_LAZY | RTLD_NOLOAD);
+      return runtime ? reinterpret_cast<ResetStateFn>(dlsym(runtime, "NvAR_ResetState")) : nullptr;
+#endif
+    }();
+    if (reset == nullptr) {
+      std::cerr << "maxine-lipsync-host: NvAR_ResetState not found; reloading instead" << std::endl;
+      return false;
+    }
+    NvCV_Status status = reset(handle, nullptr);
+    if (status != NVCV_SUCCESS) {
+      std::cerr << "maxine-lipsync-host: NvAR_ResetState failed (" << NvCV_GetErrorStringFromCode(status)
+                << "); reloading instead" << std::endl;
+      return false;
+    }
+    return true;
   }
 
   static bool Fail(std::string* error, const char* step, NvCV_Status status) {
