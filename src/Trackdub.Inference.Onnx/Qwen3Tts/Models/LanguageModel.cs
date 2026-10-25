@@ -206,9 +206,14 @@ internal sealed class LanguageModel : IDisposable
         int kvCapacityPositions = prefillLen + maxNewTokens + 1;
         var kvKeys = ArrayPool<float>.Shared.Rent(kvElementCountPerPosition * kvCapacityPositions);
         var kvValues = ArrayPool<float>.Shared.Rent(kvElementCountPerPosition * kvCapacityPositions);
+
+        // The code-predictor cache resets every generated frame and grows only across groups 1..15
+        // (2 + 14 positions), so it is sized for 16 rather than for the whole generation. Sizing it
+        // by kvCapacityPositions would hold tens of MB of unused rent live across the prefill.
         int cpKvElementCountPerPosition = _cpNumLayers * _cpNumKvHeads * _cpHeadDim;
-        var cpKvKeys = ArrayPool<float>.Shared.Rent(cpKvElementCountPerPosition * kvCapacityPositions);
-        var cpKvValues = ArrayPool<float>.Shared.Rent(cpKvElementCountPerPosition * kvCapacityPositions);
+        const int cpKvCapacityPositions = 16;
+        var cpKvKeys = ArrayPool<float>.Shared.Rent(cpKvElementCountPerPosition * cpKvCapacityPositions);
+        var cpKvValues = ArrayPool<float>.Shared.Rent(cpKvElementCountPerPosition * cpKvCapacityPositions);
 
         bool prefillSucceeded = false;
         try
@@ -372,6 +377,9 @@ internal sealed class LanguageModel : IDisposable
 
                         // Update CP KV
                         cpPastLen += cpInputSeqLen;
+                        Debug.Assert(
+                            cpPastLen <= cpKvCapacityPositions,
+                            "Code-predictor cache exceeded its reserved 16 positions.");
                         // Same in-place growth as the talker: the CP cache also gains only new
                         // positions, so copy into the reserved buffer rather than reallocating.
                         CopyTensorInto(

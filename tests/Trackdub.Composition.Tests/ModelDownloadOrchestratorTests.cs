@@ -47,14 +47,16 @@ public sealed class ModelDownloadOrchestratorTests : IDisposable
             CreateRegistryWithManifestRootOutsideConfiguredCache(
                 sha256: Sha256Hex("correct-content"));
 
-        // Seed the cache for the root the orchestrator will actually install into: it derives
-        // "<cache>/<owner>/<name>" from the model id, not the manifest's root_path.
+        // Seed every cache the install path must flush, for the root the orchestrator will
+        // actually install into (it derives "<cache>/<owner>/<name>" from the model id, not the
+        // manifest's root_path). Seeding only one cache would leave the other flushes unpinned.
         string installRoot = ModelDownloadPathGuard.ResolveConfiguredModelRootDirectory(
             "example/model",
             storagePaths.ModelCacheDirectory);
-        var melBins = Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.MelBins;
-        melBins.GetOrAdd(installRoot, () => 80);
-        Assert.True(melBins.Count > 0, "seed must populate the mel-bin cache");
+
+        var whisperMelBins = Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.MelBins;
+        whisperMelBins.GetOrAdd(installRoot, () => 80);
+        Assert.True(whisperMelBins.Count > 0, "seed must populate the mel-bin cache");
 
         var store = new LocalModelCacheRecordStore(storagePaths);
         var downloader = new HashMatchingDownloader();
@@ -66,9 +68,9 @@ public sealed class ModelDownloadOrchestratorTests : IDisposable
 
         Assert.True(result.Success, result.FailureReason);
 
-        // The seeded entry for this root is gone, so the next read re-parses the installed config
-        // rather than serving the stale fallback.
-        Assert.Equal(0, melBins.GetOrAdd(installRoot, () => 0));
+        // Every seeded entry for this root is gone, so the next read re-parses installed files
+        // rather than serving pre-install state.
+        Assert.Equal(0, whisperMelBins.GetOrAdd(installRoot, () => 0));
     }
 
     [Fact]

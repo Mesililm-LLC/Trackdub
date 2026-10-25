@@ -22,15 +22,9 @@ public sealed class EngineAutoWarmInstaller : IHostedService
     public Task StartAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (queue is EngineAutoWarmCoordinator coordinator)
-        {
-            coordinator.MarkHostStarted();
-        }
-        else
-        {
-            queue.Activate();
-        }
-
+        // Call the contract directly for every implementation: a type-specific branch would leave
+        // other IEngineAutoWarmQueue implementations with IsHostStarted stuck at false.
+        queue.MarkHostStarted();
         return Task.CompletedTask;
     }
 

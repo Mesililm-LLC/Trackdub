@@ -223,22 +223,29 @@ internal sealed class SidecarCache<T>
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
 
-        // Snapshot both key sets before removing anything: TryRemove clears a key from both
-        // stores, so enumerating the live async dictionary after the sync pass would skip entries
-        // that shared a key and silently under-report the count.
-        string[] syncKeys = store.Keys.ToArray();
-        string[] asyncKeys = storeAsync.Keys.ToArray();
-
-        int removed = 0;
-        foreach (string key in syncKeys.Where(k => k.StartsWith(prefix, comparison)))
+        // Snapshot both key sets, then visit each distinct key once. TryRemove clears a key from
+        // both stores, so a key present in both snapshots must not be processed twice: a concurrent
+        // reload of that key between passes would otherwise be removed by the second pass and
+        // counted again, breaking the distinct-key contract and discarding a fresh entry.
+        var keys = new HashSet<string>(CreatePathComparer());
+        foreach (string key in store.Keys)
         {
-            if (TryRemove(key, out _))
+            if (key.StartsWith(prefix, comparison))
             {
-                removed++;
+                keys.Add(key);
             }
         }
 
-        foreach (string key in asyncKeys.Where(k => k.StartsWith(prefix, comparison)))
+        foreach (string key in storeAsync.Keys)
+        {
+            if (key.StartsWith(prefix, comparison))
+            {
+                keys.Add(key);
+            }
+        }
+
+        int removed = 0;
+        foreach (string key in keys)
         {
             if (TryRemove(key, out _))
             {
