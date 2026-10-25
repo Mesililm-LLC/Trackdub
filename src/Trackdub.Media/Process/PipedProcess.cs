@@ -60,6 +60,9 @@ internal sealed class PipedProcess : IPipedProcess
         }
     }
 
+    /// <summary>True when stderr ended with an I/O error instead of end of stream.</summary>
+    public bool ErrorStreamClosedEarly { get; private set; }
+
     public string ErrorTail
     {
         get
@@ -167,11 +170,10 @@ internal sealed class PipedProcess : IPipedProcess
                 }
             }
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
         {
-        }
-        catch (ObjectDisposedException)
-        {
+            // The pipe closed under the reader when the process was killed; what was read so far is kept.
+            ErrorStreamClosedEarly = true;
         }
     }
 }
