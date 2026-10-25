@@ -253,7 +253,18 @@ public static class CompositionRoot
         services.TryAddSingleton<IVitisAiCatalogEpInstaller, VitisAiCatalogEpInstaller>();
         services.TryAddSingleton<StarterPackGpuSetupAdvisor>();
         services.TryAddSingleton<IGpuRuntimeInstallOrchestrator, GpuRuntimeInstallOrchestrator>();
-        services.TryAddSingleton<ModelDownloadOrchestrator>();
+        // The warm queue is injected here so a successful install drives engine warming directly.
+        // ModelDownloadOrchestrator is constructed on every download path, so this trigger runs
+        // where installs actually happen rather than depending on some other type being resolved.
+        services.TryAddSingleton(sp => new ModelDownloadOrchestrator(
+            sp.GetRequiredService<BundledModelManifestRegistry>(),
+            sp.GetRequiredService<LocalModelCacheRecordStore>(),
+            sp.GetRequiredService<IModelDownloaderContract>(),
+            sp.GetRequiredService<TrackdubStoragePaths>(),
+            sp.GetService<IModelHashVerifier>(),
+            sp.GetService<IApplicationLogger>(),
+            sp.GetService<IStudioSettingsService>(),
+            sp.GetService<IEngineAutoWarmQueue>()));
         services.TryAddSingleton<IModelDownloadOrchestrator>(sp => sp.GetRequiredService<ModelDownloadOrchestrator>());
         services.TryAddSingleton<IModelCacheVerifier>(sp => sp.GetRequiredService<ModelDownloadOrchestrator>());
         services.TryAddSingleton<IFileFingerprintService>(sp =>
@@ -662,6 +673,17 @@ public static class CompositionRoot
                 sp.GetRequiredService<IServiceScopeFactory>(),
                 sp.GetRequiredService<IExecutionProviderDiscovery>(),
                 sp.GetRequiredService<IHardwareProfileProvider>()));
+        // Post-install engine warming: a freshly installed model has no EP-context artifact, so
+        // without this its engines rebuild from source on every launch until something warms it.
+        // The queue is injected into ModelDownloadOrchestrator instead of being triggered by an
+        // observer: observers require somebody to construct the coordinator, and no production
+        // path did, which left an earlier revision a silent no-op. The orchestrator is always
+        // constructed to download at all, so its success path is a trigger that cannot be missed.
+        services.TryAddSingleton<IEngineAutoWarmQueue>(sp =>
+            new Trackdub.Composition.Pipeline.EngineAutoWarmCoordinator(
+                sp.GetRequiredService<IResidentWarmupService>(),
+                sp.GetRequiredService<BundledModelManifestRegistry>(),
+                sp.GetService<IApplicationLogger>()));
         // Wire the model cache directory explicitly: the bare-type registration would fall back
         // to the constructor default (no cache), making downloaded models invisible to alias
         // resolution (e.g. the kokoro voice catalog) even when the planner reports them ready.

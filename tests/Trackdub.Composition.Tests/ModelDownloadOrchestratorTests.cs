@@ -37,6 +37,47 @@ public sealed class ModelDownloadOrchestratorTests : IDisposable
     }
 
     [Fact]
+    public async Task Successful_install_requests_engine_warming_for_the_installed_model()
+    {
+        // End-to-end proof of the wiring: a real download must reach the warm queue. An earlier
+        // revision registered the queue but nothing on the install path ever called it, so
+        // installing a model warmed nothing and TensorRT engines rebuilt on every launch.
+        (BundledModelManifestRegistry registry, TrackdubStoragePaths storagePaths, _) =
+            CreateRegistryWithManifestRootOutsideConfiguredCache(
+                sha256: Sha256Hex("correct-content"));
+        var store = new LocalModelCacheRecordStore(storagePaths);
+        var downloader = new HashMatchingDownloader();
+        var queue = new RecordingWarmQueue();
+        using var orchestrator = new ModelDownloadOrchestrator(
+            registry, store, downloader, storagePaths, engineAutoWarmQueue: queue);
+
+        ModelDownloadResult result = await orchestrator.DownloadAsync(
+            "example/model", cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success, result.FailureReason);
+        Assert.Equal(["example/model"], queue.Requests);
+    }
+
+    [Fact]
+    public async Task Failed_install_does_not_request_engine_warming()
+    {
+        (BundledModelManifestRegistry registry, TrackdubStoragePaths storagePaths, _) =
+            CreateRegistryWithManifestRootOutsideConfiguredCache(
+                sha256: Sha256Hex("expected-different-content"));
+        var store = new LocalModelCacheRecordStore(storagePaths);
+        var downloader = new HashMatchingDownloader();
+        var queue = new RecordingWarmQueue();
+        using var orchestrator = new ModelDownloadOrchestrator(
+            registry, store, downloader, storagePaths, engineAutoWarmQueue: queue);
+
+        ModelDownloadResult result = await orchestrator.DownloadAsync(
+            "example/model", cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.Empty(queue.Requests);
+    }
+
+    [Fact]
     public async Task DownloadAsync_rejects_path_traversal_in_download_file()
     {
         (BundledModelManifestRegistry registry, TrackdubStoragePaths storagePaths) = CreateRegistryWithMaliciousDownloadPath();
@@ -1356,6 +1397,16 @@ public sealed class ModelDownloadOrchestratorTests : IDisposable
             string filePath,
             string expectedHash,
             CancellationToken cancellationToken = default) => Task.FromResult(true);
+    }
+
+    private sealed class RecordingWarmQueue : Trackdub.Application.Pipeline.IEngineAutoWarmQueue
+    {
+        public List<string> Requests { get; } = [];
+
+        public void RequestWarmAfterInstall(string modelId, CancellationToken cancellationToken = default) =>
+            Requests.Add(modelId);
+
+        public Task DrainAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     private sealed class HashMatchingDownloader : IModelDownloaderContract
