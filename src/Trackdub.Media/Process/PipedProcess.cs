@@ -125,7 +125,10 @@ internal sealed class PipedProcess : IPipedProcess
         return process.ExitCode;
     }
 
-    public void Kill()
+    public void Kill() => TryKill();
+
+    /// <summary>False when the process had already gone or cannot be killed, which callers treat as done.</summary>
+    private bool TryKill()
     {
         try
         {
@@ -133,15 +136,12 @@ internal sealed class PipedProcess : IPipedProcess
             {
                 process.Kill(entireProcessTree: true);
             }
+
+            return true;
         }
-        catch (InvalidOperationException)
+        catch (Exception ex) when (ex is InvalidOperationException or Win32Exception or NotSupportedException)
         {
-        }
-        catch (Win32Exception)
-        {
-        }
-        catch (NotSupportedException)
-        {
+            return false;
         }
     }
 

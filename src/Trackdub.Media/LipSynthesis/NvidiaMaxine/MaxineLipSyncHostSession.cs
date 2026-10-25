@@ -178,20 +178,32 @@ internal sealed class MaxineLipSyncHostSession : IDisposable
         disposed = true;
         try
         {
+            TryQuit();
+        }
+        finally
+        {
+            process.Dispose();
+        }
+    }
+
+    /// <summary>Asks the host to exit and gives it two seconds; false when the pipe was already broken.</summary>
+    private bool TryQuit()
+    {
+        try
+        {
             if (!process.HasExited)
             {
                 process.Input.Write("QUIT\n"u8);
                 process.Input.Flush();
                 process.WaitForExitAsync(CancellationToken.None).Wait(TimeSpan.FromSeconds(2));
             }
+
+            return true;
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException or AggregateException
                                        or InvalidOperationException)
         {
-        }
-        finally
-        {
-            process.Dispose();
+            return false;
         }
     }
 

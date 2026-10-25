@@ -27,6 +27,7 @@ internal sealed class ScriptedHost : IPipedProcess
             }
             catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException)
             {
+                EndedAbruptly = true;
             }
             finally
             {
@@ -38,6 +39,8 @@ internal sealed class ScriptedHost : IPipedProcess
     public List<string> Requests { get; } = [];
 
     public bool Killed { get; private set; }
+
+    public bool EndedAbruptly { get; private set; }
 
     public bool Disposed { get; private set; }
 
