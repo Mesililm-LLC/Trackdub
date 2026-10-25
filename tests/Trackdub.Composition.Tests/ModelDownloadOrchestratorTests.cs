@@ -39,17 +39,17 @@ public sealed class ModelDownloadOrchestratorTests : IDisposable
     [Fact]
     public async Task Successful_install_invalidates_sidecar_caches_for_that_model_root()
     {
-        // Pins the 80-vs-128 mel-bin regression: ReadMelBins caches the fallback when
-        // preprocessor_config.json is absent, so an install that adds that file must flush the
-        // stale entry or the model keeps running the wrong number of mel bins. Deleting the
-        // invalidation call, flushing only one cache, or passing the wrong root fails here.
+        // End-to-end proof for the mel-bin case specifically: ReadMelBins caches the 80-bin
+        // fallback when preprocessor_config.json is absent, so an install that adds that file must
+        // flush the stale entry or the model keeps running the wrong number of mel bins. The full
+        // flush set (both tokenizers and the Qwen3-ASR embed table) is pinned directly by
+        // InvalidateSidecarCaches_flushes_every_cache_for_the_root.
         (BundledModelManifestRegistry registry, TrackdubStoragePaths storagePaths, _) =
             CreateRegistryWithManifestRootOutsideConfiguredCache(
                 sha256: Sha256Hex("correct-content"));
 
-        // Seed every cache the install path must flush, for the root the orchestrator will
-        // actually install into (it derives "<cache>/<owner>/<name>" from the model id, not the
-        // manifest's root_path). Seeding only one cache would leave the other flushes unpinned.
+        // Seed the cache for the root the orchestrator actually installs into: it derives
+        // "<cache>/<owner>/<name>" from the model id, not the manifest's root_path.
         string installRoot = ModelDownloadPathGuard.ResolveConfiguredModelRootDirectory(
             "example/model",
             storagePaths.ModelCacheDirectory);
