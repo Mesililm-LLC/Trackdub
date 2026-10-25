@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Trackdub.Application.Pipeline;
 using Trackdub.Composition.Pipeline;
+using Trackdub.Composition.Runtime;
 using Trackdub.Contracts;
 using Trackdub.Domain;
 using Xunit;
@@ -15,23 +16,37 @@ namespace Trackdub.Composition.Tests.Pipeline;
 public class EngineAutoWarmIntegrationTests
 {
     [Fact]
-    public async Task Production_graph_wires_install_notifications_to_the_auto_warm_queue()
+    public void Production_orchestrator_receives_the_auto_warm_queue()
+    {
+        // The defect an earlier revision shipped: the queue existed but no production path ever
+        // reached it, so installing a model warmed nothing. Resolving the orchestrator is what
+        // every download path does, so its dependency on the queue is the wiring that matters.
+        // If this dependency is dropped, the feature silently dies again — which is why the
+        // orchestrator's own success path (not an observer) is the trigger.
+        var services = new ServiceCollection();
+        services.AddTrackdub();
+        using ServiceProvider provider = services.BuildServiceProvider(
+            new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true });
+
+        var orchestrator = provider.GetRequiredService<ModelDownloadOrchestrator>();
+        Assert.NotNull(orchestrator);
+        Assert.Same(provider.GetRequiredService<IEngineAutoWarmQueue>(), provider.GetRequiredService<IEngineAutoWarmQueue>());
+    }
+
+    [Fact]
+    public async Task A_drain_leaves_the_queue_usable_for_later_installs()
     {
         var services = new ServiceCollection();
         services.AddTrackdub();
         await using ServiceProvider provider = services.BuildServiceProvider(
             new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true });
 
-        // The coordinator owns its install subscription, so resolving the queue is sufficient to
-        // activate production wiring. This is the property an earlier design violated: a separate
-        // installer existed but nothing in the graph resolved it.
         IEngineAutoWarmQueue queue = provider.GetRequiredService<IEngineAutoWarmQueue>();
-        Assert.NotNull(queue);
-        Assert.Same(queue, provider.GetRequiredService<IEngineAutoWarmQueue>());
 
-        // A drain must leave the queue usable, so a later install still warms.
         queue.RequestWarmAfterInstall("onnx-community/whisper-small");
         await queue.DrainAsync(TestContext.Current.CancellationToken);
+
+        // Draining is a flush, not a shutdown: this second request must still be accepted.
         queue.RequestWarmAfterInstall("onnx-community/opus-mt-en-es");
         await queue.DrainAsync(TestContext.Current.CancellationToken);
     }

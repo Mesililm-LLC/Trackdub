@@ -195,46 +195,16 @@ public class EngineAutoWarmTests
     }
 
     [Fact]
-    public void Only_a_usable_model_state_counts_as_installed()
+    public async Task OnModelInstalled_is_the_install_path_entry_point_and_warms_that_model()
     {
-        Assert.True(EngineAutoWarmCoordinator.IsInstalled(ModelCacheState.Installed));
-        Assert.True(EngineAutoWarmCoordinator.IsInstalled(ModelCacheState.Ready));
-        Assert.False(EngineAutoWarmCoordinator.IsInstalled(ModelCacheState.Downloading));
-        Assert.False(EngineAutoWarmCoordinator.IsInstalled(ModelCacheState.Missing));
-        Assert.False(EngineAutoWarmCoordinator.IsInstalled(ModelCacheState.Corrupt));
-        Assert.False(EngineAutoWarmCoordinator.IsInstalled(ModelCacheState.Blocked));
-    }
-
-    [Fact]
-    public async Task Install_notifications_drive_the_queue_through_the_coordinator_subscription()
-    {
-        // The subscription lives in the coordinator's constructor, so constructing it with an
-        // orchestrator is all the wiring production needs. An earlier design registered a separate
-        // installer that nothing resolved, which left the feature silently dead at runtime.
         var warmup = new RecordingWarmupService();
-        var orchestrator = new FakeModelDownloadOrchestrator();
-        using var coordinator = CreateCoordinator(warmup, orchestrator: orchestrator);
+        using var coordinator = CreateCoordinator(warmup);
 
-        // A failed download must not warm (nothing installed).
-        orchestrator.Emit(new ModelStateChange(
-            "onnx-community/whisper-small",
-            ModelCacheState.Downloading,
-            ModelCacheState.Missing,
-            DateTimeOffset.UtcNow,
-            "network"));
-
-        await Task.Delay(50, TestContext.Current.CancellationToken);
-        Assert.Empty(warmup.Requests);
-
-        // Reaching Installed does warm.
-        orchestrator.Emit(new ModelStateChange(
-            "onnx-community/whisper-small",
-            ModelCacheState.Downloading,
-            ModelCacheState.Installed,
-            DateTimeOffset.UtcNow));
+        // This is exactly what ModelDownloadOrchestrator calls after a successful install.
+        coordinator.OnModelInstalled("onnx-community/whisper-small");
         await coordinator.DrainAsync(TestContext.Current.CancellationToken);
 
-        Assert.Contains(warmup.Requests, request => request.Stages.Contains(RuntimeStage.Asr));
+        Assert.Equal([RuntimeStage.Asr], Assert.Single(warmup.Requests).Stages);
     }
 
     [Fact]
@@ -264,8 +234,7 @@ public class EngineAutoWarmTests
 
     private static EngineAutoWarmCoordinator CreateCoordinator(
         RecordingWarmupService warmup,
-        Func<string, string?>? environment = null,
-        IModelDownloadOrchestrator? orchestrator = null)
+        Func<string, string?>? environment = null)
     {
         Assert.True(
             BundledModelManifestRegistry.TryLoadDefault(out BundledModelManifestRegistry? registry, out string? error),
@@ -273,7 +242,6 @@ public class EngineAutoWarmTests
         return new EngineAutoWarmCoordinator(
             warmup,
             registry!,
-            orchestrator,
             logger: null,
             readEnvironment: environment ?? (_ => null));
     }

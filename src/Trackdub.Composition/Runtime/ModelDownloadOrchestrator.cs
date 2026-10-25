@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using Trackdub.Application.Pipeline;
 using Trackdub.Contracts;
 using Trackdub.Contracts.Licensing;
 using Trackdub.Domain;
@@ -16,7 +17,8 @@ public sealed class ModelDownloadOrchestrator(
     TrackdubStoragePaths storagePaths,
     IModelHashVerifier? hashVerifier = null,
     IApplicationLogger? logger = null,
-    IStudioSettingsService? settingsService = null)
+    IStudioSettingsService? settingsService = null,
+    IEngineAutoWarmQueue? engineAutoWarmQueue = null)
     : IModelDownloadOrchestrator, IModelCacheVerifier, IDisposable
 {
     private readonly BundledModelManifestRegistry manifestRegistry = manifestRegistry ?? throw new ArgumentNullException(nameof(manifestRegistry));
@@ -220,6 +222,10 @@ public sealed class ModelDownloadOrchestrator(
 
                 await RegisterCacheRecordAsync(entry, modelRootDirectory, hashResult, cancellationToken).ConfigureAwait(false);
                 EmitStateChange(modelId, ModelCacheState.Downloading, ModelCacheState.Installed);
+                // Trigger engine warming here, on the install path itself, rather than from a
+                // subscriber type the DI graph may never construct: this method only runs because
+                // an install actually happened, so the request cannot be silently skipped.
+                engineAutoWarmQueue?.RequestWarmAfterInstall(modelId, CancellationToken.None);
                 return new ModelDownloadResult(modelId, true, ModelCacheState.Installed, null);
             }
             catch (OperationCanceledException)

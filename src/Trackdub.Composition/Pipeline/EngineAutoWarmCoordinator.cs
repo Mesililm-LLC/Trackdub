@@ -35,7 +35,6 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
     private readonly CancellationTokenSource lifetime = new();
     private readonly Task worker;
     private readonly object idleGate = new();
-    private readonly IDisposable? subscription;
     private TaskCompletionSource idleSignal = CreateCompletedSignal();
     private int outstanding;
     private int disposed;
@@ -43,7 +42,6 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
     public EngineAutoWarmCoordinator(
         IResidentWarmupService warmupService,
         BundledModelManifestRegistry manifestRegistry,
-        IModelDownloadOrchestrator? downloadOrchestrator = null,
         IApplicationLogger? logger = null,
         Func<string, string?>? readEnvironment = null)
     {
@@ -52,13 +50,14 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
         this.logger = logger;
         this.readEnvironment = readEnvironment ?? Environment.GetEnvironmentVariable;
         worker = Task.Run(ProcessQueueAsync);
-
-        // Subscribe here, in the coordinator's own constructor, so the wiring cannot be missed.
-        // A separate installer registered only as a concrete singleton was never resolved by the
-        // production graph, leaving the feature a silent no-op; whoever resolves the queue — which
-        // is the thing installs must reach — now gets the subscription as a side effect.
-        subscription = downloadOrchestrator?.StateChanges.Subscribe(new InstalledModelObserver(this));
     }
+
+    /// <summary>
+    /// Accepts an install notification. Kept as a named entry point (rather than only an
+    /// <see cref="IObserver{T}"/> subscription) so the caller that actually performs installs —
+    /// the model download orchestrator — drives it directly.
+    /// </summary>
+    public void OnModelInstalled(string modelId) => RequestWarmAfterInstall(modelId);
 
     public void RequestWarmAfterInstall(string modelId, CancellationToken cancellationToken = default)
     {
@@ -277,46 +276,6 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
             VadModelAlias: aliasFor(RuntimeStage.Vad));
     }
 
-    /// <summary>
-    /// Only a transition into a usable model state should warm: a failed download, an uninstall
-    /// (back to Missing), or a repair still in progress must not build engines.
-    /// </summary>
-    internal static bool IsInstalled(ModelCacheState state) =>
-        state is ModelCacheState.Installed or ModelCacheState.Ready;
-
-    private void OnInstalledStateChanged(ModelStateChange change)
-    {
-        if (!IsInstalled(change.NewState))
-        {
-            return;
-        }
-
-        try
-        {
-            RequestWarmAfterInstall(change.ModelId);
-        }
-        catch (Exception ex)
-        {
-            // Warming is an optimization; an observer must never break the download path.
-            logger?.LogWarning($"Post-install engine warm could not be queued for '{change.ModelId}'.", ex);
-        }
-    }
-
-    /// <summary>
-    /// Minimal <see cref="IObserver{T}"/> adapter: this layer has no System.Reactive dependency.
-    /// </summary>
-    private sealed class InstalledModelObserver(EngineAutoWarmCoordinator owner) : IObserver<ModelStateChange>
-    {
-        public void OnNext(ModelStateChange value) => owner.OnInstalledStateChanged(value);
-
-        public void OnError(Exception error) =>
-            owner.logger?.LogWarning("Model state change stream faulted; post-install engine warming stops.", error);
-
-        public void OnCompleted()
-        {
-        }
-    }
-
     private static TaskCompletionSource CreateCompletedSignal()
     {
         var signal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -335,7 +294,6 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
             return;
         }
 
-        subscription?.Dispose();
         queue.Writer.TryComplete();
         try
         {
