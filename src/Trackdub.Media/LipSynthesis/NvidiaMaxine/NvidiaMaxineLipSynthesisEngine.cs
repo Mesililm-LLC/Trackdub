@@ -32,7 +32,6 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
     private static readonly TimeSpan DefaultPerTurnTimeout = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan HostProbeTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan DisposeGateTimeout = TimeSpan.FromSeconds(10);
 
     /// <summary>
     /// The host keeps a CUDA context while it waits, so it is stopped once lip synthesis has been
@@ -87,6 +86,11 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
         toolResolver = new FfmpegToolResolver(ffmpegPath);
         this.workRoot = workRoot ?? Path.Join(Path.GetTempPath(), "trackdub-maxine-lipsync");
     }
+
+    /// <summary>How long Dispose waits for a turn in flight after it has stopped the host.</summary>
+    internal TimeSpan DisposeWaitLimit { get; init; } = TimeSpan.FromSeconds(10);
+
+    internal bool IsDisposed => disposed;
 
     public bool IsAvailable => GetUnavailableReason(optionsProvider()) is null;
 
@@ -244,7 +248,7 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
         // A turn in flight holds the gate for as long as the host takes. Stop the host first so that turn
         // fails fast and releases it, instead of shutdown waiting for the per-turn timeout.
         Volatile.Read(ref session)?.Abort();
-        if (!sessionGate.Wait(DisposeGateTimeout))
+        if (!sessionGate.Wait(DisposeWaitLimit))
         {
             // The host is already killed, so nothing is left running; the in-flight turn cleans up its own state.
             return;
@@ -379,7 +383,15 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
         {
             try
             {
-                ScheduleIdleShutdown();
+                if (disposed)
+                {
+                    // Dispose may have timed out, or snapshotted a null session, before this turn started its host.
+                    DropSession();
+                }
+                else
+                {
+                    ScheduleIdleShutdown();
+                }
             }
             finally
             {

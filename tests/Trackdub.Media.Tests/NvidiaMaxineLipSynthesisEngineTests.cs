@@ -339,6 +339,42 @@ public sealed class NvidiaMaxineLipSynthesisEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task A_turn_that_starts_its_host_after_Dispose_gave_up_still_stops_it()
+    {
+        NvidiaMaxineLipSyncOptions options = CreateInstalledOptions();
+        var runner = new FakeRunner { ProtocolProbeReply = new ProcessResult(0, MaxineLipSyncHostSession.Handshake + "\n", string.Empty) };
+        using var host = ScriptedHost.Echo(lagFrames: 0);
+        using var decoder = FakePipedProcess.Decoder(frames: 81, frameBytes: 64 * 48 * 3);
+        using var encoder = FakePipedProcess.Encoder();
+        NvidiaMaxineLipSynthesisEngine? engine = null;
+        Task? dispose = null;
+        PipedProcessLauncher inner = Launcher(options, host, decoder, encoder);
+        engine = new NvidiaMaxineLipSynthesisEngine(
+            () => options, runner, Environment.ProcessPath, Path.Join(root, "work"),
+            (path, arguments, environment, redirectInput, redirectOutput) =>
+            {
+                if (path == options.HostExecutablePath)
+                {
+                    // Dispose runs while the host is still starting: it sees no session to stop, and gives up
+                    // waiting for the turn long before the host finishes starting.
+                    dispose = Task.Run(engine!.Dispose);
+                    Assert.True(SpinWait.SpinUntil(() => engine.IsDisposed, TimeSpan.FromSeconds(10)));
+                    Thread.Sleep(500);
+                }
+
+                return inner(path, arguments, environment, redirectInput, redirectOutput);
+            })
+        {
+            DisposeWaitLimit = TimeSpan.FromMilliseconds(100),
+        };
+
+        await engine.SynthesizeTurnAsync(CreateRequest(), TestContext.Current.CancellationToken);
+        await dispose!.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        Assert.True(host.Disposed);
+    }
+
+    [Fact]
     public async Task Disposing_the_engine_after_a_persistent_turn_does_not_wedge_it()
     {
         NvidiaMaxineLipSyncOptions options = CreateInstalledOptions();
