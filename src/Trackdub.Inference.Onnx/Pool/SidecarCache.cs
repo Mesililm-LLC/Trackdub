@@ -230,17 +230,17 @@ internal sealed class SidecarCache<T>
         string[] asyncKeys = storeAsync.Keys.ToArray();
 
         int removed = 0;
-        foreach (string key in syncKeys)
+        foreach (string key in syncKeys.Where(k => k.StartsWith(prefix, comparison)))
         {
-            if (key.StartsWith(prefix, comparison) && TryRemove(key, out _))
+            if (TryRemove(key, out _))
             {
                 removed++;
             }
         }
 
-        foreach (string key in asyncKeys)
+        foreach (string key in asyncKeys.Where(k => k.StartsWith(prefix, comparison)))
         {
-            if (key.StartsWith(prefix, comparison) && TryRemove(key, out _))
+            if (TryRemove(key, out _))
             {
                 removed++;
             }

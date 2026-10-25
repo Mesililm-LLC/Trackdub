@@ -37,6 +37,41 @@ public sealed class ModelDownloadOrchestratorTests : IDisposable
     }
 
     [Fact]
+    public async Task Successful_install_invalidates_sidecar_caches_for_that_model_root()
+    {
+        // Pins the 80-vs-128 mel-bin regression: ReadMelBins caches the fallback when
+        // preprocessor_config.json is absent, so an install that adds that file must flush the
+        // stale entry or the model keeps running the wrong number of mel bins. Deleting the
+        // invalidation call, flushing only one cache, or passing the wrong root fails here.
+        (BundledModelManifestRegistry registry, TrackdubStoragePaths storagePaths, _) =
+            CreateRegistryWithManifestRootOutsideConfiguredCache(
+                sha256: Sha256Hex("correct-content"));
+
+        // Seed the cache for the root the orchestrator will actually install into: it derives
+        // "<cache>/<owner>/<name>" from the model id, not the manifest's root_path.
+        string installRoot = ModelDownloadPathGuard.ResolveConfiguredModelRootDirectory(
+            "example/model",
+            storagePaths.ModelCacheDirectory);
+        var melBins = Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.MelBins;
+        melBins.GetOrAdd(installRoot, () => 80);
+        Assert.True(melBins.Count > 0, "seed must populate the mel-bin cache");
+
+        var store = new LocalModelCacheRecordStore(storagePaths);
+        var downloader = new HashMatchingDownloader();
+        using var orchestrator = new ModelDownloadOrchestrator(
+            registry, store, downloader, storagePaths, engineAutoWarmQueue: new RecordingWarmQueue());
+
+        ModelDownloadResult result = await orchestrator.DownloadAsync(
+            "example/model", cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success, result.FailureReason);
+
+        // The seeded entry for this root is gone, so the next read re-parses the installed config
+        // rather than serving the stale fallback.
+        Assert.Equal(0, melBins.GetOrAdd(installRoot, () => 0));
+    }
+
+    [Fact]
     public async Task Successful_install_requests_engine_warming_for_the_installed_model()
     {
         // End-to-end proof of the wiring: a real download must reach the warm queue. An earlier
