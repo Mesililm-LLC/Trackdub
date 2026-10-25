@@ -160,8 +160,13 @@ public sealed class ChatterboxVoiceCloneTtsEngine(
 
         long[] currentInputIds = textInputIds;
         long[]? embedPositionIds = embedNeedsPositionIds ? BuildInitialBaseEmbedPositionIds(textInputIds) : null;
-        long[] generatedTokens = [StartSpeechToken];
-        long[] attentionMask = [];
+        // Growable rather than reallocated per step: the previous `Concat(...).ToArray()` copied
+        // the whole token/mask sequence on every iteration, which is O(T^2) over a generation.
+        var generatedTokens = new List<long> { StartSpeechToken };
+        // Maintained alongside the list so the repetition-penalty lookup is O(1) per step instead
+        // of rebuilding a set from every generated token on each iteration.
+        var seenTokens = new HashSet<long> { StartSpeechToken };
+        var attentionMask = new List<long>();
         long[]? languagePositionIds = null;
         PastTensor[] pastKeyValues = [];
         string[] pastKeyNames = languageModelSession.InputMetadata.Keys
@@ -209,7 +214,8 @@ public sealed class ChatterboxVoiceCloneTtsEngine(
 
                 int batchSize = inputsEmbeds.Dimensions[0];
                 int sequenceLength = inputsEmbeds.Dimensions[1];
-                attentionMask = Enumerable.Repeat(1L, checked(batchSize * sequenceLength)).ToArray();
+                attentionMask.Clear();
+                attentionMask.AddRange(Enumerable.Repeat(1L, checked(batchSize * sequenceLength)));
                 if (languageNeedsPositionIds)
                 {
                     languagePositionIds = Enumerable.Range(0, sequenceLength).Select(static value => (long)value).ToArray();
@@ -228,7 +234,7 @@ public sealed class ChatterboxVoiceCloneTtsEngine(
                 inputsEmbeds.Dimensions));
             languageInputs.Add(NamedOnnxValue.CreateFromTensor(
                 "attention_mask",
-                new DenseTensor<long>(attentionMask, [1, attentionMask.Length])));
+                new DenseTensor<long>(attentionMask.ToArray(), [1, attentionMask.Count])));
             if (languageNeedsPositionIds && languagePositionIds is not null)
             {
                 languageInputs.Add(NamedOnnxValue.CreateFromTensor(
@@ -245,8 +251,9 @@ public sealed class ChatterboxVoiceCloneTtsEngine(
                 languageModelSession.RunWithRetry(languageInputs.Values, cancellationToken: cancellationToken);
             DisposableNamedOnnxValue[] languageOutputs = languageResults.ToArray();
             TensorData<float> logits = ReadFloatTensor(languageOutputs[0]);
-            long nextToken = SelectNextToken(logits, generatedTokens);
-            generatedTokens = generatedTokens.Concat([nextToken]).ToArray();
+            long nextToken = SelectNextToken(logits, seenTokens);
+            generatedTokens.Add(nextToken);
+            seenTokens.Add(nextToken);
             if (nextToken == StopSpeechToken)
             {
                 break;
@@ -258,7 +265,7 @@ public sealed class ChatterboxVoiceCloneTtsEngine(
                 embedPositionIds = [iteration + 1];
             }
 
-            attentionMask = attentionMask.Concat([1L]).ToArray();
+            attentionMask.Add(1L);
             if (languageNeedsPositionIds && languagePositionIds is not null)
             {
                 languagePositionIds = [languagePositionIds[^1] + 1];
@@ -288,7 +295,7 @@ public sealed class ChatterboxVoiceCloneTtsEngine(
         }
 
         return new ChatterboxGenerationResult(
-            generatedTokens,
+            generatedTokens.ToArray(),
             promptTokenIds,
             speakerEmbeddings,
             speakerEmbeddingsDimensions,
@@ -520,17 +527,16 @@ public sealed class ChatterboxVoiceCloneTtsEngine(
 
     private static long SelectNextToken(
         TensorData<float> logits,
-        IReadOnlyList<long> generatedTokens)
+        IReadOnlySet<long> seenTokens)
     {
         int vocabularySize = logits.Dimensions[^1];
         int offset = logits.Values.Length - vocabularySize;
         long bestToken = 0;
         float bestScore = float.NegativeInfinity;
-        var seen = generatedTokens.ToHashSet();
         for (int index = 0; index < vocabularySize; index++)
         {
             float score = logits.Values[offset + index];
-            if (seen.Contains(index))
+            if (seenTokens.Contains(index))
             {
                 score = score < 0f ? score * RepetitionPenalty : score / RepetitionPenalty;
             }
