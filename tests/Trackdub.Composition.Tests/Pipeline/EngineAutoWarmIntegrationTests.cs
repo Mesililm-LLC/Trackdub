@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Trackdub.Application.Pipeline;
 using Trackdub.Composition.Pipeline;
 using Trackdub.Composition.Runtime;
@@ -31,6 +32,18 @@ public class EngineAutoWarmIntegrationTests
         var orchestrator = provider.GetRequiredService<ModelDownloadOrchestrator>();
         Assert.NotNull(orchestrator);
         Assert.Same(provider.GetRequiredService<IEngineAutoWarmQueue>(), provider.GetRequiredService<IEngineAutoWarmQueue>());
+    }
+
+    [Fact]
+    public async Task Application_host_startup_activates_the_engine_auto_warm_installer()
+    {
+        using IHost host = new HostBuilder()
+            .ConfigureServices(services => services.AddTrackdub())
+            .Build();
+
+        await host.StartAsync(TestContext.Current.CancellationToken);
+
+        Assert.NotNull(host.Services.GetRequiredService<IEngineAutoWarmQueue>());
     }
 
     [Fact]

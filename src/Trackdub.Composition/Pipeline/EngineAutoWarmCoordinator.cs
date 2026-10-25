@@ -264,6 +264,7 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
             AsrModelOverride: AsrModelOverride.Auto,
             IsDevBuild: false,
             HardwareOverrides: new Dictionary<string, ExecutionProviderKind>(),
+            SpeechEnhancementModelAlias: aliasFor(RuntimeStage.SpeechEnhancement),
             DiarizationModelAlias: aliasFor(RuntimeStage.Diarization),
             SeparationModelAlias: aliasFor(RuntimeStage.Separation),
             OverlapRescueModelAlias: aliasFor(RuntimeStage.OverlapRescue),

@@ -36,6 +36,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Microsoft.Extensions.Http" />
     <!-- Runtime composition owns the ONNX package closure so WinUI stays UI-only
          while publish/restore still resolve the real runtime assemblies. -->

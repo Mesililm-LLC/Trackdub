@@ -179,19 +179,50 @@ public class EngineAutoWarmTests
     [Fact]
     public void Every_warmed_stage_is_pinned_to_the_installed_model()
     {
-        RuntimeModelSelections selections = EngineAutoWarmCoordinator.BuildSelectionsForModel(
-            "ResembleAI/chatterbox-turbo-ONNX",
-            [RuntimeStage.Tts]);
+        const string modelId = "ResembleAI/chatterbox-turbo-ONNX";
+        foreach (RuntimeStage stage in ResidentWarmupRequest.DefaultStages)
+        {
+            RuntimeModelSelections selections = EngineAutoWarmCoordinator.BuildSelectionsForModel(modelId, [stage]);
 
-        Assert.Equal("ResembleAI/chatterbox-turbo-ONNX", selections.TtsModelAlias);
-        // Stages that are not being warmed must not be pinned, or unrelated stages would be
-        // forced onto this model.
-        Assert.Null(selections.AsrModelAlias);
-        Assert.Null(selections.TranslationModelAlias);
-        Assert.Null(selections.VadModelAlias);
-        // A set alias is what makes the planner treat the selection as explicit rather than ranked.
-        Assert.Equal(RuntimeModelSelectionIntent.Explicit, selections.GetSelectionIntent(RuntimeStage.Tts));
-        Assert.Equal(RuntimeModelSelectionIntent.Automatic, selections.GetSelectionIntent(RuntimeStage.Asr));
+            Assert.Equal(modelId, AliasForStage(selections, stage));
+            Assert.Equal(RuntimeModelSelectionIntent.Explicit, selections.GetSelectionIntent(stage));
+            foreach (RuntimeStage otherStage in ResidentWarmupRequest.DefaultStages.Where(candidate => candidate != stage))
+            {
+                Assert.Null(AliasForStage(selections, otherStage));
+            }
+        }
+    }
+
+    private static string? AliasForStage(RuntimeModelSelections selections, RuntimeStage stage) => stage switch
+    {
+        RuntimeStage.Vad => selections.VadModelAlias,
+        RuntimeStage.Asr => selections.AsrModelAlias,
+        RuntimeStage.Translation => selections.TranslationModelAlias,
+        RuntimeStage.Tts => selections.TtsModelAlias,
+        RuntimeStage.Diarization => selections.DiarizationModelAlias,
+        RuntimeStage.Separation => selections.SeparationModelAlias,
+        RuntimeStage.SpeechEnhancement => selections.SpeechEnhancementModelAlias,
+        RuntimeStage.LipSync => selections.LipSyncModelAlias,
+        RuntimeStage.TextRefinement => selections.TextRefinementModelAlias,
+        RuntimeStage.OverlapRescue => selections.OverlapRescueModelAlias,
+        RuntimeStage.LipSynthesis => selections.LipSynthesisModelAlias,
+        _ => null,
+    };
+
+    [Fact]
+    public void Speech_enhancement_warm_uses_its_stage_specific_installed_model_alias()
+    {
+        const string modelId = "Rikorose/DeepFilterNet3";
+        RuntimeModelSelections selections = EngineAutoWarmCoordinator.BuildSelectionsForModel(
+            modelId,
+            [RuntimeStage.SpeechEnhancement]);
+
+        Assert.Equal(modelId, selections.SpeechEnhancementModelAlias);
+        Assert.Equal(RuntimeModelSelectionIntent.Explicit, selections.GetSelectionIntent(RuntimeStage.SpeechEnhancement));
+        Assert.Null(selections.TtsModelAlias);
+        Assert.Equal(modelId, RuntimeModelRequestFactory.CreateStageRequest(
+            RuntimeModelRequestFactory.CreateOptions(selections),
+            RuntimeStage.SpeechEnhancement).PreferredModelAlias);
     }
 
     [Fact]
