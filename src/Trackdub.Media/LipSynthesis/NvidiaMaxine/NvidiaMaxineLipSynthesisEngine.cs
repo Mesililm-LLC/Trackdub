@@ -158,7 +158,9 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
         string turnVideoPath = Path.Join(turnDirectory, "turn.mp4");
         string turnAudioPath = Path.Join(turnDirectory, "turn-16k.wav");
         string hostOutputPath = Path.Join(turnDirectory, "lipsync.avi");
-        string patchedClipPath = Path.Join(turnDirectory, "patched.mp4");
+        // Lives beside the turn directory so the directory can be deleted while the caller still uses the clip.
+        string patchedClipPath = Path.Join(workRoot, $"patched-{request.SegmentId:N}-{Guid.NewGuid():N}.mp4");
+        bool delivered = false;
 
         try
         {
@@ -179,9 +181,11 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
                 NvidiaMaxineLipSyncLanguages.FromModelAlias(request.PreferredModelAlias) ?? options.DefaultLanguage;
             if (await SupportsPersistentHostAsync(options, cancellationToken).ConfigureAwait(false))
             {
-                return await SynthesizeWithPersistentHostAsync(
+                LipSynthesisResult streamed = await SynthesizeWithPersistentHostAsync(
                         request, options, ffmpegPath, window, language, turnAudioPath, patchedClipPath, cancellationToken)
                     .ConfigureAwait(false);
+                delivered = streamed.Status == LipSynthesisEngineStatus.Synthesized;
+                return streamed;
             }
 
             await RunOrThrowAsync(ffmpegPath, BuildTurnVideoArguments(request.OriginalVideoPath, window, turnVideoPath),
@@ -204,6 +208,7 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
             await RunOrThrowAsync(ffmpegPath, BuildPatchedClipArguments(hostOutputPath, window, patchedClipPath),
                 "encode patched clip", options: null, cancellationToken).ConfigureAwait(false);
 
+            delivered = true;
             return Synthesized(request, patchedClipPath);
         }
         catch (OperationCanceledException)
@@ -218,9 +223,11 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
         }
         finally
         {
-            TryDelete(turnVideoPath);
-            TryDelete(turnAudioPath);
-            TryDelete(hostOutputPath);
+            TryDeleteDirectory(turnDirectory);
+            if (!delivered)
+            {
+                TryDelete(patchedClipPath);
+            }
         }
     }
 
@@ -232,10 +239,10 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
         }
 
         disposed = true;
-        idleTimer?.Dispose();
         sessionGate.Wait();
         try
         {
+            idleTimer?.Dispose();
             DropSession();
         }
         finally
@@ -339,9 +346,16 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
 
             await encoder.Input.DisposeAsync().ConfigureAwait(false);
             int encoderExit = await encoder.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            int? decoderExit = await WaitForDecoderAsync(decoder, cancellationToken).ConfigureAwait(false);
             if (!reply.Succeeded)
             {
                 return Failed(request, $"Maxine LipSync failed: {reply.Message}");
+            }
+
+            if (decoderExit is not (null or 0))
+            {
+                // The session pads a crashed decode with its last frame, so it would otherwise pass as a clip.
+                return Failed(request, $"decode turn video failed with exit code {decoderExit}: {Trim(decoder.ErrorTail)}");
             }
 
             if (encoderExit != 0 || !File.Exists(patchedClipPath))
@@ -353,14 +367,36 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
         }
         finally
         {
-            ScheduleIdleShutdown();
-            sessionGate.Release();
+            try
+            {
+                ScheduleIdleShutdown();
+            }
+            finally
+            {
+                sessionGate.Release();
+            }
+        }
+    }
+
+    /// <summary>The decoder's exit code, or null when it was still running after the grace period and was stopped.</summary>
+    private static async Task<int?> WaitForDecoderAsync(IPipedProcess decoder, CancellationToken cancellationToken)
+    {
+        using var grace = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        grace.CancelAfter(TimeSpan.FromSeconds(10));
+        try
+        {
+            return await decoder.WaitForExitAsync(grace.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            decoder.Kill();
+            return null;
         }
     }
 
     private void ScheduleIdleShutdown()
     {
-        if (session is null)
+        if (disposed || session is null)
         {
             return;
         }
@@ -475,7 +511,7 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
             return null;
         }
 
-        bool quarterTurn = Math.Abs(Math.Round(rotation / 90.0)) % 2 == 1;
+        bool quarterTurn = Math.Abs((int)Math.Round(rotation / 90.0)) % 2 == 1;
         return quarterTurn ? (height.Value, width.Value) : (width.Value, height.Value);
     }
 
@@ -623,9 +659,10 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
 
     internal static double? ParseFrameRate(string ffprobeOutput)
     {
-        foreach (string line in ffprobeOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (string[] parts in ffprobeOutput
+                     .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                     .Select(line => line.Split('/')))
         {
-            string[] parts = line.Split('/');
             if (parts.Length == 2 &&
                 double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double numerator) &&
                 double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double denominator) &&
@@ -668,20 +705,29 @@ public sealed class NvidiaMaxineLipSynthesisEngine : ILipSynthesisEngine, IDispo
         return trimmed.Length <= 500 ? trimmed : trimmed[^500..];
     }
 
-    private static void TryDelete(string path)
+    private static bool TryDelete(string path)
     {
         try
         {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
+            File.Delete(path);
+            return true;
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            return false;
         }
-        catch (UnauthorizedAccessException)
+    }
+
+    private static bool TryDeleteDirectory(string path)
+    {
+        try
         {
+            Directory.Delete(path, recursive: true);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
         }
     }
 

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Trackdub.Contracts;
@@ -25,7 +26,9 @@ internal static class LatentSyncLipSynthesisRegistration
         {
             try
             {
-                settings = settingsService.LoadAsync(CancellationToken.None).ConfigureAwait(false).GetAwaiter().GetResult();
+                // Off the caller's context: IsAvailable and the status line read this synchronously, and a UI-thread
+                // continuation inside LoadAsync could otherwise deadlock against the blocked caller.
+                settings = Task.Run(() => settingsService.LoadAsync(CancellationToken.None)).GetAwaiter().GetResult();
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
             {
@@ -38,6 +41,32 @@ internal static class LatentSyncLipSynthesisRegistration
             settings?.MaxineLipSyncArSdkRoot,
             settings?.MaxineLipSyncLanguage);
     }
+
+    /// <summary>
+    /// Availability checks hit the options on every probe, so a settings load and the file checks behind
+    /// it run at most once per interval. Settings changes still apply within seconds.
+    /// </summary>
+    private static Func<NvidiaMaxineLipSyncOptions> CacheBriefly(Func<NvidiaMaxineLipSyncOptions> load)
+    {
+        var gate = new object();
+        NvidiaMaxineLipSyncOptions? cached = null;
+        long loadedAt = 0;
+        return () =>
+        {
+            lock (gate)
+            {
+                if (cached is null || Stopwatch.GetElapsedTime(loadedAt) > OptionsCacheLifetime)
+                {
+                    cached = load();
+                    loadedAt = Stopwatch.GetTimestamp();
+                }
+
+                return cached;
+            }
+        };
+    }
+
+    private static readonly TimeSpan OptionsCacheLifetime = TimeSpan.FromSeconds(2);
 
     internal static void Register(IServiceCollection services)
     {
@@ -60,7 +89,7 @@ internal static class LatentSyncLipSynthesisRegistration
         services.TryAddSingleton(sp =>
         {
             IStudioSettingsService? settingsService = sp.GetService<IStudioSettingsService>();
-            return new NvidiaMaxineLipSynthesisEngine(() => ResolveMaxineOptions(settingsService));
+            return new NvidiaMaxineLipSynthesisEngine(CacheBriefly(() => ResolveMaxineOptions(settingsService)));
         });
 
         // Maxine first: it runs whenever a local AR SDK is configured; LatentSync stays the fallback.

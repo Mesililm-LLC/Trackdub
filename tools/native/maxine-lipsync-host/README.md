@@ -1,9 +1,9 @@
 # Maxine LipSync persistent host
 
-`trackdub-maxine-lipsync-host` keeps one NVIDIA Maxine AR SDK LipSync session alive across turns, so
-Trackdub can stream raw frames through it instead of launching the SDK's `LipSyncApp` sample for every
-turn. Nothing from the AR SDK (headers, proxy sources, binaries, models) is checked in here; the build
-compiles against a local SDK install.
+`trackdub-maxine-lipsync-host` keeps one host process alive across turns and streams raw frames through
+it instead of launching the SDK's `LipSyncApp` sample for every turn. The LipSync feature itself is
+reloaded per job on AR SDK 1.2.0.0 (see Known limits). Nothing from the AR SDK (headers, proxy sources,
+binaries, models) is checked in here; the build compiles against a local SDK install.
 
 ## Build (Windows)
 

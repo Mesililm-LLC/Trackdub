@@ -231,6 +231,40 @@ public sealed class NvidiaMaxineLipSynthesisEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task SynthesizeTurnAsync_removes_the_turn_directory_and_hands_over_a_standalone_clip()
+    {
+        NvidiaMaxineLipSyncOptions options = CreateInstalledOptions();
+        string work = Path.Join(root, "work");
+        var engine = new NvidiaMaxineLipSynthesisEngine(options, new FakeRunner(), Environment.ProcessPath, work);
+        LipSynthesisRequest request = CreateRequest();
+
+        LipSynthesisResult result = await engine.SynthesizeTurnAsync(request, CancellationToken.None);
+
+        Assert.Equal(LipSynthesisEngineStatus.Synthesized, result.Status);
+        Assert.True(File.Exists(result.PatchedClipPath));
+        Assert.False(Directory.Exists(Path.Join(work, request.SegmentId.ToString("N"))));
+        Assert.Equal(Path.GetFullPath(work), Path.GetDirectoryName(Path.GetFullPath(result.PatchedClipPath!)));
+    }
+
+    [Fact]
+    public async Task SynthesizeTurnAsync_leaves_nothing_behind_when_the_turn_is_skipped_or_fails()
+    {
+        NvidiaMaxineLipSyncOptions options = CreateInstalledOptions();
+        string work = Path.Join(root, "work");
+        var failing = new NvidiaMaxineLipSynthesisEngine(options, new FakeRunner { HostExitCode = 1 }, Environment.ProcessPath, work);
+        var skipping = new NvidiaMaxineLipSynthesisEngine(options, new FakeRunner(), Environment.ProcessPath, work);
+
+        LipSynthesisResult failed = await failing.SynthesizeTurnAsync(CreateRequest(), CancellationToken.None);
+        LipSynthesisResult skipped = await skipping.SynthesizeTurnAsync(
+            CreateRequest() with { TurnStart = TimeSpan.FromSeconds(9.926), TurnEnd = TimeSpan.FromSeconds(10.005) },
+            CancellationToken.None);
+
+        Assert.Equal(LipSynthesisEngineStatus.Failed, failed.Status);
+        Assert.Equal(LipSynthesisEngineStatus.Skipped, skipped.Status);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(work));
+    }
+
+    [Fact]
     public async Task SynthesizeTurnAsync_prefers_the_language_named_by_the_model_alias()
     {
         var runner = new FakeRunner();

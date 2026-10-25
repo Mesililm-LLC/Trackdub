@@ -72,9 +72,16 @@ internal sealed class MaxineLipSyncHostSession : IDisposable
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            line = null;
         }
         catch (IOException)
         {
+            line = null;
+        }
+        catch (OperationCanceledException)
+        {
+            process.Dispose();
+            throw;
         }
 
         if (line == Handshake)

@@ -1,8 +1,9 @@
 /*
  * Trackdub Maxine LipSync host.
  *
- * Loads NVIDIA Maxine AR SDK LipSync once and lip-syncs one speaker turn per request over
- * stdin/stdout, so Trackdub pays the model load once per run instead of once per turn.
+ * Lip-syncs one speaker turn per request over stdin/stdout from a process that stays alive across
+ * turns, so Trackdub starts the host once per run instead of once per turn. AR SDK 1.2.0.0 cannot
+ * reset LipSync, so the feature is released after each job and reloaded for the next.
  *
  * Derived from the LipSyncApp sample in NVIDIA-Maxine/AR-SDK-Samples, which carries this notice:
  *
