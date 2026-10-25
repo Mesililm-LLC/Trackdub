@@ -67,6 +67,10 @@ public sealed class HeadlessDubbingHost : IDisposable
         services.AddHeadlessTrackdub(options);
         ServiceProvider serviceProvider = services.BuildServiceProvider();
 
+        // This host owns a plain ServiceProvider, so start the warm queue explicitly.
+        serviceProvider.GetRequiredService<Trackdub.Composition.Pipeline.EngineAutoWarmInstaller>()
+            .StartAsync(CancellationToken.None).GetAwaiter().GetResult();
+
         // Arm the shared session pool's process-GPU admission explicitly at host construction:
         // a lazy DI factory would only bind when something happens to resolve the telemetry
         // reader, leaving normal host paths on reservation-only accounting despite admission

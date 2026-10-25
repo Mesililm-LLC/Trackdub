@@ -195,6 +195,11 @@ public sealed class TrackdubBuilder
 
         ServiceProvider serviceProvider = services.BuildServiceProvider();
 
+        // This composition owns its ServiceProvider instead of running through a Generic Host,
+        // so activate hosted startup services explicitly.
+        serviceProvider.GetRequiredService<Trackdub.Composition.Pipeline.EngineAutoWarmInstaller>()
+            .StartAsync(CancellationToken.None).GetAwaiter().GetResult();
+
         // The SDK builds the headless composition directly (not through HeadlessDubbingHost),
         // so it must hand the process-GPU reader to the shared ONNX session pool itself or the
         // advertised default-on accelerator admission silently stays reservation-only here.

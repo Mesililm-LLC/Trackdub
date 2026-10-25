@@ -24,7 +24,8 @@ public sealed record RuntimeModelRequestOptions(
     SeparationModelOverride SeparationModelOverride = SeparationModelOverride.Auto,
     IReadOnlyDictionary<string, string>? ModelVariantOverrides = null,
     bool RequirePreferredExecutionProviders = false,
-    string? VadModelAlias = null);
+    string? VadModelAlias = null,
+    string? SpeechEnhancementModelAlias = null);
 
 public sealed record RuntimeModelSelections(
     AsrModelOverride AsrModelOverride,
@@ -46,7 +47,8 @@ public sealed record RuntimeModelSelections(
     IReadOnlyDictionary<string, string>? ModelVariantOverrides = null,
     bool RequirePreferredExecutionProviders = false,
     string? VadModelAlias = null,
-    IReadOnlyDictionary<RuntimeStage, RuntimeModelSelectionIntent>? SelectionIntents = null)
+    IReadOnlyDictionary<RuntimeStage, RuntimeModelSelectionIntent>? SelectionIntents = null,
+    string? SpeechEnhancementModelAlias = null)
 {
     public RuntimeModelSelectionIntent GetSelectionIntent(RuntimeStage stage)
     {
@@ -63,6 +65,7 @@ public sealed record RuntimeModelSelections(
             RuntimeStage.TextRefinement => TextRefinementModelAlias,
             RuntimeStage.LipSync => LipSyncModelAlias,
             RuntimeStage.LipSynthesis => LipSynthesisModelAlias,
+            RuntimeStage.SpeechEnhancement => SpeechEnhancementModelAlias,
             _ => null
         };
         bool configuredOverride = stage switch
@@ -387,7 +390,8 @@ public static class RuntimeModelRequestFactory
             selections.SeparationModelOverride,
             selections.ModelVariantOverrides,
             selections.RequirePreferredExecutionProviders,
-            selections.VadModelAlias);
+            selections.VadModelAlias,
+            selections.SpeechEnhancementModelAlias);
     }
 
     public static InferenceModelPreferences CreateModelPreferences(RuntimeModelSelections selections) =>
@@ -635,6 +639,7 @@ public static class RuntimeModelRequestFactory
             RuntimeStage.TextRefinement => ResolveTextRefinementModelAlias(options),
             RuntimeStage.LipSync => ResolveLipSyncModelAlias(options),
             RuntimeStage.LipSynthesis => ResolveLipSynthesisModelAlias(options),
+            RuntimeStage.SpeechEnhancement => ResolveSpeechEnhancementModelAlias(options),
             _ => null
         };
 
@@ -702,6 +707,11 @@ public static class RuntimeModelRequestFactory
         RuntimeStage stage) =>
         new(
             stage,
+            PreferredModelAlias: stage == RuntimeStage.SpeechEnhancement
+                ? ResolveSpeechEnhancementModelAlias(options)
+                : null,
+            RequirePreferredModelAlias: stage == RuntimeStage.SpeechEnhancement
+                && ResolveSpeechEnhancementModelAlias(options) is not null,
             PreferredExecutionProvider: ResolvePreferredExecutionProvider(options, stage),
             RequirePreferredExecutionProvider: IsPreferredExecutionProviderRequired(options, stage),
             PreferredModelVariantAlias: ResolvePreferredModelVariantAlias(options, stage));
@@ -860,6 +870,11 @@ public static class RuntimeModelRequestFactory
 
         return TtsModelOverrideSettings.ResolveModelAlias(options.TtsModelOverride);
     }
+
+    private static string? ResolveSpeechEnhancementModelAlias(RuntimeModelRequestOptions options) =>
+        string.IsNullOrWhiteSpace(options.SpeechEnhancementModelAlias)
+            ? null
+            : options.SpeechEnhancementModelAlias.Trim();
 
     private static string? ResolveTextRefinementModelAlias(RuntimeModelRequestOptions options) =>
         string.IsNullOrWhiteSpace(options.TextRefinementModelAlias)

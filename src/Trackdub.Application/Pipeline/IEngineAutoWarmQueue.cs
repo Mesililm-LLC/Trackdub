@@ -27,4 +27,15 @@ public interface IEngineAutoWarmQueue
     /// Callers must not await this while holding a lock a warm needs.
     /// </summary>
     Task DrainAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Activates the queue for the hosting process and returns whether this call performed the
+    /// activation (false when it was already active). A host calls this at startup so that a
+    /// misconfigured host — one that never activates — is detectable rather than silently
+    /// accepting requests that no worker will ever process.
+    /// </summary>
+    bool Activate();
+
+    /// <summary>Whether <see cref="Activate"/> has run for this process.</summary>
+    bool IsActive { get; }
 }

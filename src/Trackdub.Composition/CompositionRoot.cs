@@ -684,6 +684,8 @@ public static class CompositionRoot
                 sp.GetRequiredService<IResidentWarmupService>(),
                 sp.GetRequiredService<BundledModelManifestRegistry>(),
                 sp.GetService<IApplicationLogger>()));
+        services.TryAddSingleton<EngineAutoWarmInstaller>();
+        services.AddHostedService(sp => sp.GetRequiredService<EngineAutoWarmInstaller>());
         // Wire the model cache directory explicitly: the bare-type registration would fall back
         // to the constructor default (no cache), making downloaded models invisible to alias
         // resolution (e.g. the kokoro voice catalog) even when the planner reports them ready.
