@@ -37,21 +37,21 @@ public class EngineAutoWarmIntegrationTests
     [Fact]
     public async Task Application_host_startup_activates_the_engine_auto_warm_queue()
     {
-        // Asserts on activation state, not on resolvability: the queue is registered as a plain
-        // singleton, so resolving it proves nothing about the hosted-service wiring. This fails if
-        // AddHostedService (or the installer's StartAsync) is removed.
+        // Asserts on host-startup state, not on resolvability: the queue is a plain singleton, so
+        // resolving it proves nothing about the hosted-service wiring. IsHostStarted rather than
+        // IsActive, because a warm request self-activates and would mask missing host wiring.
         using IHost host = new HostBuilder()
             .ConfigureServices(services => services.AddTrackdub())
             .Build();
 
         var queue = (EngineAutoWarmCoordinator)host.Services.GetRequiredService<IEngineAutoWarmQueue>();
 
-        // A hosted service is only started by StartAsync, so the queue must be inactive until then.
-        Assert.False(queue.IsActive);
+        Assert.False(queue.IsHostStarted);
 
         await host.StartAsync(TestContext.Current.CancellationToken);
 
-        Assert.True(queue.IsActive, "host startup must activate the warm queue via EngineAutoWarmInstaller");
+        Assert.True(queue.IsHostStarted, "host startup must be recorded via EngineAutoWarmInstaller");
+        Assert.True(queue.IsActive);
     }
 
     [Fact]
@@ -74,10 +74,20 @@ public class EngineAutoWarmIntegrationTests
 
         public bool IsActive { get; private set; }
 
+        public bool IsHostStarted { get; private set; }
+
         public bool Activate()
         {
             bool changed = !IsActive;
             IsActive = true;
+            return changed;
+        }
+
+        public bool MarkHostStarted()
+        {
+            Activate();
+            bool changed = !IsHostStarted;
+            IsHostStarted = true;
             return changed;
         }
 

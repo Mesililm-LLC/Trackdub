@@ -1405,10 +1405,20 @@ public sealed class ModelDownloadOrchestratorTests : IDisposable
 
         public bool IsActive { get; private set; }
 
+        public bool IsHostStarted { get; private set; }
+
         public bool Activate()
         {
             bool changed = !IsActive;
             IsActive = true;
+            return changed;
+        }
+
+        public bool MarkHostStarted()
+        {
+            Activate();
+            bool changed = !IsHostStarted;
+            IsHostStarted = true;
             return changed;
         }
 

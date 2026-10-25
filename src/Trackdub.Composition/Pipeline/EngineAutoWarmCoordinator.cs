@@ -39,6 +39,7 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
     private int outstanding;
     private int disposed;
     private int active;
+    private int hostStarted;
 
     public EngineAutoWarmCoordinator(
         IResidentWarmupService warmupService,
@@ -78,7 +79,32 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
         return activated;
     }
 
+    /// <summary>
+    /// Records that a host started the installer. Kept distinct from <see cref="Activate"/> because
+    /// a warm request self-activates too, so the activation log alone cannot tell an operator
+    /// whether host wiring ran. This is the only signal that proves host startup happened.
+    /// </summary>
+    public bool MarkHostStarted()
+    {
+        if (Volatile.Read(ref disposed) != 0)
+        {
+            return false;
+        }
+
+        Activate();
+        bool started = Interlocked.Exchange(ref hostStarted, 1) == 0;
+        if (started)
+        {
+            logger?.LogInformation(
+                "Post-install engine warming host startup confirmed (EngineAutoWarmInstaller.StartAsync).");
+        }
+
+        return started;
+    }
+
     public bool IsActive => Volatile.Read(ref active) != 0;
+
+    public bool IsHostStarted => Volatile.Read(ref hostStarted) != 0;
 
     public void RequestWarmAfterInstall(string modelId, CancellationToken cancellationToken = default)
     {

@@ -30,13 +30,21 @@ public interface IEngineAutoWarmQueue
 
     /// <summary>
     /// Records that a host started the warm queue and returns whether this call performed the
-    /// activation (false when it was already active). The background worker and the on-demand
-    /// self-activation in <see cref="RequestWarmAfterInstall"/> mean warming works without this;
-    /// activation exists so an operator can tell from the log that host wiring actually ran,
-    /// instead of inferring it from whether engine artifacts appeared.
+    /// activation (false when it was already active). A warm request also self-activates, so this
+    /// alone does not prove host startup; it exists so activation state is observable at all.
     /// </summary>
     bool Activate();
 
     /// <summary>Whether <see cref="Activate"/> has run for this process.</summary>
     bool IsActive { get; }
+
+    /// <summary>
+    /// Records host startup specifically, distinct from <see cref="Activate"/>, because a warm
+    /// request self-activates and would otherwise make host wiring indistinguishable from normal
+    /// operation. Returns false when host startup was already recorded.
+    /// </summary>
+    bool MarkHostStarted();
+
+    /// <summary>Whether a host actually started the installer, as opposed to self-activation.</summary>
+    bool IsHostStarted { get; }
 }
