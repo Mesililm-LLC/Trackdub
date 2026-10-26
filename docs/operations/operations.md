@@ -1,6 +1,5 @@
 # GitHub Actions Workflows
 
-
 CI/CD lives in `.github/workflows/`. All jobs run on GitHub-hosted runners (`ubuntu-latest`,
 `windows-latest`, `macos-latest`), except `trt-rtx-smoke.yml`, which needs the self-hosted Windows
 runner.
