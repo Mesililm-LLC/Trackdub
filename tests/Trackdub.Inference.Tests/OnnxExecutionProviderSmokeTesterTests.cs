@@ -62,6 +62,28 @@ public sealed class OnnxExecutionProviderSmokeTesterTests
     }
 
     [Fact]
+    public void ResolveSeparationSmokeInputDimensions_SplitsFirstSpleeterExport_PutsSingleSplitBeforeTwoChannels()
+    {
+        // Pinned csukuangfj/sherpa-onnx-spleeter-2stems @ 3e5a4dd (bundled manifest):
+        // x = [num_splits, 2, 512, 1024]. Feeding the old channels-first guess
+        // [2, 1, 512, 1024] fails with "index: 1 Got: 1 Expected: 2".
+        int[] dimensions = OnnxExecutionProviderSmokeTester.ResolveSeparationSmokeInputDimensionsForTesting(
+            [-1, 2, 512, 1024]);
+
+        Assert.Equal([1, 2, 512, 1024], dimensions);
+    }
+
+    [Fact]
+    public void ResolveSeparationSmokeInputDimensions_ChannelsFirstSpleeterExport_PutsTwoChannelsBeforeSingleSplit()
+    {
+        // Older sherpa-onnx export: x = [2, num_splits, 512, 1024].
+        int[] dimensions = OnnxExecutionProviderSmokeTester.ResolveSeparationSmokeInputDimensionsForTesting(
+            [2, -1, 512, 1024]);
+
+        Assert.Equal([2, 1, 512, 1024], dimensions);
+    }
+
+    [Fact]
     public void IsSortFormerStreamingInputSet_requires_the_complete_streaming_contract()
     {
         MethodInfo method = typeof(OnnxExecutionProviderSmokeTester)

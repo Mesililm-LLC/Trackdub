@@ -10,6 +10,7 @@ using Trackdub.Inference.Onnx.ParakeetTdt;
 using Trackdub.Inference.Onnx.CosyVoice;
 using Trackdub.Inference.Onnx.Pool;
 using Trackdub.Inference.Onnx.SortFormer;
+using Trackdub.Inference.Onnx.Spleeter;
 using Trackdub.Inference.Onnx.Whisper;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
@@ -1119,7 +1120,16 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
 
     private static int[] ResolveSeparationSmokeInputDimensions(IReadOnlyList<int> modelDimensions)
     {
-        if (modelDimensions.Count == 4) return [2, 1, 512, 1024];
+        // 4-D separation graphs are Spleeter STFT blocks. Their channel/split axis
+        // order depends on the export (older: [2, num_splits, 512, 1024]; pinned
+        // 3e5a4dd: [num_splits, 2, 512, 1024]), so reuse the production separator's
+        // layout resolution instead of guessing one order: feeding [2, 1, 512, 1024]
+        // to the splits-first export fails with "index: 1 Got: 1 Expected: 2".
+        // Unmappable layouts throw there and surface as an honest smoke failure.
+        if (modelDimensions.Count == 4)
+        {
+            return SpleeterOnnxSeparator.ResolveBlockDimensions(modelDimensions);
+        }
 
         int[] dimensions = modelDimensions.Count switch
         {
