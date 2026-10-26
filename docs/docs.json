@@ -106,6 +106,7 @@
         "pages": [
           "audits/audit-summary",
           "audits/Code_Quality_Security_Scan_Audit",
+          "audits/inference-pipeline-cold-start-audit-2026-10-25",
           "audits/pipeline-full-walk-audit-2026-07-08",
           "audits/Trackdub-dead-code-audit-review",
           "audits/Trackdub-dead-code-audit-verification",
