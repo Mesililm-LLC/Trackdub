@@ -57,6 +57,14 @@ public sealed class RuntimeStageWarmupCoordinator(
                     _ => RuntimeModelRequestFactory.CreateStageRequest(options, request.Stage),
                 };
 
+                // Warmup planning is file-only: it must never run the planner's
+                // authoritative smoke. On a plan-cache miss (e.g. Automatic translation,
+                // which readiness never pre-plans), that smoke would take the regular
+                // evicting GenAI lease and evict the current stage's resident-idle model
+                // before the non-evicting smoke below runs. The coordinator's own smoke
+                // still warms the model, and stage execution re-verifies independently
+                // (the skip flag is part of the plan-cache key, so this Ready can never
+                // satisfy execution's verified request).
                 StageRuntimePlanningRequest planningRequest =
                     await StageRuntimePlanningRequestFactory.ApplyPreferredModelTierAsync(
                         new StageRuntimePlanningRequest(
@@ -67,7 +75,8 @@ public sealed class RuntimeStageWarmupCoordinator(
                             RequirePreferredModelAlias: modelRequest.RequirePreferredModelAlias,
                             PreferredExecutionProvider: modelRequest.PreferredExecutionProvider,
                             RequirePreferredExecutionProvider: modelRequest.RequirePreferredExecutionProvider,
-                            PreferredModelVariantAlias: modelRequest.PreferredModelVariantAlias),
+                            PreferredModelVariantAlias: modelRequest.PreferredModelVariantAlias,
+                            SkipProviderSmokeTest: true),
                         runtimePlanningPreferences,
                         cancellationToken).ConfigureAwait(false);
 

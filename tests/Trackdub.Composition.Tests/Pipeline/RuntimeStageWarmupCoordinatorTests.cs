@@ -83,6 +83,9 @@ public class RuntimeStageWarmupCoordinatorTests
         Assert.Equal("pt-BR", capturedPlan.SourceLanguage);
         Assert.Equal("es-MX", capturedPlan.TargetLanguage);
         Assert.Equal(ExecutionProviderKind.DirectMl, capturedPlan.PreferredExecutionProvider);
+        // Warmup planning is file-only: it must never run the planner's
+        // authoritative (evicting) smoke on a plan-cache miss.
+        Assert.True(capturedPlan.SkipProviderSmokeTest);
 
         Assert.NotNull(capturedSmoke);
         Assert.Equal(RuntimeStage.Translation, capturedSmoke!.Stage);
