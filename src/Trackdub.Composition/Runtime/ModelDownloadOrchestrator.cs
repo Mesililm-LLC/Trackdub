@@ -221,12 +221,13 @@ public sealed class ModelDownloadOrchestrator(
                 }
 
                 await RegisterCacheRecordAsync(entry, modelRootDirectory, hashResult, cancellationToken).ConfigureAwait(false);
-                EmitStateChange(modelId, ModelCacheState.Downloading, ModelCacheState.Installed);
                 // Sidecar caches are keyed by model root, so a fresh install of the same model id
                 // can differ from whatever was cached for that path (e.g. a mel-bin count read
-                // from a config file that did not exist yet). Invalidate before warming so the
-                // warm and every later transcription read the installed files, not stale state.
+                // from a config file that did not exist yet). Invalidate before emitting Installed, because observers run
+                // synchronously and may start inference, and before warming, so every read sees the
+                // installed files, not stale state.
                 InvalidateSidecarCaches(modelRootDirectory);
+                EmitStateChange(modelId, ModelCacheState.Downloading, ModelCacheState.Installed);
                 // Trigger engine warming here, on the install path itself, rather than from a
                 // subscriber type the DI graph may never construct: this method only runs because
                 // an install actually happened, so the request cannot be silently skipped.
