@@ -9,6 +9,9 @@ namespace Trackdub.Infrastructure.Persistence.Repositories;
 public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths)
 {
     private readonly SemaphoreSlim mutationLock = new(1, 1);
+    private int revision;
+
+    internal int Revision => Volatile.Read(ref revision);
 
     /// <summary>
     /// Atomically reads the current cache index, applies <paramref name="mutator"/>, and persists the result.
@@ -54,10 +57,14 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
     public Task<IReadOnlyList<LocalModelCacheRecord>> LoadAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(Load(cancellationToken));
+    }
 
+    internal IReadOnlyList<LocalModelCacheRecord> Load(CancellationToken cancellationToken = default)
+    {
         if (!File.Exists(storagePaths.ModelCacheIndexPath))
         {
-            return Task.FromResult<IReadOnlyList<LocalModelCacheRecord>>([]);
+            return [];
         }
 
         byte[] payload = File.ReadAllBytes(storagePaths.ModelCacheIndexPath);
@@ -73,7 +80,7 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
             json,
             LocalModelCacheSerializationContext.Default.LocalModelCacheRecordArray);
 
-        return Task.FromResult<IReadOnlyList<LocalModelCacheRecord>>(NormalizeRecords(records ?? []));
+        return NormalizeRecords(records ?? []);
     }
 
     /// <summary>
@@ -109,6 +116,7 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
             }
 
             File.Move(tempPath, indexPath, overwrite: true);
+            Interlocked.Increment(ref revision);
         }
         catch
         {

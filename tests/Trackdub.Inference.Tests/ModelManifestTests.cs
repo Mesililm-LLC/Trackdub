@@ -2792,5 +2792,28 @@ public sealed class LocalModelCacheRecordLookupTests
         }
     }
 
+    [Fact]
+    public async Task Find_caches_records_until_store_write_invalidates_them()
+    {
+        string rootPath = Path.Join(Path.GetTempPath(), "trackdub-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(rootPath);
+        var store = new LocalModelCacheRecordStore(new TrackdubStoragePaths(rootPath));
+        string modelRoot = Path.Join(rootPath, "models", "example-model");
+        var record = new LocalModelCacheRecord("example/model", modelRoot, "rev-a", ValidSha256, DateTimeOffset.UnixEpoch);
+        await store.MutateAsync(_ => [record], CancellationToken.None);
+        var lookup = new LocalModelCacheRecordLookup(store);
+
+        LocalModelCacheRecord first = Assert.IsType<LocalModelCacheRecord>(lookup.Find(record.ModelId, modelRoot));
+        LocalModelCacheRecord second = Assert.IsType<LocalModelCacheRecord>(lookup.Find(record.ModelId, modelRoot));
+        Assert.Same(first, second);
+
+        await store.MutateAsync(_ => [record with { Revision = "rev-b" }], CancellationToken.None);
+        LocalModelCacheRecord updated = Assert.IsType<LocalModelCacheRecord>(lookup.Find(record.ModelId, modelRoot));
+        Assert.Equal("rev-b", updated.Revision);
+        Assert.NotSame(first, updated);
+
+        Directory.Delete(rootPath, recursive: true);
+    }
+
     private const string ValidSha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 }
