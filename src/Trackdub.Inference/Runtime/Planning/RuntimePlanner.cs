@@ -169,6 +169,8 @@ public sealed class RuntimePlanner : IRuntimePlanner
             cacheIndex,
             fileExistenceCache,
             preferMigraphxOnAmdGpu,
+            devices,
+            effectiveExclusions,
             cancellationToken).ConfigureAwait(false);
         if (resolvedPlan is not null)
         {
@@ -203,6 +205,8 @@ public sealed class RuntimePlanner : IRuntimePlanner
                 cacheIndex,
                 fileExistenceCache,
                 preferMigraphxOnAmdGpu,
+                devices,
+                effectiveExclusions,
                 cancellationToken).ConfigureAwait(false);
             if (fallbackPlan is not null)
             {
@@ -339,6 +343,8 @@ public sealed class RuntimePlanner : IRuntimePlanner
         IReadOnlyDictionary<string, IReadOnlyList<LocalModelCacheRecord>> cacheIndex,
         ConcurrentDictionary<string, bool> fileExistenceCache,
         bool preferMigraphxOnAmdGpu,
+        IReadOnlyList<DeviceEntry>? devices,
+        DeviceExclusionSet? effectiveExclusions,
         CancellationToken cancellationToken)
     {
         foreach (RankedManifestEntry candidate in planEntries)
@@ -356,7 +362,9 @@ public sealed class RuntimePlanner : IRuntimePlanner
                 preferMigraphxOnAmdGpu,
                 request.NormalizedPreferredModelVariantAlias,
                 request.SkipProviderSmokeTest,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                devices,
+                effectiveExclusions).ConfigureAwait(false);
 
             if (readyPlan is not null)
             {
@@ -377,7 +385,9 @@ public sealed class RuntimePlanner : IRuntimePlanner
                 request.PreferredExecutionProvider,
                 request.RequirePreferredExecutionProvider,
                 preferMigraphxOnAmdGpu,
-                request.NormalizedPreferredModelVariantAlias);
+                request.NormalizedPreferredModelVariantAlias,
+                devices,
+                effectiveExclusions);
 
             if (downloadPlan is not null)
             {

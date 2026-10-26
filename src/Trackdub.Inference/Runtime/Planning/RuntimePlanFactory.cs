@@ -33,7 +33,9 @@ internal sealed class RuntimePlanFactory
         bool preferMigraphxOnAmdGpu,
         string? preferredModelVariantAlias,
         bool skipProviderSmokeTest,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<DeviceEntry>? devices = null,
+        DeviceExclusionSet? exclusions = null)
     {
         cacheIndex.TryGetValue(candidate.Entry.ModelId, out IReadOnlyList<LocalModelCacheRecord>? cacheRecords);
 
@@ -110,7 +112,9 @@ internal sealed class RuntimePlanFactory
                         preferredExecutionProviderSkippedForEngine: preferredForbiddenForEngine
                             ? preferredExecutionProvider
                             : null,
-                        modelRevisionHash: modelSha256);
+                        modelRevisionHash: modelSha256,
+                        devices: devices,
+                        exclusions: exclusions);
                 }
 
                 // A local optimized variant is a different graph file from its source model;
@@ -140,7 +144,9 @@ internal sealed class RuntimePlanFactory
                         preferredExecutionProviderSkippedForEngine: preferredForbiddenForEngine
                             ? preferredExecutionProvider
                             : null,
-                        modelRevisionHash: modelSha256);
+                        modelRevisionHash: modelSha256,
+                        devices: devices,
+                        exclusions: exclusions);
                 }
 
                 ExecutionProviderSmokeTestResult smokeResult;
@@ -194,7 +200,9 @@ internal sealed class RuntimePlanFactory
                         preferredExecutionProviderSkippedForEngine: preferredForbiddenForEngine
                             ? preferredExecutionProvider
                             : null,
-                        modelRevisionHash: modelSha256);
+                        modelRevisionHash: modelSha256,
+                        devices: devices,
+                        exclusions: exclusions);
                 }
 
                 if (requirePreferredExecutionProvider && !preferredForbiddenForEngine)
@@ -228,7 +236,9 @@ internal sealed class RuntimePlanFactory
         ExecutionProviderKind? preferredExecutionProvider,
         bool requirePreferredExecutionProvider,
         bool preferMigraphxOnAmdGpu,
-        string? preferredModelVariantAlias)
+        string? preferredModelVariantAlias,
+        IReadOnlyList<DeviceEntry>? devices = null,
+        DeviceExclusionSet? exclusions = null)
     {
         cacheIndex.TryGetValue(candidate.Entry.ModelId, out IReadOnlyList<LocalModelCacheRecord>? cacheRecords);
 
@@ -294,7 +304,9 @@ internal sealed class RuntimePlanFactory
                     requiredModelRelativePaths: variant.RequiredRelativePaths,
                     preferredExecutionProviderSkippedForEngine: preferredForbiddenForEngine
                         ? preferredExecutionProvider
-                        : null);
+                        : null,
+                    devices: devices,
+                    exclusions: exclusions);
             }
         }
 
@@ -426,8 +438,11 @@ internal sealed class RuntimePlanFactory
         string? modelEntryRelativePath = null,
         IReadOnlyList<string>? requiredModelRelativePaths = null,
         ExecutionProviderKind? preferredExecutionProviderSkippedForEngine = null,
-        string? modelRevisionHash = null)
+        string? modelRevisionHash = null,
+        IReadOnlyList<DeviceEntry>? devices = null,
+        DeviceExclusionSet? exclusions = null)
     {
+        (int? deviceIndex, string? deviceAdapterDescription) = ResolvePlanDevice(provider, devices, exclusions);
         return new StageRuntimePlan
         {
             Stage = stage,
@@ -445,6 +460,8 @@ internal sealed class RuntimePlanFactory
             RequiredModelRelativePaths = requiredModelRelativePaths ?? [],
             IsLocalOptimizedVariant = isLocalOptimizedVariant,
             ModelRevisionHash = modelRevisionHash,
+            DeviceIndex = deviceIndex,
+            DeviceAdapterDescription = deviceAdapterDescription,
             Fallback = fallback,
             Warnings = BuildWarnings(
                 candidate.Entry,
@@ -453,6 +470,41 @@ internal sealed class RuntimePlanFactory
                 modelIntegrityStatus,
                 preferredExecutionProviderSkippedForEngine)
         };
+    }
+
+    /// <summary>
+    /// Selects the device the planned execution provider will run on: the lowest-index
+    /// device advertising the provider that is not in the run's exclusion set.
+    /// Returns no device when the device list is unavailable (planning outside a run)
+    /// or no eligible device remains; the device-fallback catch filter then lets the
+    /// failure propagate instead of recording a bogus exclusion.
+    /// </summary>
+    private static (int? DeviceIndex, string? AdapterDescription) ResolvePlanDevice(
+        ExecutionProviderKind provider,
+        IReadOnlyList<DeviceEntry>? devices,
+        DeviceExclusionSet? exclusions)
+    {
+        if (devices is null)
+        {
+            return (null, null);
+        }
+
+        foreach (DeviceEntry device in devices.OrderBy(static candidate => candidate.DeviceIndex))
+        {
+            if (!device.SupportedProviders.Contains(provider))
+            {
+                continue;
+            }
+
+            if (exclusions is not null && exclusions.IsExcluded(device.DeviceIndex))
+            {
+                continue;
+            }
+
+            return (device.DeviceIndex, device.AdapterDescription);
+        }
+
+        return (null, null);
     }
 
     private static IReadOnlyList<RuntimePlanWarning> BuildWarnings(
