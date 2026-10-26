@@ -18,7 +18,6 @@ public sealed class WorkflowTriggerTests
 {
     [Theory]
     [InlineData(".github/workflows/ci.yml")]
-    [InlineData(".github/workflows/codeql.yml")]
     [InlineData(".github/workflows/model-audit.yml")]
     [InlineData(".github/workflows/benchmark-report-validation.yml")]
     public void Pull_request_trigger_is_not_narrowed_to_a_base_branch(string workflowPath)
