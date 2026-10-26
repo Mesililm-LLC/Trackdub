@@ -14,14 +14,17 @@ public sealed class EngineAutoWarmInstaller : IHostedService
         this.queue = queue ?? throw new ArgumentNullException(nameof(queue));
 
     /// <summary>
-    /// Activates the warm queue. Hosting is what makes post-install warming live in production, so
-    /// this is the activation point rather than a no-op: a host that never starts this service
-    /// leaves the queue inactive, which is observable instead of silently dropping every request.
+    /// Records host activation of the warm queue. This is not a processing gate: the coordinator
+    /// starts its worker in its constructor and self-activates on the first request, so warming
+    /// works whether or not a host ever starts this service. Starting it makes activation
+    /// observable, which is how a misconfigured host becomes visible rather than silent.
     /// </summary>
     public Task StartAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        queue.Activate();
+        // Call the contract directly for every implementation: a type-specific branch would leave
+        // other IEngineAutoWarmQueue implementations with IsHostStarted stuck at false.
+        queue.MarkHostStarted();
         return Task.CompletedTask;
     }
 

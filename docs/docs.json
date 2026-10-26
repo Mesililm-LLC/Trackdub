@@ -64,7 +64,6 @@
         "pages": [
           "operations/operations",
           "operations/cloud-operations",
-          "operations/codeql-advanced-setup",
           "operations/GITHUB_ACTIONS",
           "operations/linear-workflow",
           "operations/macos-deployment-notes",

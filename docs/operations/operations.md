@@ -1,110 +1,18 @@
-# CodeQL advanced setup (Trackdub)
-
-Trackdub uses **advanced CodeQL only** via [`.github/workflows/codeql.yml`](../../.github/workflows/codeql.yml). Do not run GitHub **default** CodeQL in parallel on this repository.
-
-## Why one setup
-
-| | Default CodeQL (`CodeQL` workflow) | Advanced (`CodeQL Advanced`) |
-|---|-----------------------------------|------------------------------|
-| Source | Org/repo dynamic setup | `.github/workflows/codeql.yml` |
-| C# build | `build-mode: none` on Linux | Manual `Trackdub.slnx` build on Windows |
-| Frontend (JS/TS) | Default | Not in the advanced matrix today (it covers `actions`, `csharp`, `python` only) |
-| Queries | Default suite | `security-extended,security-and-quality` |
-| Paths | Whole repo | `.github/codeql/codeql-config.yml` scopes |
-
-Running both wastes Actions minutes and produces weaker C# results (no compiled DB).
-
-## Current state (check periodically)
-
-```powershell
-# Repo default-setup flag (want: state = not-configured)
-gh api repos/mesalimllc/Trackdub/code-scanning/default-setup --jq '{state, query_suite}'
-
-# Applied org security configuration (default setup should be disabled when advanced-only)
-gh api repos/mesalimllc/Trackdub/code-security-configuration --jq '.configuration | {name, code_scanning_default_setup, code_scanning_options}'
-
-# Recent Advanced runs
-gh run list --repo mesalimllc/Trackdub --workflow=codeql.yml --limit 5
-```
-
-If you see **both** `CodeQL` and `CodeQL Advanced` on the same push, default setup is still enabled at org or repo level.
-
-## One-time org fix (requires org admin)
-
-The `mesalimllc` org applies enforced configuration **`mesalimllc-org-config-1`**, which currently enables **Code scanning default setup**. That spawns the dynamic `CodeQL` workflow even when the repo workflow file is advanced.
-
-**UI (recommended):**
-
-1. Open [mesalimllc org security configuration](https://github.com/organizations/mesalimllc/settings/security_products/configurations/edit/259214).
-2. Under **Code scanning**, set **Default setup** to **Disabled**.
-3. Keep **Allow advanced setup** enabled.
-4. Save.
-
-**API (needs `admin:org` on `gh auth`):**
-
-```powershell
-gh auth refresh -h github.com -s admin:org
-
-@'
-{
-  "code_scanning_default_setup": "disabled",
-  "code_scanning_options": {
-    "allow_advanced": true
-  }
-}
-'@ | gh api -X PATCH orgs/mesalimllc/code-security/configurations/259214 --input -
-```
-
-**Repo-level backup:**
-
-1. Repository **Settings → Advanced Security → Code security**.
-2. **CodeQL analysis** menu → **Switch to advanced** (or disable default CodeQL if offered).
-3. Confirm `.github/workflows/codeql.yml` remains the active workflow.
-
-Then confirm repo default setup:
-
-```powershell
-gh api repos/mesalimllc/Trackdub/code-scanning/default-setup -X PATCH -f state=not-configured
-```
-
-## Verify Advanced
-
-```powershell
-gh workflow run codeql.yml --repo mesalimllc/Trackdub
-gh run list --repo mesalimllc/Trackdub --workflow=codeql.yml --limit 1
-```
-
-Expect three matrix jobs: `actions`, `csharp` (Windows), `python`. The workflow file is currently
-disabled at the repository level (`gh api` returns `state: disabled_manually`), so re-enable it before
-dispatching; until then, pre-merge analysis comes from GitHub's default code scanning setup.
-
-## Related workflows
-
-- **`code-coverage.yml`**: Coverlet + GitHub Code Quality upload (test coverage, not SAST).
-- **`ci.yml`**: Build/test gate; does not replace CodeQL.
-
-## Config files
-
-- Workflow: `.github/workflows/codeql.yml`
-- Query/path config: `.github/codeql/codeql-config.yml`
-
 # GitHub Actions Workflows
 
 CI/CD lives in `.github/workflows/`. All jobs run on GitHub-hosted runners (`ubuntu-latest`,
 `windows-latest`, `macos-latest`), except `trt-rtx-smoke.yml`, which needs the self-hosted Windows
 runner.
 
-`ci.yml`, `codeql.yml`, `model-audit.yml`, `benchmark-report-validation.yml`,
+`ci.yml`, `model-audit.yml`, `benchmark-report-validation.yml`,
 `release-shipping-guard.yml`, `dependabot-auto-merge.yml`, and `opencode-review.yml` run
 automatically on their triggers. `benchmark-dotnet.yml` runs on a nightly schedule. Everything else
 is manual (`workflow_dispatch`) or PR-comment triggered:
 
-Pull-request triggers are not restricted to pull requests whose base is `main`. `ci.yml`, `codeql.yml`,
+Pull-request triggers are not restricted to pull requests whose base is `main`. `ci.yml`,
 `model-audit.yml`, and `benchmark-report-validation.yml` also run for stacked pull requests based on
 another branch; the workflows with a `paths` filter still run only when a matching path changes.
-`codeql.yml` is itself disabled at the repository level, so its trigger stays inert until the workflow
-is re-enabled. Pre-merge CodeQL analysis currently comes from GitHub's default code scanning setup,
-which runs for pull requests into `main`; a pull request based on another branch currently gets none.
+Pre-merge CodeQL analysis comes from GitHub's default code scanning setup, which runs for pull requests into `main`; a pull request based on another branch currently gets none.
 
 | Command (PR comment) | Workflow |
 |----------------------|----------|
@@ -192,18 +100,6 @@ gh workflow run opencode.yml -f prompt="Summarize recent pipeline changes"
 - **Steps:** restore, fetch the TensorRT RTX EP plugin (`tools/dev/Fetch-TrtRtxEp.ps1`), build the benchmarks, download the starter-pack models, then run `Trackdub.Benchmarks.DevHost --scope trt-rtx-smoke --provider trt-rtx`.
 - **Model download:** a "Download starter-pack models" step runs `trackdub models download` for every target in `TrtRtxSmokeCatalog.StarterPackTurboGpu` (with variants `gpu-int4`, `quantized`, and `fp16` where the catalog defines them) before the smoke run. Without it the resolver skips every target. The download step and the smoke step share one model cache via job-level `TRACKDUB_CACHE_ROOT` and `TRACKDUB_MODEL_CACHE` (kept consistent so `TRACKDUB_MODEL_CACHE == TRACKDUB_CACHE_ROOT/model-cache`).
 - **Failure surfacing:** the job no longer uses `continue-on-error`, so a non-zero smoke exit fails the run. The benchmark exits non-zero when every target is skipped ("TRT RTX smoke did not run any targets (all skipped)"), so a run that downloads nothing or skips everything now turns red instead of reporting green.
-
-### CodeQL Advanced (`codeql.yml`)
-
-- **Trigger:** Push to `main`, any pull request, weekly schedule (Mon 01:42 UTC), manual (`workflow_dispatch`)
-- **Runs:** `ubuntu-latest` (`actions`, `python` — `build-mode: none`); `windows-latest` (C# manual `Trackdub.slnx` build)
-- **Tasks:** Advanced CodeQL with `security-extended,security-and-quality`; path config in `.github/codeql/codeql-config.yml`
-- **Important:** Only canonical CodeQL workflow for this repo, but it is currently disabled at the repository level (`disabled_manually`) while GitHub's default code scanning setup is enabled. Disable GitHub default CodeQL (org `mesalimllc-org-config-1` or repo settings) and re-enable this workflow to avoid duplicate dynamic `CodeQL` runs. See `docs/operations/codeql-advanced-setup.md`.
-
-```powershell
-gh workflow run codeql.yml
-gh run list --workflow=codeql.yml --limit 3
-```
 
 ### Code coverage (`code-coverage.yml`)
 

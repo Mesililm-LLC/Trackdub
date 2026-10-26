@@ -198,8 +198,24 @@ internal sealed class LanguageModel : IDisposable
         var flatPosIds = ArrayPool<long>.Shared.Rent(3 * 1 * prefillLen);
 
         float[] logits, hiddenStates;
-        float[] prefillKeys, prefillValues;
 
+        // Rented before the prefill so its cache outputs land directly in their final storage:
+        // allocating separate prefill arrays and copying them in would add ~109 MiB of temporary
+        // allocation (28 layers x 8 heads x 128 head_dim x prefill length) for nothing.
+        int kvElementCountPerPosition = _numLayers * _numKvHeads * _headDim;
+        int kvCapacityPositions = prefillLen + maxNewTokens + 1;
+        var kvKeys = ArrayPool<float>.Shared.Rent(kvElementCountPerPosition * kvCapacityPositions);
+        var kvValues = ArrayPool<float>.Shared.Rent(kvElementCountPerPosition * kvCapacityPositions);
+
+        // The code-predictor cache resets every generated frame and grows only across groups 1..15
+        // (2 + 14 positions), so it is sized for 16 rather than for the whole generation. Sizing it
+        // by kvCapacityPositions would hold tens of MB of unused rent live across the prefill.
+        int cpKvElementCountPerPosition = _cpNumLayers * _cpNumKvHeads * _cpHeadDim;
+        const int cpKvCapacityPositions = 16;
+        var cpKvKeys = ArrayPool<float>.Shared.Rent(cpKvElementCountPerPosition * cpKvCapacityPositions);
+        var cpKvValues = ArrayPool<float>.Shared.Rent(cpKvElementCountPerPosition * cpKvCapacityPositions);
+
+        bool prefillSucceeded = false;
         try
         {
             Buffer.BlockCopy(inputsEmbeds, 0, flatEmbeds, 0, 1 * prefillLen * _hiddenSize * sizeof(float));
@@ -219,19 +235,46 @@ internal sealed class LanguageModel : IDisposable
                 ColdStartCapture.MarkInferenceCompleted(PrefillRunSource);
                 logits = prefillOutputs[0].GetTensorDataAsSpan<float>().ToArray();
                 hiddenStates = prefillOutputs[1].GetTensorDataAsSpan<float>().ToArray();
-                StackPrefillKVFromOrtValues(prefillOutputs, prefillLen, out prefillKeys, out prefillValues);
+                StackPrefillKVFromOrtValues(prefillOutputs, prefillLen, kvKeys, kvValues);
             }
+
+            prefillSucceeded = true;
         }
         finally
         {
             ArrayPool<float>.Shared.Return(flatEmbeds);
             ArrayPool<long>.Shared.Return(flatMask);
             ArrayPool<long>.Shared.Return(flatPosIds);
+
+            // The KV buffers are rented above this try so the prefill can write straight into
+            // them, but they are only handed to the generation loop's finally once the prefill
+            // succeeds. Returning them here on failure keeps a prefill throw from leaking four
+            // pooled arrays.
+            if (!prefillSucceeded)
+            {
+                ArrayPool<float>.Shared.Return(kvKeys);
+                ArrayPool<float>.Shared.Return(kvValues);
+                ArrayPool<float>.Shared.Return(cpKvKeys);
+                ArrayPool<float>.Shared.Return(cpKvValues);
+            }
         }
 
-        // Release prefill session to free memory before loading decode + CP sessions
-        _prefillSession?.Dispose();
-        _prefillSession = null;
+        // Release prefill session to free memory before loading decode + CP sessions. This runs
+        // outside the prefill try, so a throw here would strand the rented KV buffers: hand them
+        // back before rethrowing, since the generation loop's finally never runs in that case.
+        try
+        {
+            _prefillSession?.Dispose();
+            _prefillSession = null;
+        }
+        catch
+        {
+            ArrayPool<float>.Shared.Return(kvKeys);
+            ArrayPool<float>.Shared.Return(kvValues);
+            ArrayPool<float>.Shared.Return(cpKvKeys);
+            ArrayPool<float>.Shared.Return(cpKvValues);
+            throw;
+        }
 
         // Generation loop
         var generatedCodes = new List<long[]>();
@@ -257,26 +300,6 @@ internal sealed class LanguageModel : IDisposable
         var pooledMask = ArrayPool<long>.Shared.Rent(prefillLen + maxNewTokens + 1);
         var pooledCpInputs = ArrayPool<float>.Shared.Rent(2 * cpInputDim);
         Debug.Assert(pooledCpInputs.Length >= 2 * cpInputDim, "CP prefill buffer too small");
-
-        // Pre-allocated KV buffers for the talker and code predictor.
-        //
-        // Copying the whole cache out of every decoder output costs O(T) per step and therefore
-        // O(T^2) per generation: at 28 layers x 8 heads x 128 head_dim that is ~229 KB per token
-        // of K+V, so a 500-frame utterance copies on the order of tens of GB and allocates a fresh
-        // large-object-heap array every step. Both caches only gain positions, so one max-size
-        // buffer each is filled in place and no per-step allocation happens. Values are copied in
-        // the same element order ORT produced, so numerics are unchanged.
-        int kvElementCountPerPosition = _numLayers * _numKvHeads * _headDim;
-        int kvCapacityPositions = prefillLen + maxNewTokens + 1;
-        var kvKeys = ArrayPool<float>.Shared.Rent(kvElementCountPerPosition * kvCapacityPositions);
-        var kvValues = ArrayPool<float>.Shared.Rent(kvElementCountPerPosition * kvCapacityPositions);
-        int cpKvElementCountPerPosition = _cpNumLayers * _cpNumKvHeads * _cpHeadDim;
-        var cpKvKeys = ArrayPool<float>.Shared.Rent(cpKvElementCountPerPosition * kvCapacityPositions);
-        var cpKvValues = ArrayPool<float>.Shared.Rent(cpKvElementCountPerPosition * kvCapacityPositions);
-
-        // Seed the talker buffers from the prefill cache.
-        prefillKeys.CopyTo(kvKeys, 0);
-        prefillValues.CopyTo(kvValues, 0);
 
         try
         {
@@ -354,6 +377,9 @@ internal sealed class LanguageModel : IDisposable
 
                         // Update CP KV
                         cpPastLen += cpInputSeqLen;
+                        Debug.Assert(
+                            cpPastLen <= cpKvCapacityPositions,
+                            "Code-predictor cache exceeded its reserved 16 positions.");
                         // Same in-place growth as the talker: the CP cache also gains only new
                         // positions, so copy into the reserved buffer rather than reallocating.
                         CopyTensorInto(
@@ -725,21 +751,19 @@ internal sealed class LanguageModel : IDisposable
     }
 
     /// <summary>
-    /// Stacks the per-layer prefill cache outputs into contiguous arrays in the
-    /// (layers, 1, kvHeads, seq, headDim) layout the decode step expects. Called once per
-    /// generation; the decode loop copies this into its own pre-allocated buffers.
+    /// Stacks the per-layer prefill cache outputs into the caller's pre-allocated buffers in the
+    /// contiguous (layers, 1, kvHeads, seq, headDim) layout the decode step expects. Writing
+    /// straight into the generation buffers avoids a full-size temporary copy of the prefill cache.
     /// </summary>
     private void StackPrefillKVFromOrtValues(
         IReadOnlyList<OrtValue> outputs,
         int seqLen,
-        out float[] keys,
-        out float[] values)
+        float[] keys,
+        float[] values)
     {
         // Output order: [0]=logits, [1]=hidden_states, then 56 KV tensors alternating key/value per layer
         // present_key_0 at [2], present_value_0 at [3], present_key_1 at [4], ...
         int layerSize = 1 * _numKvHeads * seqLen * _headDim;
-        keys = new float[_numLayers * layerSize];
-        values = new float[_numLayers * layerSize];
         for (int layer = 0; layer < _numLayers; layer++)
         {
             var keySpan = outputs[2 + (layer * 2)].GetTensorDataAsSpan<float>();

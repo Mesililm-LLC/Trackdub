@@ -125,7 +125,7 @@ permission:
       <step>`OnnxLockFilePreservesPortableRuntimeIdentifierGraphs` — Windows only; `packages.lock.json` must carry `net10.0/{rid}` graphs for win-x64, win-arm64, linux-x64, linux-arm64, osx-x64, osx-arm64 in Contracts, Domain, Inference, and Inference.Onnx (the last also for `net10.0-windows10.0.19041`). A lock-file edit that drops a RID graph breaks portable locked restores.</step>
       <step>`StageNameConsistencyTests` — both directions: no `StageRunRecord.Start` call site takes an inline stage-name literal, and every `StageNames` constant value appears in `KnownStageNameValues`.</step>
       <step>`LicensingIsolationTests` — zero `ProjectReference`, no third-party crypto packages (BouncyCastle, jose-jwt, IdentityModel JWT, NSec, libsodium), single-target `net10.0` with no `<TargetFrameworks>`.</step>
-      <step>`WorkflowTriggerTests` — no `branches:` filter on `pull_request` in `ci.yml`, `codeql.yml`, `model-audit.yml`, `benchmark-report-validation.yml`. A `paths:` filter is allowed and deliberate.</step>
+      <step>`WorkflowTriggerTests` — no `branches:` filter on `pull_request` in `ci.yml`, `model-audit.yml`, `benchmark-report-validation.yml`. A `paths:` filter is allowed and deliberate.</step>
       <step>Banned-API audit over both `git diff -U0 "$BASE_REF"...HEAD -- '*.cs'` and `git diff -U0 HEAD -- '*.cs'`: any new or modified `Path.Combine` call is a finding even though RS0030 does not fail the build.</step>
       <step>Analyzer rules: `Trackdub.Analyzers` ships `WavePcm16MultiSourceMixOptInAnalyzer`; audio work must satisfy it rather than route around it.</step>
     </process>

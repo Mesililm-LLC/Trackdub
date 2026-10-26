@@ -205,6 +205,51 @@ internal sealed class SidecarCache<T>
         }
     }
 
+    /// <summary>Removes all cached entries whose key is rooted at <paramref name="pathPrefix"/>.</summary>
+    /// <returns>
+    /// The number of distinct keys removed. A key present in both the sync and async stores counts
+    /// once, because <see cref="TryRemove"/> clears both.
+    /// </returns>
+    public int RemoveByPathPrefix(string pathPrefix)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pathPrefix);
+        string prefix = Path.GetFullPath(pathPrefix);
+        if (!prefix.EndsWith(Path.DirectorySeparatorChar))
+        {
+            prefix += Path.DirectorySeparatorChar;
+        }
+
+        StringComparison comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        // Snapshot both key sets, then visit each distinct key once. TryRemove clears a key from
+        // both stores, so a key present in both snapshots must not be processed twice: a concurrent
+        // reload of that key between passes would otherwise be removed by the second pass and
+        // counted again, breaking the distinct-key contract and discarding a fresh entry.
+        var keys = new HashSet<string>(CreatePathComparer());
+        foreach (string key in store.Keys.Where(k => k.StartsWith(prefix, comparison)))
+        {
+            keys.Add(key);
+        }
+
+        foreach (string key in storeAsync.Keys.Where(k => k.StartsWith(prefix, comparison)))
+        {
+            keys.Add(key);
+        }
+
+        int removed = 0;
+        foreach (string key in keys)
+        {
+            if (TryRemove(key, out _))
+            {
+                removed++;
+            }
+        }
+
+        return removed;
+    }
+
     /// <summary>Number of entries currently cached.</summary>
     public int Count => store.Count + storeAsync.Count;
 

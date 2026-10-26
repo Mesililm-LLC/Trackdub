@@ -37,6 +37,86 @@ public sealed class ModelDownloadOrchestratorTests : IDisposable
     }
 
     [Fact]
+    public async Task Successful_install_invalidates_sidecar_caches_for_that_model_root()
+    {
+        // End-to-end proof for the mel-bin case specifically: ReadMelBins caches the 80-bin
+        // fallback when preprocessor_config.json is absent, so an install that adds that file must
+        // flush the stale entry or the model keeps running the wrong number of mel bins. The full
+        // flush set (both tokenizers and the Qwen3-ASR embed table) is pinned directly by
+        // InvalidateSidecarCaches_flushes_every_cache_for_the_root.
+        (BundledModelManifestRegistry registry, TrackdubStoragePaths storagePaths, _) =
+            CreateRegistryWithManifestRootOutsideConfiguredCache(
+                sha256: Sha256Hex("correct-content"));
+
+        // Seed the cache for the root the orchestrator actually installs into: it derives
+        // "<cache>/<owner>/<name>" from the model id, not the manifest's root_path.
+        string installRoot = ModelDownloadPathGuard.ResolveConfiguredModelRootDirectory(
+            "example/model",
+            storagePaths.ModelCacheDirectory);
+
+        var whisperMelBins = Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.MelBins;
+        whisperMelBins.GetOrAdd(installRoot, () => 80);
+        Assert.True(whisperMelBins.Count > 0, "seed must populate the mel-bin cache");
+
+        var store = new LocalModelCacheRecordStore(storagePaths);
+        var downloader = new HashMatchingDownloader();
+        using var orchestrator = new ModelDownloadOrchestrator(
+            registry, store, downloader, storagePaths, engineAutoWarmQueue: new RecordingWarmQueue());
+
+        ModelDownloadResult result = await orchestrator.DownloadAsync(
+            "example/model", cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success, result.FailureReason);
+
+        // Every seeded entry for this root is gone, so the next read re-parses installed files
+        // rather than serving pre-install state.
+        Assert.Equal(0, whisperMelBins.GetOrAdd(installRoot, () => 0));
+    }
+
+    [Fact]
+    public void InvalidateSidecarCaches_flushes_every_cache_for_the_root()
+    {
+        // Pins the full flush set, not just mel bins: dropping any one of these calls would leave
+        // a stale entry serving pre-install state. Sentinels stand in for the tokenizer types,
+        // which cannot be constructed without loading real model files.
+        string root = Path.Join(Path.GetTempPath(), "trackdub-invalidate", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            // These are process-wide static caches, so assert on the delta from this test's own
+            // seeds rather than on absolute counts (other tests may have populated them).
+            int melBinsBefore = Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.MelBins.Count;
+            int whisperTokBefore = Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.Tokenizers.Count;
+            int asrTokBefore = Trackdub.Inference.Onnx.Qwen3Asr.Qwen3AsrSidecarCaches.Tokenizers.Count;
+            int asrEmbBefore = Trackdub.Inference.Onnx.Qwen3Asr.Qwen3AsrSidecarCaches.EmbedTokens.Count;
+
+            Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.MelBins.GetOrAdd(root, () => 80);
+            Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.Tokenizers.GetOrAdd(root, () => null!);
+            Trackdub.Inference.Onnx.Qwen3Asr.Qwen3AsrSidecarCaches.Tokenizers.GetOrAdd(root, () => null!);
+            // Embed table is keyed by file path inside the root, so it needs the prefix flush.
+            Trackdub.Inference.Onnx.Qwen3Asr.Qwen3AsrSidecarCaches.EmbedTokens.GetOrAdd(
+                Path.Join(root, "embeddings", "embed_tokens.bin"),
+                () => null!);
+
+            Assert.Equal(melBinsBefore + 1, Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.MelBins.Count);
+            Assert.Equal(whisperTokBefore + 1, Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.Tokenizers.Count);
+            Assert.Equal(asrTokBefore + 1, Trackdub.Inference.Onnx.Qwen3Asr.Qwen3AsrSidecarCaches.Tokenizers.Count);
+            Assert.Equal(asrEmbBefore + 1, Trackdub.Inference.Onnx.Qwen3Asr.Qwen3AsrSidecarCaches.EmbedTokens.Count);
+
+            ModelDownloadOrchestrator.InvalidateSidecarCaches(root);
+
+            Assert.Equal(melBinsBefore, Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.MelBins.Count);
+            Assert.Equal(whisperTokBefore, Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.Tokenizers.Count);
+            Assert.Equal(asrTokBefore, Trackdub.Inference.Onnx.Qwen3Asr.Qwen3AsrSidecarCaches.Tokenizers.Count);
+            Assert.Equal(asrEmbBefore, Trackdub.Inference.Onnx.Qwen3Asr.Qwen3AsrSidecarCaches.EmbedTokens.Count);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Successful_install_requests_engine_warming_for_the_installed_model()
     {
         // End-to-end proof of the wiring: a real download must reach the warm queue. An earlier
@@ -1405,10 +1485,20 @@ public sealed class ModelDownloadOrchestratorTests : IDisposable
 
         public bool IsActive { get; private set; }
 
+        public bool IsHostStarted { get; private set; }
+
         public bool Activate()
         {
             bool changed = !IsActive;
             IsActive = true;
+            return changed;
+        }
+
+        public bool MarkHostStarted()
+        {
+            Activate();
+            bool changed = !IsHostStarted;
+            IsHostStarted = true;
             return changed;
         }
 

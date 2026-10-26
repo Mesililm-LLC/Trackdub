@@ -277,7 +277,7 @@ public sealed class RollingFileApplicationLogger : IApplicationLogger, IDisposab
 
                 PruneArchiveFilesOnce();
                 RotateIfNeeded(Encoding.UTF8.GetByteCount(entry));
-                File.AppendAllText(logFilePath, entry, Encoding.UTF8);
+                AppendShared(logFilePath, entry);
             }
 
             return true;
@@ -448,6 +448,27 @@ public sealed class RollingFileApplicationLogger : IApplicationLogger, IDisposab
         {
             Debug.WriteLine($"[WARN] Failed to rotate Trackdub session log '{logFilePath}' on startup: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Appends <paramref name="entry"/> allowing other writers and readers to hold the file open.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="File.AppendAllText(string,string,Encoding)"/> opens with
+    /// <c>FileShare.Read</c>, so two loggers pointed at the same path (the CLI and a host, or
+    /// several test factories sharing the default data root) make each other fail with
+    /// <see cref="IOException"/>. Sharing read/write/delete keeps logging best-effort instead of
+    /// turning a shared log path into a startup failure.
+    /// </remarks>
+    private static void AppendShared(string logFilePath, string entry)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(entry);
+        using var stream = new FileStream(
+            logFilePath,
+            FileMode.Append,
+            FileAccess.Write,
+            FileShare.ReadWrite | FileShare.Delete);
+        stream.Write(bytes, 0, bytes.Length);
     }
 
     private string GetArchivePath(int archiveIndex)

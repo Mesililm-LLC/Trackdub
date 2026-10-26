@@ -288,6 +288,37 @@ public sealed class SidecarCacheTests
     // ── Count ─────────────────────────────────────────────────────────────────
 
     [Fact]
+    public async Task GetOrAddAsync_CancellingOneCallersWait_DoesNotCancelTheSharedLoad()
+    {
+        // Pins the cache primitive the Qwen3-ASR engine relies on: GetOrAddAsync shares one load
+        // per key, and a caller's own WaitAsync must be able to give up without cancelling that
+        // shared work. This does NOT exercise the engine itself, so it would not catch the engine
+        // regressing to pass its caller's token into the load factory; it only guarantees the
+        // primitive keeps offering the isolation the engine's CancellationToken.None call needs.
+        var cache = new SidecarCache<string>();
+        var load = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cancellation = new CancellationTokenSource();
+        int factoryCalls = 0;
+
+        Task<string> cancelledCaller = cache
+            .GetOrAddAsync("model", _ =>
+            {
+                factoryCalls++;
+                return load.Task;
+            })
+            .WaitAsync(cancellation.Token);
+
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelledCaller);
+
+        load.SetResult("loaded");
+        string sharedValue = await cache.GetOrAddAsync("model", _ => Task.FromResult("replacement"));
+
+        Assert.Equal("loaded", sharedValue);
+        Assert.Equal(1, factoryCalls);
+    }
+
+    [Fact]
     public void Count_ReflectsDistinctKeys()
     {
         var cache = new SidecarCache<int>();

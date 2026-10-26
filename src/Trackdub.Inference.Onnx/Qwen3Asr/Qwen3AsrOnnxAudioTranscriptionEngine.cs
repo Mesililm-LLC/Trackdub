@@ -109,8 +109,13 @@ public sealed class Qwen3AsrOnnxAudioTranscriptionEngine
         Qwen3AsrModelPaths modelPaths = ResolveModelPaths(ResolvePlannedModelPath(plan));
         // Cache keyed by model root: re-reading the fp16 embedding table per request costs a
         // ~300 MB file read that expands into a LOH-sized float[,] and is identical every time.
+        //
+        // The shared load is deliberately not cancelled by this caller: one transcription being
+        // cancelled must not abort a tokenizer read that concurrent transcriptions are awaiting.
+        // Cancellation applies to this caller's wait instead.
         var tokenizer = await tokenizerCache
-            .GetOrAddAsync(modelPaths.ModelRootPath, path => Qwen3AsrTokenizer.LoadAsync(path, cancellationToken))
+            .GetOrAddAsync(modelPaths.ModelRootPath, static path => Qwen3AsrTokenizer.LoadAsync(path, CancellationToken.None))
+            .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
         Qwen3AsrEmbedTokens embedTokens = embedTokensCache
             .GetOrAdd(modelPaths.EmbedTokensPath, () => Qwen3AsrEmbedTokens.Load(modelPaths.EmbedTokensPath));

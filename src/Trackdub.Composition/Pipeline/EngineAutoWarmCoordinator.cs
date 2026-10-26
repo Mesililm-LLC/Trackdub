@@ -39,6 +39,7 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
     private int outstanding;
     private int disposed;
     private int active;
+    private int hostStarted;
 
     public EngineAutoWarmCoordinator(
         IResidentWarmupService warmupService,
@@ -78,7 +79,32 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
         return activated;
     }
 
+    /// <summary>
+    /// Records that a host started the installer. Kept distinct from <see cref="Activate"/> because
+    /// a warm request self-activates too, so the activation log alone cannot tell an operator
+    /// whether host wiring ran. This is the only signal that proves host startup happened.
+    /// </summary>
+    public bool MarkHostStarted()
+    {
+        if (Volatile.Read(ref disposed) != 0)
+        {
+            return false;
+        }
+
+        Activate();
+        bool started = Interlocked.Exchange(ref hostStarted, 1) == 0;
+        if (started)
+        {
+            logger?.LogInformation(
+                "Post-install engine warming host startup confirmed (EngineAutoWarmInstaller.StartAsync).");
+        }
+
+        return started;
+    }
+
     public bool IsActive => Volatile.Read(ref active) != 0;
+
+    public bool IsHostStarted => Volatile.Read(ref hostStarted) != 0;
 
     public void RequestWarmAfterInstall(string modelId, CancellationToken cancellationToken = default)
     {
@@ -90,10 +116,10 @@ public sealed class EngineAutoWarmCoordinator : IEngineAutoWarmQueue, IDisposabl
             return;
         }
 
-        // An inactive queue means the host never started the installer. Non-hosted hosts (the CLI
-        // builds a bare ServiceProvider, so no IHostedService ever runs) would otherwise lose
-        // warming entirely, so the first request self-activates and says so. Hosts that do run the
-        // installer activate earlier and never take this path.
+        // Activation is an observability marker, not a gate: the worker already runs and this
+        // request will be processed either way. Non-hosted callers (the CLI builds a bare
+        // ServiceProvider, so no IHostedService runs) self-activate here so the log does not
+        // imply warming is off when it is not.
         if (!IsActive)
         {
             Activate();

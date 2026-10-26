@@ -29,13 +29,22 @@ public interface IEngineAutoWarmQueue
     Task DrainAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Activates the queue for the hosting process and returns whether this call performed the
-    /// activation (false when it was already active). A host calls this at startup so that a
-    /// misconfigured host — one that never activates — is detectable rather than silently
-    /// accepting requests that no worker will ever process.
+    /// Records that a host started the warm queue and returns whether this call performed the
+    /// activation (false when it was already active). A warm request also self-activates, so this
+    /// alone does not prove host startup; it exists so activation state is observable at all.
     /// </summary>
     bool Activate();
 
     /// <summary>Whether <see cref="Activate"/> has run for this process.</summary>
     bool IsActive { get; }
+
+    /// <summary>
+    /// Records host startup specifically, distinct from <see cref="Activate"/>, because a warm
+    /// request self-activates and would otherwise make host wiring indistinguishable from normal
+    /// operation. Returns false when host startup was already recorded.
+    /// </summary>
+    bool MarkHostStarted();
+
+    /// <summary>Whether a host actually started the installer, as opposed to self-activation.</summary>
+    bool IsHostStarted { get; }
 }
