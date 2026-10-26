@@ -25,24 +25,59 @@ internal sealed class WhisperFeatureExtractor
 
     public int MelBins => melBins;
 
+    /// <summary>Frames the STFT/mel stages actually computed in the last <see cref="Extract"/> call.</summary>
+    internal int LastComputedFrameCount { get; private set; }
+
+    /// <summary>
+    /// Frames whose centered STFT window can observe at least one actual sample: frame
+    /// <c>f</c> covers <c>[f * HopLength - FftSize / 2, f * HopLength + FftSize / 2)</c>, so it is
+    /// influenced iff <c>f * HopLength - FftSize / 2 &lt; sampleCount</c>. Every later frame sees
+    /// only the zero padding the old path fed the encoder, so its mel value is the normalized
+    /// silence floor and can be filled into the result instead of computed.
+    /// </summary>
+    internal static int ComputeFrameCount(int sampleCount)
+    {
+        int actualSamples = Math.Clamp(sampleCount, 0, MaxSamples);
+        if (actualSamples == 0)
+        {
+            return 0;
+        }
+
+        return Math.Min(MaxFrames, ((actualSamples + (FftSize / 2) - 1) / HopLength) + 1);
+    }
+
     public DenseTensor<float> Extract(ReadOnlySpan<float> inputSamples)
     {
-        float[]? rentedPaddedOrTrimmed = null;
-        float[]? rentedPaddedForStft = null;
+        // The encoder input contract stays the fixed 30 s window: the TRT encoder profile is
+        // built around opt/max 3000 frames (WhisperOnnxAudioTranscriptionEngine
+        // .BuildTrtEncoderOptions) and the decoder always consumes 1500 encoder positions.
+        // Only the mel computation shrinks; the result is padded with the silence floor that
+        // the full computation would have produced for the uncomputed frames.
+        int actualSamples = Math.Min(inputSamples.Length, MaxSamples);
+        int computedFrames = ComputeFrameCount(inputSamples.Length);
+        LastComputedFrameCount = computedFrames;
+
+        float[]? rentedStftSamples = null;
         try
         {
-            ReadOnlySpan<float> paddedOrTrimmed = PadOrTrim(inputSamples, MaxSamples, out rentedPaddedOrTrimmed);
-            ReadOnlySpan<float> paddedForStft = ReflectPad(paddedOrTrimmed, FftSize / 2, out rentedPaddedForStft);
-            float[,] powerSpectrum = ComputePowerSpectrum(paddedForStft);
-            float[,] melSpectrum = ApplyMelFilters(powerSpectrum);
-            NormalizeLogMel(melSpectrum);
+            ReadOnlySpan<float> stftSamples = BuildStftSamples(
+                inputSamples.Slice(0, actualSamples), computedFrames, out rentedStftSamples);
+            float[,] powerSpectrum = ComputePowerSpectrum(stftSamples, computedFrames);
+            float[,] melSpectrum = ApplyMelFilters(powerSpectrum, computedFrames);
+            float silenceValue = NormalizeLogMel(melSpectrum, computedFrames);
 
             var data = new float[melBins * MaxFrames];
             for (int melIndex = 0; melIndex < melBins; melIndex++)
             {
-                for (int frameIndex = 0; frameIndex < MaxFrames; frameIndex++)
+                int rowOffset = melIndex * MaxFrames;
+                for (int frameIndex = 0; frameIndex < computedFrames; frameIndex++)
                 {
-                    data[(melIndex * MaxFrames) + frameIndex] = melSpectrum[melIndex, frameIndex];
+                    data[rowOffset + frameIndex] = melSpectrum[melIndex, frameIndex];
+                }
+
+                for (int frameIndex = computedFrames; frameIndex < MaxFrames; frameIndex++)
+                {
+                    data[rowOffset + frameIndex] = silenceValue;
                 }
             }
 
@@ -50,10 +85,8 @@ internal sealed class WhisperFeatureExtractor
         }
         finally
         {
-            if (rentedPaddedOrTrimmed != null)
-                System.Buffers.ArrayPool<float>.Shared.Return(rentedPaddedOrTrimmed);
-            if (rentedPaddedForStft != null)
-                System.Buffers.ArrayPool<float>.Shared.Return(rentedPaddedForStft);
+            if (rentedStftSamples != null)
+                System.Buffers.ArrayPool<float>.Shared.Return(rentedStftSamples);
         }
     }
 
@@ -62,13 +95,53 @@ internal sealed class WhisperFeatureExtractor
             ? inputSamples
             : Audio.AudioResampler.Resample(inputSamples, inputSampleRate, SampleRate);
 
-    private float[,] ComputePowerSpectrum(ReadOnlySpan<float> paddedSamples)
+    /// <summary>
+    /// Builds exactly the reflect-padded samples the first <paramref name="frameCount"/> STFT
+    /// windows read in the old full-window path (pad/trim to 30 s, then reflect-pad by
+    /// FftSize / 2 on both sides), without materializing the 30 s buffers. Positions past the
+    /// actual samples read the same zeros the old zero-padding supplied; the far-end reflection
+    /// is reproduced virtually so the full-window case stays identical too.
+    /// </summary>
+    private static ReadOnlySpan<float> BuildStftSamples(
+        ReadOnlySpan<float> actualSamples, int frameCount, out float[]? rentedArray)
     {
-        int frameCount = 1 + ((paddedSamples.Length - FftSize) / HopLength);
-        var result = new float[FrequencyBins, MaxFrames];
+        if (frameCount == 0)
+        {
+            rentedArray = null;
+            return ReadOnlySpan<float>.Empty;
+        }
+
+        int padding = FftSize / 2;
+        int targetLength = ((frameCount - 1) * HopLength) + FftSize;
+        rentedArray = System.Buffers.ArrayPool<float>.Shared.Rent(targetLength);
+        for (int index = 0; index < targetLength; index++)
+        {
+            int sourceIndex;
+            if (index < padding)
+            {
+                sourceIndex = Math.Min(padding - index, MaxSamples - 1);
+            }
+            else if (index < padding + MaxSamples)
+            {
+                sourceIndex = index - padding;
+            }
+            else
+            {
+                sourceIndex = Math.Max(MaxSamples - 2 - (index - padding - MaxSamples), 0);
+            }
+
+            rentedArray[index] = sourceIndex < actualSamples.Length ? actualSamples[sourceIndex] : 0f;
+        }
+
+        return new ReadOnlySpan<float>(rentedArray, 0, targetLength);
+    }
+
+    private float[,] ComputePowerSpectrum(ReadOnlySpan<float> paddedSamples, int frameCount)
+    {
+        var result = new float[FrequencyBins, frameCount];
         var spectrum = new Complex[FftSize];
 
-        for (int frameIndex = 0; frameIndex < frameCount - 1 && frameIndex < MaxFrames; frameIndex++)
+        for (int frameIndex = 0; frameIndex < frameCount; frameIndex++)
         {
             int sampleOffset = frameIndex * HopLength;
             Array.Clear(spectrum);
@@ -90,12 +163,12 @@ internal sealed class WhisperFeatureExtractor
         return result;
     }
 
-    private float[,] ApplyMelFilters(float[,] powerSpectrum)
+    private float[,] ApplyMelFilters(float[,] powerSpectrum, int frameCount)
     {
-        var melSpectrum = new float[melBins, MaxFrames];
+        var melSpectrum = new float[melBins, frameCount];
         for (int melIndex = 0; melIndex < melBins; melIndex++)
         {
-            for (int frameIndex = 0; frameIndex < MaxFrames; frameIndex++)
+            for (int frameIndex = 0; frameIndex < frameCount; frameIndex++)
             {
                 double sum = 0;
                 for (int binIndex = 0; binIndex < FrequencyBins; binIndex++)
@@ -110,12 +183,17 @@ internal sealed class WhisperFeatureExtractor
         return melSpectrum;
     }
 
-    private void NormalizeLogMel(float[,] melSpectrum)
+    /// <summary>Normalizes in place and returns the normalized value of a silent (zero-power) frame.</summary>
+    private float NormalizeLogMel(float[,] melSpectrum, int frameCount)
     {
-        float maxValue = float.NegativeInfinity;
+        // A zero-power frame clamps to 1e-10 before the log, so its log value is the floor
+        // every uncomputed padded frame had in the full computation. Seeding the max with it
+        // keeps the global max unchanged: computed frames can only reach it, never go below.
+        float silenceLogValue = MathF.Log10(1e-10f);
+        float maxValue = silenceLogValue;
         for (int melIndex = 0; melIndex < melBins; melIndex++)
         {
-            for (int frameIndex = 0; frameIndex < MaxFrames; frameIndex++)
+            for (int frameIndex = 0; frameIndex < frameCount; frameIndex++)
             {
                 float clamped = Math.Max(melSpectrum[melIndex, frameIndex], 1e-10f);
                 float logValue = MathF.Log10(clamped);
@@ -130,54 +208,14 @@ internal sealed class WhisperFeatureExtractor
         float minimumAllowed = maxValue - 8f;
         for (int melIndex = 0; melIndex < melBins; melIndex++)
         {
-            for (int frameIndex = 0; frameIndex < MaxFrames; frameIndex++)
+            for (int frameIndex = 0; frameIndex < frameCount; frameIndex++)
             {
                 float normalized = Math.Max(melSpectrum[melIndex, frameIndex], minimumAllowed);
                 melSpectrum[melIndex, frameIndex] = (normalized + 4f) / 4f;
             }
         }
-    }
 
-    private static ReadOnlySpan<float> PadOrTrim(ReadOnlySpan<float> inputSamples, int targetLength, out float[]? rentedArray)
-    {
-        if (inputSamples.Length == targetLength)
-        {
-            rentedArray = null;
-            return inputSamples;
-        }
-
-        rentedArray = System.Buffers.ArrayPool<float>.Shared.Rent(targetLength);
-        Array.Clear(rentedArray, 0, targetLength);
-        int copyLength = Math.Min(inputSamples.Length, targetLength);
-        inputSamples.Slice(0, copyLength).CopyTo(rentedArray);
-        return new ReadOnlySpan<float>(rentedArray, 0, targetLength);
-    }
-
-    private static ReadOnlySpan<float> ReflectPad(ReadOnlySpan<float> samples, int padding, out float[]? rentedArray)
-    {
-        if (samples.Length == 0 || padding <= 0)
-        {
-            rentedArray = null;
-            return samples;
-        }
-
-        int targetLength = samples.Length + (padding * 2);
-        rentedArray = System.Buffers.ArrayPool<float>.Shared.Rent(targetLength);
-        Array.Clear(rentedArray, 0, targetLength);
-        for (int index = 0; index < padding; index++)
-        {
-            rentedArray[index] = samples[Math.Min(padding - index, samples.Length - 1)];
-        }
-
-        samples.CopyTo(new Span<float>(rentedArray, padding, samples.Length));
-
-        for (int index = 0; index < padding; index++)
-        {
-            int sourceIndex = Math.Max(samples.Length - 2 - index, 0);
-            rentedArray[padding + samples.Length + index] = samples[sourceIndex];
-        }
-
-        return new ReadOnlySpan<float>(rentedArray, 0, targetLength);
+        return (Math.Max(silenceLogValue, minimumAllowed) + 4f) / 4f;
     }
 
     private static float[] BuildPeriodicHannWindow(int length)
