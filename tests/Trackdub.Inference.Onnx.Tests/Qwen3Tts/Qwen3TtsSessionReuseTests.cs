@@ -46,6 +46,24 @@ public sealed class Qwen3TtsSessionReuseTests
         Assert.Equal(1, createCount);
     }
 
+    [Fact]
+    public async Task Disposed_pooled_session_throws_instead_of_acquiring_a_new_lease()
+    {
+        using var pool = new InferenceSessionPool(maxSessions: 2, enableMemoryAdmission: false);
+        byte[] model = BuildIdentityOnnxModel();
+        using var pin = await OnnxExecutionSessionFactory.PinPooledSingleAsync(
+            "qwen3-tts-test-disposed",
+            "talker_prefill.onnx",
+            ExecutionProviderKind.Cpu,
+            CancellationToken.None,
+            pool,
+            sessionFactory: (_, _) => new InferenceSession(model));
+        var prefill = new QwenPooledSession(pin);
+        _ = prefill.Session;
+        prefill.Dispose();
+        Assert.Throws<ObjectDisposedException>(() => prefill.Session);
+    }
+
     private static byte[] BuildIdentityOnnxModel() =>
     [
         0x08, 0x07, 0x3A, 0x3A, 0x0A, 0x10, 0x0A, 0x01, 0x78, 0x12, 0x01, 0x79, 0x22, 0x08,

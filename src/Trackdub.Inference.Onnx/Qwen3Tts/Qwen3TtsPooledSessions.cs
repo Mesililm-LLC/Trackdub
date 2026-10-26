@@ -82,6 +82,11 @@ internal sealed class Qwen3TtsPooledSessions : IDisposable
         // SEC-3: file size pre-check before the pool opens the model, mirroring the
         // direct-session guard this replaces (1.7B models are ~5.4 GB).
         var fileInfo = new FileInfo(modelPath);
+        if (!fileInfo.Exists)
+        {
+            throw new FileNotFoundException($"Qwen3-TTS ONNX model not found: {modelPath}", modelPath);
+        }
+
         const long maxOnnxSize = 8_000_000_000;
         if (fileInfo.Length > maxOnnxSize)
         {

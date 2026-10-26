@@ -27,9 +27,9 @@ internal sealed class QwenPooledSession : IDisposable
     {
         get
         {
-            ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
             lock (gate)
             {
+                ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
                 lease ??= pin.AcquireAsync(CancellationToken.None).GetAwaiter().GetResult();
                 return lease.Session;
             }

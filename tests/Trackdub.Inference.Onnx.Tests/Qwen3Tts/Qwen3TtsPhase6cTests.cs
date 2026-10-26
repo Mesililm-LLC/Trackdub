@@ -138,6 +138,69 @@ public sealed class Qwen3TtsPhase6cTests
         }
     }
 
+    [Fact]
+    public void ReadWav_rejects_data_chunk_before_fmt()
+    {
+        string path = WriteTempWav(writer =>
+        {
+            writer.Write("data"u8);
+            writer.Write(4);
+            writer.Write(new byte[] { 0, 0, 0, 0 });
+            writer.Write("fmt "u8);
+            writer.Write(16);
+            writer.Write((short)1);
+            writer.Write((short)1);
+            writer.Write(24000);
+            writer.Write(48000);
+            writer.Write((short)2);
+            writer.Write((short)16);
+        });
+        try
+        {
+            var ex = Assert.Throws<InvalidDataException>(() => MelSpectrogram.ReadWav(path));
+            Assert.Contains("before a valid fmt", ex.Message);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void ReadWav_rejects_negative_chunk_size()
+    {
+        string path = WriteTempWav(writer =>
+        {
+            writer.Write("fmt "u8);
+            writer.Write(16);
+            writer.Write((short)1);
+            writer.Write((short)1);
+            writer.Write(24000);
+            writer.Write(48000);
+            writer.Write((short)2);
+            writer.Write((short)16);
+            writer.Write("data"u8);
+            writer.Write(-1); // unsigned >=2GB read as signed
+        });
+        try
+        {
+            var ex = Assert.Throws<InvalidDataException>(() => MelSpectrogram.ReadWav(path));
+            Assert.Contains("invalid (negative", ex.Message);
+        }
+        finally { File.Delete(path); }
+    }
+
+    private static string WriteTempWav(Action<BinaryWriter> writeChunks)
+    {
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+        writer.Write("RIFF"u8);
+        writer.Write(0);
+        writer.Write("WAVE"u8);
+        writeChunks(writer);
+        writer.Flush();
+        string path = Path.Join(Path.GetTempPath(), "trackdub-qwen-wav-" + Guid.NewGuid().ToString("N") + ".wav");
+        File.WriteAllBytes(path, stream.ToArray());
+        return path;
+    }
+
     private static byte[] BuildWav<T>(T[] samples, int channels, int sampleRate, short bitsPerSample, bool includeOddChunk)
     {
         using var stream = new MemoryStream();

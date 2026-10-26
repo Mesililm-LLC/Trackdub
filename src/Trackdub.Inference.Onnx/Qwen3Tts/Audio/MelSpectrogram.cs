@@ -130,6 +130,8 @@ public static class MelSpectrogram
         {
             var chunkId = new string(reader.ReadChars(4));
             int chunkSize = reader.ReadInt32();
+            if (chunkSize < 0)
+                throw new InvalidDataException($"WAV chunk '{chunkId}' has an invalid (negative/≥2 GB) size.");
 
             if (chunkId == "fmt ")
             {
@@ -144,6 +146,8 @@ public static class MelSpectrogram
             }
             else if (chunkId == "data")
             {
+                if (numChannels == 0 || bitsPerSample == 0)
+                    throw new InvalidDataException("WAV data chunk appears before a valid fmt chunk.");
                 // Bulk-read the whole chunk, then decode from the buffer instead of
                 // one BinaryReader call per sample per channel.
                 byte[] data = reader.ReadBytes(chunkSize);
