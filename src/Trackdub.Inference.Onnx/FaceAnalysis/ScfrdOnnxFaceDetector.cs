@@ -70,6 +70,7 @@ public sealed class ScfrdOnnxFaceDetector(
                 return NoFace;
 
             byte[] rgba = await File.ReadAllBytesAsync(framePath, cancellationToken).ConfigureAwait(false);
+            float letterboxScale = LetterboxScale(extracted.FrameWidth, extracted.FrameHeight);
             float[] inputData = NormalizeFrameBgr(rgba, extracted.FrameWidth, extracted.FrameHeight);
 
             var opts = new SessionOptions
@@ -93,13 +94,11 @@ public sealed class ScfrdOnnxFaceDetector(
             var nmsResults = ApplyNms(detections);
             var best = nmsResults.MaxBy(d => d.Score);
 
-            float sx = (float)extracted.FrameWidth / InferSize;
-            float sy = (float)extracted.FrameHeight / InferSize;
             var region = new FaceRegion(
-                X: (int)(best.X1 * sx),
-                Y: (int)(best.Y1 * sy),
-                Width: (int)((best.X2 - best.X1) * sx),
-                Height: (int)((best.Y2 - best.Y1) * sy));
+                X: (int)(best.X1 / letterboxScale),
+                Y: (int)(best.Y1 / letterboxScale),
+                Width: (int)((best.X2 - best.X1) / letterboxScale),
+                Height: (int)((best.Y2 - best.Y1) / letterboxScale));
 
             return new FaceDetectionResult(FaceFound: true, Confidence: best.Score, PrimaryFace: region);
         }
@@ -127,19 +126,31 @@ public sealed class ScfrdOnnxFaceDetector(
         return LatentSyncModelPaths.ScfrdModelPath(modelRoot);
     }
 
-    // SCRFD expects BGR CHW, normalized (pixel - 127.5) / 128.0
-    private static float[] NormalizeFrameBgr(byte[] rgba, int srcW, int srcH)
-    {
-        float[] tensor = new float[3 * InferSize * InferSize];
-        float scaleX = (float)srcW / InferSize;
-        float scaleY = (float)srcH / InferSize;
+    /// <summary>
+    /// Uniform scale that fits the frame inside the square detector input. Stretching each axis
+    /// separately squashes faces in portrait or ultra-wide video until SCRFD no longer finds them.
+    /// </summary>
+    internal static float LetterboxScale(int srcW, int srcH) =>
+        Math.Min((float)InferSize / srcW, (float)InferSize / srcH);
 
-        for (int y = 0; y < InferSize; y++)
+    // SCRFD expects CHW, normalized (pixel - 127.5) / 128.0
+    internal static float[] NormalizeFrameBgr(byte[] rgba, int srcW, int srcH)
+    {
+        // Letterbox: scale uniformly into the top-left corner and leave the rest as black padding,
+        // matching InsightFace's SCRFD preprocessing.
+        const float padValue = (0f - 127.5f) / 128.0f;
+        float[] tensor = new float[3 * InferSize * InferSize];
+        Array.Fill(tensor, padValue);
+        float scale = LetterboxScale(srcW, srcH);
+        int scaledW = Math.Min(InferSize, (int)Math.Round(srcW * scale));
+        int scaledH = Math.Min(InferSize, (int)Math.Round(srcH * scale));
+
+        for (int y = 0; y < scaledH; y++)
         {
-            int sy = Math.Min((int)(y * scaleY), srcH - 1);
-            for (int x = 0; x < InferSize; x++)
+            int sy = Math.Min((int)(y / scale), srcH - 1);
+            for (int x = 0; x < scaledW; x++)
             {
-                int sx = Math.Min((int)(x * scaleX), srcW - 1);
+                int sx = Math.Min((int)(x / scale), srcW - 1);
                 int srcIdx = ((sy * srcW) + sx) * 4;
 
                 // CHW layout, RGB channel order (SCRFD trained with swapRB=True → expects RGB)
@@ -153,15 +164,17 @@ public sealed class ScfrdOnnxFaceDetector(
     }
 
     private static List<Detection> DecodeAndFilter(
-        IDisposableReadOnlyCollection<DisposableNamedOnnxValue> outputs)
+        IDisposableReadOnlyCollection<DisposableNamedOnnxValue> outputs) =>
+        DecodeAndFilter(outputs.Select(static output => output.Value).OfType<Tensor<float>>());
+
+    internal static List<Detection> DecodeAndFilter(IEnumerable<Tensor<float>> outputs)
     {
         // Group tensors by anchor-count N: scores=[N,1] or [1,N,1], bboxes=[N,4] or [1,N,4]
         var scoreTensors = new Dictionary<int, Tensor<float>>();
         var bboxTensors = new Dictionary<int, Tensor<float>>();
 
-        foreach (DisposableNamedOnnxValue output in outputs)
+        foreach (Tensor<float> tensor in outputs)
         {
-            if (output.Value is not Tensor<float> tensor) continue;
             ReadOnlySpan<int> dims = tensor.Dimensions;
 
             int n, c;
@@ -217,8 +230,9 @@ public sealed class ScfrdOnnxFaceDetector(
                     float cx = (col + 0.5f) * stride;
                     for (int a = 0; a < 2; a++) // 2 anchors per cell
                     {
-                        float rawScore = scoresIs3D ? scores[0, anchorIdx, 0] : scores[anchorIdx, 0];
-                        float score = Sigmoid(rawScore);
+                        // The InsightFace SCRFD export already applies the sigmoid; applying it again
+                        // maps every score to at least 0.5, so every anchor would pass the threshold.
+                        float score = scoresIs3D ? scores[0, anchorIdx, 0] : scores[anchorIdx, 0];
 
                         if (score >= ScoreThreshold)
                         {
@@ -281,10 +295,8 @@ public sealed class ScfrdOnnxFaceDetector(
         return union <= 0f ? 0f : intersection / union;
     }
 
-    private static float Sigmoid(float x) => 1f / (1f + MathF.Exp(-x));
-
     private static FaceDetectionResult NoFace =>
         new(FaceFound: false, Confidence: 0d, PrimaryFace: null);
 
-    private readonly record struct Detection(float X1, float Y1, float X2, float Y2, float Score);
+    internal readonly record struct Detection(float X1, float Y1, float X2, float Y2, float Score);
 }

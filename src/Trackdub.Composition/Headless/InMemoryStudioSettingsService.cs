@@ -67,6 +67,9 @@ public sealed class InMemoryStudioSettingsService : IStudioSettingsService
             NvidiaAfxIntensityRatio = persisted.NvidiaAfxIntensityRatio,
             NvidiaAfxLicenseAccepted = persisted.NvidiaAfxLicenseAccepted,
             NvidiaAfxRuntimeDirectory = persisted.NvidiaAfxRuntimeDirectory,
+            MaxineLipSyncArSdkRoot = persisted.MaxineLipSyncArSdkRoot,
+            MaxineLipSyncHostPath = persisted.MaxineLipSyncHostPath,
+            MaxineLipSyncLanguage = persisted.MaxineLipSyncLanguage,
             CloudEgressConsents = MergeCloudEgressConsents(
                 persisted.CloudEgressConsents,
                 getEnvironmentVariable ?? Environment.GetEnvironmentVariable),
