@@ -667,7 +667,8 @@ public static class CompositionRoot
             new RuntimeStageWarmupCoordinator(
                 sp.GetRequiredService<IRuntimePlanner>(),
                 sp.GetRequiredService<IExecutionProviderSmokeTester>(),
-                sp.GetService<IRuntimePlanningPreferences>()));
+                sp.GetService<IRuntimePlanningPreferences>(),
+                sp.GetService<IInferenceWorkerClient>()));
         services.TryAddSingleton<IResidentWarmupService>(sp =>
             new ResidentWarmupService(
                 sp.GetRequiredService<IServiceScopeFactory>(),

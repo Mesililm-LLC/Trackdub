@@ -2,9 +2,11 @@ using Microsoft.Extensions.DependencyInjection;
 using Trackdub.Application.Pipeline;
 using Trackdub.Application.Transcripts;
 using Trackdub.Contracts.Benchmarking;
+using Trackdub.Contracts.Pipeline;
 using Trackdub.Composition;
 using Trackdub.Composition.Pipeline;
 using Trackdub.Domain;
+using Trackdub.Inference.Onnx.Worker;
 using Trackdub.Inference.Runtime.Planning;
 using Trackdub.TestDoubles;
 using Xunit;
@@ -207,6 +209,119 @@ public class RuntimeStageWarmupCoordinatorTests
         Assert.Equal(RuntimeStage.Tts, capturedPlan!.Stage);
         Assert.Equal(VoiceCloningDefaults.ChatterboxPrimaryAlias, capturedPlan.PreferredModelAlias);
         Assert.True(capturedPlan.RequirePreferredModelAlias);
+    }
+
+    [Fact]
+    public async Task WarmAsync_WorkerBackedCudaTts_WarmsWorkerBeforeSmoke()
+    {
+        var planner = new FakeRuntimePlanner();
+        planner.PlanHandler = _ => new StageRuntimePlan
+        {
+            Stage = RuntimeStage.Tts,
+            Status = StageRuntimePlanStatus.Verified,
+            ModelId = "kokoro-model",
+            ModelAlias = "kokoro-onnx",
+            EngineFamily = "kokoro",
+            Variant = "fp16",
+            ExecutionProvider = ExecutionProviderKind.Cuda,
+            ModelRootPath = "/models/kokoro",
+            ModelEntryPath = "/models/kokoro/model.onnx",
+        };
+        var order = new List<string>();
+        var smoke = new FakeExecutionProviderSmokeTester(_ =>
+        {
+            order.Add("smoke");
+            return new ExecutionProviderSmokeTestResult(true);
+        });
+        var worker = new FakeWorkerClient(order);
+        var coordinator = new RuntimeStageWarmupCoordinator(
+            planner, smoke, inferenceWorkerClient: worker, hostCudaProviderListed: () => false);
+
+        StageWarmupResult result = await coordinator.WarmAsync(
+            new StageWarmupRequest(RuntimeStage.Tts, Selections()), CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(1, worker.WarmCalls);
+        Assert.Equal(["warm", "smoke"], order);
+    }
+
+    [Fact]
+    public async Task WarmAsync_WorkerWarmFailure_ReportsReasonAndSkipsSmoke()
+    {
+        var planner = new FakeRuntimePlanner
+        {
+            PlanHandler = _ => new StageRuntimePlan
+            {
+                Stage = RuntimeStage.Tts,
+                Status = StageRuntimePlanStatus.Verified,
+                ModelId = "kokoro-model",
+                ModelAlias = "kokoro-onnx",
+                EngineFamily = "kokoro",
+                Variant = "fp16",
+                ExecutionProvider = ExecutionProviderKind.Cuda,
+                ModelRootPath = "/models/kokoro",
+                ModelEntryPath = "/models/kokoro/model.onnx",
+            },
+        };
+        int smokeCalls = 0;
+        var smoke = new FakeExecutionProviderSmokeTester(_ =>
+        {
+            smokeCalls++;
+            return new ExecutionProviderSmokeTestResult(true);
+        });
+        var worker = new FakeWorkerClient([])
+        {
+            WarmFailure = new InferenceWorkerException("worker session create failed"),
+        };
+        var coordinator = new RuntimeStageWarmupCoordinator(
+            planner, smoke, inferenceWorkerClient: worker, hostCudaProviderListed: () => false);
+
+        StageWarmupResult result = await coordinator.WarmAsync(
+            new StageWarmupRequest(RuntimeStage.Tts, Selections()), CancellationToken.None);
+
+        Assert.True(result.Attempted);
+        Assert.False(result.Succeeded);
+        Assert.Contains("worker session create failed", result.Detail);
+        Assert.Contains("retry construction inline", result.Detail);
+        Assert.Equal(0, smokeCalls);
+    }
+
+    [Fact]
+    public async Task WarmAsync_NonWorkerPlan_NeverWarmsWorker()
+    {
+        var planner = new FakeRuntimePlanner { PlanHandler = RunnablePlan };
+        var worker = new FakeWorkerClient([]);
+        var coordinator = new RuntimeStageWarmupCoordinator(
+            planner, new FakeExecutionProviderSmokeTester(), inferenceWorkerClient: worker,
+            hostCudaProviderListed: () => false);
+
+        await coordinator.WarmAsync(
+            new StageWarmupRequest(RuntimeStage.Translation, Selections()), CancellationToken.None);
+
+        Assert.Equal(0, worker.WarmCalls);
+    }
+
+    private sealed class FakeWorkerClient(List<string> order) : IInferenceWorkerClient
+    {
+        public bool IsInstalled => true;
+        public int WarmCalls { get; private set; }
+        public Exception? WarmFailure { get; set; }
+
+        public Task<WorkerHelloResult?> TryGetHelloAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<WorkerHelloResult?>(null);
+
+        public Task<TtsSynthesisResult> SynthesizeTtsAsync(
+            TtsSynthesisRequest request, StageRuntimePlan plan, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Coordinator tests never synthesize through the worker.");
+
+        public Task<WorkerWarmResult> WarmTtsAsync(StageRuntimePlan plan, CancellationToken cancellationToken)
+        {
+            WarmCalls++;
+            order.Add("warm");
+            return WarmFailure is not null
+                ? Task.FromException<WorkerWarmResult>(WarmFailure)
+                : Task.FromResult(new WorkerWarmResult(plan.ModelId, "cuda"));
+        }
     }
 
     [Fact]
