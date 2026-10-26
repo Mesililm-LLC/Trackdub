@@ -74,10 +74,15 @@ public sealed class RuntimePlanner : IRuntimePlanner
         (HardwareProfile hardwareProfile, IReadOnlyList<ExecutionProviderAvailability> baseProviderAvailabilities) =
             await GetOrLoadHardwareAsync(cancellationToken).ConfigureAwait(false);
 
-        // Fetch the device list once (internally cached by IDeviceEnumerator) for both
-        // exclusion filtering and snapshot building so GetDevicesAsync is called at most once.
+        // Fetch the device list whenever an enumerator is available (internally cached by
+        // IDeviceEnumerator) so plans carry DeviceIndex even when no exclusions exist.
+        // Preflight (EnsureModelsAvailableAsync) plans before BeginRun, when CurrentExclusions
+        // is still null; without the device list that plan is cached with DeviceIndex = null
+        // and the run's empty-exclusion lookup hits the same key, leaving the
+        // DeviceFallbackSessionCreator catch filter unreachable. Exclusion filtering and the
+        // snapshot below stay gated on effectiveExclusions.
         IReadOnlyList<DeviceEntry>? devices = null;
-        if (effectiveExclusions is not null && deviceEnumerator is not null)
+        if (deviceEnumerator is not null)
         {
             devices = await deviceEnumerator.GetDevicesAsync(cancellationToken).ConfigureAwait(false);
         }
