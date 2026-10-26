@@ -70,14 +70,14 @@ public static class DeviceFallbackSessionCreator
                 }
 
                 pending = (kind, failedDeviceIndex, adapter, ex.Message);
-                if (kind == DeviceDegradationKind.MemoryExhausted && exhaustedDeviceIndex == failedDeviceIndex)
-                {
-                    lastDeviceException.Throw();
-                }
-
                 if (kind == DeviceDegradationKind.MemoryExhausted)
                 {
+                    bool alreadySeen = exhaustedDeviceIndex == failedDeviceIndex;
                     exhaustedDeviceIndex = failedDeviceIndex;
+                    if (alreadySeen)
+                    {
+                        lastDeviceException.Throw();
+                    }
                 }
 
                 plan = await replanAsync(cancellationToken).ConfigureAwait(false);
