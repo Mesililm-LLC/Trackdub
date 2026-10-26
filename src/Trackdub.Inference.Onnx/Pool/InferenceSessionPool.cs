@@ -363,39 +363,88 @@ internal sealed class InferenceSessionPool : IDisposable
     private readonly record struct AdmissionBucket(bool IsHost, ExecutionProviderKind? AcceleratorProvider, int DeviceId);
 
     /// <summary>
-    /// One bundle's aggregate admission credit, per bucket. The credit already sits in
-    /// <see cref="pendingCreateMbByBucket"/> (taken all-or-nothing by
+    /// One bundle's aggregate admission credit, per bucket and per graph. The credit
+    /// already sits in <see cref="pendingCreateMbByBucket"/> (taken all-or-nothing by
     /// <see cref="AcquireBundleAdmissionHoldAsync"/> before any graph in the bundle is
     /// created); a graph create that consumes credit here skips its own per-graph
     /// admission wait, and the create path's existing reservation release on publish or
     /// failure draws the pending charge down exactly as for a per-graph reservation.
     /// Unconsumed credit (graphs that turned out resident, or a failed bundle) is
     /// returned by <see cref="ReleaseBundleHoldCredit"/>.
+    /// Credit is scoped to the keys it was sized for: only a graph that was missing at
+    /// hold time may consume, and only its own share. A resident graph evicted by the
+    /// hold wait itself (or by a concurrent admission) falls back to ordinary per-graph
+    /// admission instead of stealing a sibling's share — stealing leaves an
+    /// all-or-nothing sliver no sibling can consume, and the leftover stays pending
+    /// until every warm finishes, so the fallback wait sees a phantom over-count with
+    /// the bundle's own early pins unevictable and no fail-fast on reservation-blocked
+    /// waits. A graph that turns out resident after all relinquishes its share on the
+    /// fast path so concurrent fallback waits never see it as phantom pending.
     /// </summary>
     private sealed class BundleAdmissionHold
     {
         private readonly object gate = new();
-        private readonly Dictionary<AdmissionBucket, long> creditByBucket = new();
+        private readonly Dictionary<AdmissionBucket, Dictionary<SessionPoolKey, long>> creditByKey = new();
 
-        public void AddCredit(AdmissionBucket bucket, long mb)
+        public void AddCredit(AdmissionBucket bucket, SessionPoolKey key, long mb)
         {
             lock (gate)
             {
-                creditByBucket[bucket] = creditByBucket.GetValueOrDefault(bucket) + mb;
+                if (!creditByKey.TryGetValue(bucket, out Dictionary<SessionPoolKey, long>? byKey))
+                {
+                    byKey = new Dictionary<SessionPoolKey, long>();
+                    creditByKey[bucket] = byKey;
+                }
+
+                byKey[key] = byKey.GetValueOrDefault(key) + mb;
             }
         }
 
-        public bool TryConsume(AdmissionBucket bucket, long mb)
+        public bool TryConsume(AdmissionBucket bucket, SessionPoolKey key, long mb)
         {
             lock (gate)
             {
-                if (!creditByBucket.TryGetValue(bucket, out long credit) || credit < mb)
+                if (!creditByKey.TryGetValue(bucket, out Dictionary<SessionPoolKey, long>? byKey)
+                    || !byKey.TryGetValue(key, out long credit)
+                    || credit < mb)
                 {
                     return false;
                 }
 
-                creditByBucket[bucket] = credit - mb;
+                long remaining = credit - mb;
+                if (remaining <= 0)
+                {
+                    byKey.Remove(key);
+                }
+                else
+                {
+                    byKey[key] = remaining;
+                }
+
                 return true;
+            }
+        }
+
+        /// <summary>
+        /// Returns the still-unconsumed share for <paramref name="key"/> (a graph that
+        /// turned out resident needs no create) so the caller can release it from the
+        /// pending reservation immediately instead of leaving phantom pending until the
+        /// whole bundle finishes warming.
+        /// </summary>
+        public bool TryRelinquish(AdmissionBucket bucket, SessionPoolKey key, out long mb)
+        {
+            lock (gate)
+            {
+                mb = 0;
+                if (!creditByKey.TryGetValue(bucket, out Dictionary<SessionPoolKey, long>? byKey)
+                    || !byKey.TryGetValue(key, out long credit))
+                {
+                    return false;
+                }
+
+                byKey.Remove(key);
+                mb = credit;
+                return mb > 0;
             }
         }
 
@@ -403,8 +452,22 @@ internal sealed class InferenceSessionPool : IDisposable
         {
             lock (gate)
             {
-                var remaining = new List<KeyValuePair<AdmissionBucket, long>>(creditByBucket);
-                creditByBucket.Clear();
+                var remaining = new List<KeyValuePair<AdmissionBucket, long>>(creditByKey.Count);
+                foreach (KeyValuePair<AdmissionBucket, Dictionary<SessionPoolKey, long>> pair in creditByKey)
+                {
+                    long total = 0;
+                    foreach (long mb in pair.Value.Values)
+                    {
+                        total += mb;
+                    }
+
+                    if (total > 0)
+                    {
+                        remaining.Add(new KeyValuePair<AdmissionBucket, long>(pair.Key, total));
+                    }
+                }
+
+                creditByKey.Clear();
                 return remaining;
             }
         }
@@ -448,16 +511,20 @@ internal sealed class InferenceSessionPool : IDisposable
                 .ThenBy(group => group.Key.AcceleratorProvider?.ToString(), StringComparer.Ordinal);
             foreach (IGrouping<AdmissionBucket, SessionLeaseRequest> group in groups)
             {
-                long missingMb = group
+                SessionLeaseRequest[] missing = group
                     .Where(request => !entries.ContainsKey(request.Key))
-                    .Sum(request => ResolveReservationMb(request.Key));
-                if (missingMb <= 0)
+                    .ToArray();
+                if (missing.Length == 0)
                 {
                     continue;
                 }
 
+                long missingMb = missing.Sum(request => ResolveReservationMb(request.Key));
                 await WaitForAdmissionBudgetAsync(missingMb, group.Key, cancellationToken).ConfigureAwait(false);
-                hold.AddCredit(group.Key, missingMb);
+                foreach (SessionLeaseRequest request in missing)
+                {
+                    hold.AddCredit(group.Key, request.Key, ResolveReservationMb(request.Key));
+                }
             }
 
             return hold;
@@ -874,6 +941,16 @@ internal sealed class InferenceSessionPool : IDisposable
                     {
                         BenchmarkPhaseCapture.Increment("poolHit");
                     }
+
+                    // The graph turned out resident, so its hold share (if any) is
+                    // unnecessary: return it to the pending reservation now instead of
+                    // leaving phantom pending until every warm finishes.
+                    if (bundleHold is not null
+                        && bundleHold.TryRelinquish(BucketOf(key), key, out long relinquishedMb))
+                    {
+                        ReleaseReservation(BucketOf(key), relinquishedMb);
+                    }
+
                     return BuildLease(existing);
                 }
                 catch (ObjectDisposedException)
@@ -963,14 +1040,17 @@ internal sealed class InferenceSessionPool : IDisposable
 
                     if (enableMemoryAdmission)
                     {
-                        // A bundle graph whose bundle already holds aggregate credit in
-                        // this bucket (charged once, up front) draws on it instead of
-                        // re-running per-graph admission: re-waiting here is what let a
-                        // sibling graph's freshly created session — counted in the
-                        // process-GPU floor — admission-evict a warmed bundle graph.
+                        // A bundle graph whose bundle holds aggregate credit in
+                        // this bucket draws on it only when the credit was sized for
+                        // this graph: a resident graph evicted after the hold (by the
+                        // hold wait itself or a concurrent admission) falls back to
+                        // ordinary per-graph admission instead of stealing a sibling's
+                        // share. Re-waiting here is what let a sibling graph's freshly
+                        // created session — counted in the process-GPU floor —
+                        // admission-evict a warmed bundle graph.
                         // The pending charge is already taken; the reservation releases
                         // below (publish/failure) draw it down as usual.
-                        reserved = bundleHold is not null && bundleHold.TryConsume(bucket, needMb);
+                        reserved = bundleHold is not null && bundleHold.TryConsume(bucket, key, needMb);
                         if (!reserved)
                         {
                             reserved = TryReserveAdmissionBudget(bucket, needMb, observation);
@@ -1330,11 +1410,15 @@ internal sealed class InferenceSessionPool : IDisposable
     /// serializes only the brief publish step per key. Each graph is pinned resident
     /// the moment its own create completes (see <see cref="WarmBundleGraphAsync"/>),
     /// so a warmed graph is never idle-eviction-eligible while its siblings are still
-    /// creating. Holding those early pins is deadlock-safe precisely because of the
-    /// aggregate order: a bundle only pins graphs after its whole aggregate was
-    /// granted and its remaining creates are pre-reserved, while a bundle still
-    /// waiting for its aggregate holds neither pins nor (per bucket) a reservation for
-    /// another bundle to deadlock against. Finally only pin/publish is serialized,
+    /// creating. Holding those early pins through phase 1 is deadlock-safe precisely
+    /// because of the aggregate order: a bundle only pins graphs after its whole
+    /// aggregate was granted and its remaining creates are pre-reserved, while a
+    /// bundle still waiting for its aggregate holds neither pins nor (per bucket) a
+    /// reservation for another bundle to deadlock against. The early pins are
+    /// released before waiting for <c>bundleAcquireLock</c> (phase 2 re-pins every
+    /// graph), so a bundle parked at the lock never holds unevictable memory a lock
+    /// holder's phase-2 admission re-create could wait on. Finally only pin/publish
+    /// is serialized,
     /// under <c>bundleAcquireLock</c> and in <see cref="SessionPoolKey.StableComparer"/>
     /// order: residency pins are (re)taken in that order and exclusive gates are tried
     /// non-blockingly in that order, rolling back on any busy gate. A bundle whose
@@ -1436,8 +1520,19 @@ internal sealed class InferenceSessionPool : IDisposable
         // C1 shape (b), phase 2: serialize only pin/publish in StableComparer order.
         // While one bundle pins (re-creating any graph removed since phase 1) and
         // takes its gates, no other bundle is incrementally pinning in the opposite
-        // order. The phase-1 pins are carried into this phase and released with it.
-        var pins = new List<SessionResidency>(earlyPins);
+        // order. Phase-1 early pins are NOT carried into this phase: phase 2 re-pins
+        // every graph below, and holding early pins across the lock wait deadlocks
+        // against a lock holder blocked in phase-2 admission re-creating an
+        // explicitly-evicted graph — the waiter's pins are unevictable and cannot be
+        // released until it owns the lock, while the holder waits on memory only those
+        // pins could free, with no fail-fast on reservation-blocked waits.
+        foreach (SessionResidency earlyPin in earlyPins)
+        {
+            earlyPin.Dispose();
+        }
+
+        earlyPins.Clear();
+        var pins = new List<SessionResidency>();
         try
         {
             await bundleAcquireLock.WaitAsync(cancellationToken).ConfigureAwait(false);

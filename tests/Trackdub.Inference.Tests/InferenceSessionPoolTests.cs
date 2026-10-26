@@ -1099,6 +1099,186 @@ public sealed class InferenceSessionPoolTests
         holdA.Dispose();
     }
 
+    [Fact]
+    public async Task GetLeaseBundleAsync_EvictedResidentRecreate_DoesNotStealSiblingCredit()
+    {
+        // T1 admission-credit correctness: the aggregate hold is sized only for graphs
+        // missing at hold time. The hold wait itself can evict an idle resident graph of
+        // the same bundle; its re-create must not draw on the siblings' shared credit.
+        // With per-bucket shared credit and all-or-nothing TryConsume, a steal leaves a
+        // sliver the last sibling cannot consume, so it falls back to a full reservation
+        // while the sliver stays pending (phantom over-count) with early pins unevictable
+        // and no fail-fast on reservation-blocked waits — the bundle hangs though it fits.
+        // Sizes are chosen so a steal strands the large sibling: B=50 cannot consume a
+        // sliver left by A=30/C=10 sharing the 60 MB hold, while the scoped fix lets B/C
+        // consume exactly their shares and A fall back to ordinary admission (evicting
+        // only the idle filler). Loop iterations to cover the racy consume order; the
+        // delay between the pre-populations keeps the LRU ticks distinct so the hold
+        // wait deterministically evicts the resident A rather than the filler.
+        for (int iteration = 0; iteration < 10; iteration++)
+        {
+            using var pool = new InferenceSessionPool(maxSessions: 8, hostMemoryBudgetMb: 100);
+            var residentA = new SessionPoolKey("t1", "ma", null, ExecutionProviderKind.Cpu, "t1a-" + iteration, null, "default") { EstimatedVramMb = 30 };
+            var missingB = new SessionPoolKey("t1", "mb", null, ExecutionProviderKind.Cpu, "t1b-" + iteration, null, "default") { EstimatedVramMb = 50 };
+            var missingC = new SessionPoolKey("t1", "mc", null, ExecutionProviderKind.Cpu, "t1c-" + iteration, null, "default") { EstimatedVramMb = 10 };
+            var filler = new SessionPoolKey("t1", "mf", null, ExecutionProviderKind.Cpu, "t1f-" + iteration, null, "default") { EstimatedVramMb = 40 };
+
+            // Resident A is oldest (evicted first); filler is recent.
+            using (await pool.GetLeaseAsync(residentA, _ => Task.FromResult(CreateMinimalSession()), CancellationToken.None))
+            {
+            }
+            await Task.Delay(20);
+            using (await pool.GetLeaseAsync(filler, _ => Task.FromResult(CreateMinimalSession()), CancellationToken.None))
+            {
+            }
+
+            int aCalls = 0, bCalls = 0, cCalls = 0;
+            using SessionLeaseBundle bundle = await pool.GetLeaseBundleAsync(
+                [
+                    new SessionLeaseRequest(residentA, _ => { Interlocked.Increment(ref aCalls); return Task.FromResult(CreateMinimalSession()); }),
+                    new SessionLeaseRequest(missingB, _ => { Interlocked.Increment(ref bCalls); return Task.FromResult(CreateMinimalSession()); }),
+                    new SessionLeaseRequest(missingC, _ => { Interlocked.Increment(ref cCalls); return Task.FromResult(CreateMinimalSession()); }),
+                ],
+                CancellationToken.None).AwaitWithHangGuard(
+                    $"bundle with an evicted resident hung on phantom credit (iteration {iteration})");
+
+            Assert.Equal(3, bundle.Count);
+            // A was evicted by the hold wait itself, so it is re-created once; B and C
+            // each consume exactly their scoped share — never a stolen fallback.
+            Assert.Equal(1, Volatile.Read(ref aCalls));
+            Assert.Equal(1, Volatile.Read(ref bCalls));
+            Assert.Equal(1, Volatile.Read(ref cCalls));
+        }
+    }
+
+    [Fact]
+    public async Task GetLeaseBundleAsync_ExplicitEvictWhileBundleWaiting_CompletesWithoutDeadlock()
+    {
+        // T2 lock-ordering liveness: phase-1 early pins must not be carried into the
+        // bundleAcquireLock wait. A bundle stuck holding that lock while re-creating an
+        // explicitly-evicted graph in phase-2 admission deadlocks against a waiter whose
+        // early pins are unevictable (and unreleasable until it owns the lock), with no
+        // fail-fast on reservation-blocked waits. Dropping early pins before the lock
+        // wait is safe because phase 2 re-pins every graph; the probe below fits only
+        // once the waiter's (and holder's) early pins are gone.
+        using var pool = new InferenceSessionPool(maxSessions: 8, hostMemoryBudgetMb: 200);
+        SessionPoolKey Key(string engine, string model, string hash, long mb) =>
+            new SessionPoolKey(engine, model, null, ExecutionProviderKind.Cpu, hash, null, "default") { EstimatedVramMb = mb };
+
+        var keyHA = Key("h", "a", "t2ha", 40);
+        var keyHB = Key("h", "b", "t2hb", 40);
+        var keyWC = Key("w", "c", "t2wc", 40);
+        var keyWD = Key("w", "d", "t2wd", 40);
+        var keyProbe = Key("p", "q", "t2pq", 100);
+
+        int haCalls = 0, hbEntered = 0;
+        var releaseHB = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseHA2 = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Func<CancellationToken, Task<InferenceSession>> Hafactory() => async ct =>
+        {
+            // First call (phase 1) runs immediately; the phase-2 re-create after the
+            // explicit eviction below stays blocked, holding the bundle lock.
+            if (Interlocked.Increment(ref haCalls) == 1)
+            {
+                return CreateMinimalSession();
+            }
+
+            await releaseHA2.Task.WaitAsync(ct);
+            return CreateMinimalSession();
+        };
+        Func<CancellationToken, Task<InferenceSession>> HbFactory() => async ct =>
+        {
+            Interlocked.Increment(ref hbEntered);
+            await releaseHB.Task.WaitAsync(ct);
+            return CreateMinimalSession();
+        };
+
+        Task<SessionLeaseBundle> holder = Task.Run(() => pool.GetLeaseBundleAsync(
+            [new SessionLeaseRequest(keyHA, Hafactory()), new SessionLeaseRequest(keyHB, HbFactory())],
+            CancellationToken.None));
+
+        // Wait until HA is published and HB's factory is in flight (phase 1 spans the
+        // wide window below because HB stays blocked). Counter polling only.
+        await SpinUntilAsync(() => Volatile.Read(ref haCalls) >= 1, "HA was never published");
+        await SpinUntilAsync(() => Volatile.Read(ref hbEntered) >= 1, "HB factory never entered");
+
+        // Explicitly evict HA while the holder is still in phase 1; its phase-2 pin
+        // loop must re-create it via admission while holding the bundle lock. Spin
+        // until the eviction lands: HA#1 may not have published yet when we arrive.
+        await SpinUntilTaskAsync(
+            async () => await pool.EvictModelAsync("h", "a", CancellationToken.None) == 1,
+            "HA never became evictable");
+
+        // Wait until the holder is stuck in its phase-2 pin loop: HA was re-requested
+        // (call #2) after the explicit eviction, so the holder owns the bundle lock
+        // while its HA factory stays blocked. Only then start the waiter, which
+        // parks at the lock after finishing phase 1.
+        releaseHB.TrySetResult();
+        await SpinUntilAsync(() => Volatile.Read(ref haCalls) >= 2, "holder never stuck re-creating HA");
+
+        int wcCalls = 0, wdCalls = 0;
+        Task<SessionLeaseBundle> waiter = Task.Run(() => pool.GetLeaseBundleAsync(
+            [
+                new SessionLeaseRequest(keyWC, _ => { Interlocked.Increment(ref wcCalls); return Task.FromResult(CreateMinimalSession()); }),
+                new SessionLeaseRequest(keyWD, _ => { Interlocked.Increment(ref wdCalls); return Task.FromResult(CreateMinimalSession()); }),
+            ],
+            CancellationToken.None));
+
+        // Wait until the waiter finished phase 1 (both graphs published) so it is
+        // parked at the bundle lock while the holder is stuck owning it.
+        await SpinUntilAsync(
+            () => Volatile.Read(ref wcCalls) >= 1 && Volatile.Read(ref wdCalls) >= 1,
+            "waiter never finished phase 1");
+
+        // The holder owns the lock and is stuck re-creating evicted HA; the waiter
+        // parks at the lock. A 100 MB probe fits the 200 MB budget only by evicting a
+        // 40 MB graph, which is possible only when no early pins are held across the
+        // lock wait.
+        try
+        {
+            using SessionLease probe = await pool.GetLeaseAsync(
+                    keyProbe, _ => Task.FromResult(CreateMinimalSession()), CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.NotNull(probe.Session);
+        }
+        finally
+        {
+            releaseHB.TrySetResult();
+            releaseHA2.TrySetResult();
+        }
+
+        // Let every bundle finish (re-created graphs fit once the probe is gone).
+        releaseHA2.TrySetResult();
+        using SessionLeaseBundle holderBundle = await holder.WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.Equal(2, holderBundle.Count);
+        holderBundle.Dispose();
+        using SessionLeaseBundle waiterBundle = await waiter.WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.Equal(2, waiterBundle.Count);
+
+        static async Task SpinUntilAsync(Func<bool> condition, string expectation)
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            while (!condition())
+            {
+                await Task.Delay(5, cts.Token);
+            }
+
+            if (!condition())
+            {
+                throw new TimeoutException(expectation);
+            }
+        }
+
+        static async Task SpinUntilTaskAsync(Func<Task<bool>> condition, string expectation)
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            while (!await condition().WaitAsync(cts.Token))
+            {
+                await Task.Delay(5, cts.Token);
+            }
+        }
+    }
+
     // ── TrimToVramBudgetAsync ─────────────────────────────────────────────────
 
     [Fact]
