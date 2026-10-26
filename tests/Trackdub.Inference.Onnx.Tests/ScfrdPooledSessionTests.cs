@@ -53,18 +53,23 @@ public sealed class ScfrdPooledSessionTests
     public async Task DetectPrimaryFaceAsync_propagates_session_lease_cancellation()
     {
         string modelPath = Path.Join(Path.GetTempPath(), $"scrfd-{Guid.NewGuid():N}.onnx");
+        using var cancellationSource = new CancellationTokenSource();
+        bool leaseRequested = false;
         var detector = new ScfrdOnnxFaceDetector(
             new BenchmarkModelPathResolver(),
             new FakeFrameExtractor(),
             modelPathProvider: () => modelPath,
             sessionLeaseFactory: (_, cancellationToken) =>
-                Task.FromCanceled<OnnxExecutionSessionFactory.SingleSessionLease>(cancellationToken));
-        using var cancellationSource = new CancellationTokenSource();
-        cancellationSource.Cancel();
+            {
+                leaseRequested = true;
+                cancellationSource.Cancel();
+                return Task.FromCanceled<OnnxExecutionSessionFactory.SingleSessionLease>(cancellationToken);
+            });
         var request = new FaceAnalysisRequest("video.mp4", TimeSpan.Zero, TimeSpan.FromSeconds(2), null);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => detector.DetectPrimaryFaceAsync(request, cancellationSource.Token));
+        Assert.True(leaseRequested);
     }
 
     private sealed class FakeFrameExtractor : IVideoFrameExtractor

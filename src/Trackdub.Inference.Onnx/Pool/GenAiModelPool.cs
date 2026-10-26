@@ -280,11 +280,12 @@ internal sealed class GenAiModelLease : IDisposable
     private readonly GenAiTokenizerCache tokenizerCache;
     private int disposed;
 
-    internal GenAiModelLease(IGenAiModelResource resource, Action release, GenAiTokenizerCache? tokenizerCache = null)
+    internal GenAiModelLease(IGenAiModelResource resource, Action release, GenAiTokenizerCache tokenizerCache)
     {
+        ArgumentNullException.ThrowIfNull(tokenizerCache);
         Resource = resource;
         this.release = release;
-        this.tokenizerCache = tokenizerCache ?? new GenAiTokenizerCache();
+        this.tokenizerCache = tokenizerCache;
     }
 
     public Model Model => Resource.Model;
