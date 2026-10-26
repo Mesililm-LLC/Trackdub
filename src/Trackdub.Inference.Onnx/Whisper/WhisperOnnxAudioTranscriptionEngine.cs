@@ -742,6 +742,28 @@ public sealed class WhisperOnnxAudioTranscriptionEngine : IAudioTranscriptionEng
         int vocabularySize,
         WhisperTokenizerDecoder tokenizer)
     {
+        // Row-span read (Seq2SeqGreedyDecoder.ArgMaxAtPosition precedent) instead of the
+        // slow 3-D tensor indexer in the per-token hot loops below.
+        if (logits is DenseTensor<float> dense)
+        {
+            ReadOnlySpan<float> row = dense.Buffer.Span.Slice(timeIndex * vocabularySize, vocabularySize);
+            return SelectNextToken(row, tokenizer);
+        }
+
+        float[] rowCopy = new float[vocabularySize];
+        for (int tokenIndex = 0; tokenIndex < vocabularySize; tokenIndex++)
+        {
+            rowCopy[tokenIndex] = logits[0, timeIndex, tokenIndex];
+        }
+
+        return SelectNextToken(rowCopy.AsSpan(), tokenizer);
+    }
+
+    private static (int TokenId, double? Confidence) SelectNextToken(
+        ReadOnlySpan<float> row,
+        WhisperTokenizerDecoder tokenizer)
+    {
+        int vocabularySize = row.Length;
         int bestToken = -1;
         float bestValue = float.NegativeInfinity;
         for (int tokenIndex = 0; tokenIndex < vocabularySize; tokenIndex++)
@@ -756,7 +778,7 @@ public sealed class WhisperOnnxAudioTranscriptionEngine : IAudioTranscriptionEng
                 continue;
             }
 
-            float value = logits[0, timeIndex, tokenIndex];
+            float value = row[tokenIndex];
             if (value > bestValue)
             {
                 bestValue = value;
@@ -783,7 +805,7 @@ public sealed class WhisperOnnxAudioTranscriptionEngine : IAudioTranscriptionEng
                 continue;
             }
 
-            double numerator = Math.Exp(logits[0, timeIndex, tokenIndex] - bestValue);
+            double numerator = Math.Exp(row[tokenIndex] - bestValue);
             denominator += numerator;
             if (tokenIndex == bestToken)
             {

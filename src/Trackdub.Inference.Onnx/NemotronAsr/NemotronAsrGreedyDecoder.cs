@@ -133,7 +133,7 @@ internal sealed class NemotronAsrGreedyDecoder(
                 Tensor<float> cacheChannelNext = GetTensor<float>(encoderResults, "cache_last_channel_next");
                 Tensor<float> cacheTimeNext = GetTensor<float>(encoderResults, "cache_last_time_next");
                 long cacheLengthNext = GetTensor<long>(encoderResults, "cache_last_channel_len_next").FirstOrDefault();
-                LastEncodedAbsSum = encoded.Select(Math.Abs).Sum();
+                LastEncodedAbsSum = SumAbs(encoded);
                 LastEncodedLength = encodedLength;
 
                 DecodeEncoderFrames(
@@ -268,7 +268,7 @@ internal sealed class NemotronAsrGreedyDecoder(
                 provider: providerHint);
         Tensor<float> encoded = GetTensor<float>(encoderResults, "encoded");
         int encodedLength = checked((int)GetTensor<long>(encoderResults, "encoded_len").FirstOrDefault());
-        LastEncodedAbsSum = encoded.Select(Math.Abs).Sum();
+        LastEncodedAbsSum = SumAbs(encoded);
         LastEncodedLength = encodedLength;
 
         DecodeEncoderFramesManaged(
@@ -719,6 +719,28 @@ internal sealed class NemotronAsrGreedyDecoder(
         {
             destination[index++] = value;
         }
+    }
+
+    /// <summary>Span loop instead of a whole-tensor LINQ Select/Sum over the encoder output.</summary>
+    internal static float SumAbs(Tensor<float> encoded)
+    {
+        float sum = 0f;
+        if (encoded is DenseTensor<float> dense)
+        {
+            foreach (float value in dense.Buffer.Span)
+            {
+                sum += MathF.Abs(value);
+            }
+
+            return sum;
+        }
+
+        foreach (float value in encoded)
+        {
+            sum += MathF.Abs(value);
+        }
+
+        return sum;
     }
 
     private static int ArgMax(Tensor<float> logits)
