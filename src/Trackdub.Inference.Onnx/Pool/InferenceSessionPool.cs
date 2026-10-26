@@ -330,6 +330,11 @@ internal sealed class InferenceSessionPool : IDisposable
     private long creationWave;
     private readonly ConcurrentDictionary<SessionPoolKey, (Exception Error, long Wave)> creationFailures = new();
     private readonly SemaphoreSlim creationLock = new(1, 1);
+    /// <summary>
+    /// Serializes only the pin/publish + gate-acquire phase of bundle acquisition
+    /// (C1 shape b), in <see cref="SessionPoolKey.StableComparer"/> order. Session
+    /// creation itself runs in parallel before this lock is taken.
+    /// </summary>
     private readonly SemaphoreSlim bundleAcquireLock = new(1, 1);
     private TaskCompletionSource<bool> bundleStateChanged = CreateBundleStateChangedSignal();
     private readonly bool enableMemoryAdmission;
@@ -1144,15 +1149,37 @@ internal sealed class InferenceSessionPool : IDisposable
     }
 
     /// <summary>
+    /// Creates (or reuses) one bundle graph and immediately releases the lease, leaving
+    /// the session pooled and idle-eviction-eligible. Used by the parallel create phase
+    /// of <see cref="GetLeaseBundleAsync"/>; residency pinning happens later, serialized
+    /// in key order.
+    /// </summary>
+    private async Task WarmBundleGraphAsync(
+        SessionLeaseRequest request,
+        CancellationToken cancellationToken)
+    {
+        using SessionLease warm = await GetLeaseReportingProviderAsync(
+            request.Key, request.CreateReportingProviderAsync, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Acquires every graph in <paramref name="requests"/> as one all-or-nothing bundle
     /// (audit §3A: never hold an encoder while waiting indefinitely for a decoder).
-    /// Sessions are created and pinned resident first (serialized under
-    /// <c>bundleAcquireLock</c> so opposing bundles cannot pin themselves into a memory
-    /// deadlock), then exclusive gates are taken in <see cref="SessionPoolKey.StableComparer"/>
-    /// order without blocking on a later key while holding an earlier one — if any gate is
-    /// busy the attempt rolls back and retries. Duplicate keys are rejected. When memory
-    /// admission is enabled, an aggregate per-bucket budget check fails the bundle before
-    /// any factory runs.
+    /// C1 shape (b): graph sessions are created in parallel with no process-wide lock
+    /// held — per-key single-flight creation and admission in
+    /// <see cref="GetLeaseReportingProviderAsync"/> already serialize only the brief
+    /// publish step per key — then only pin/publish is serialized, under
+    /// <c>bundleAcquireLock</c> and in <see cref="SessionPoolKey.StableComparer"/>
+    /// order: residency pins are taken in that order and exclusive gates are tried
+    /// non-blockingly in that order, rolling back on any busy gate. Because no factory
+    /// runs and no admission wait happens while a residency pin is incrementally held
+    /// across bundles in opposing order, opposing bundles cannot pin themselves into
+    /// a memory deadlock; a bundle whose graphs were evicted between the parallel
+    /// create and the pin phase re-creates them inside the pin phase, where the
+    /// aggregate admission check (repeated after each pin) still fails fast instead
+    /// of waiting on memory its own pins hold. Duplicate keys are rejected. When
+    /// memory admission is enabled, an aggregate per-bucket budget check fails the
+    /// bundle before any factory runs.
     /// </summary>
     public async Task<SessionLeaseBundle> GetLeaseBundleAsync(
         IReadOnlyList<SessionLeaseRequest> requests,
@@ -1170,17 +1197,60 @@ internal sealed class InferenceSessionPool : IDisposable
             ValidateBundleAdmission(ordered);
         }
 
-        // Serialize preparation and acquisition: while one bundle is pinning or acquiring,
-        // no opposing bundle can incrementally pin itself into a memory deadlock.
+        // C1 shape (b), phase 1: create every graph in parallel, holding no lock and no
+        // residency pins. Created sessions are published per key by the single-flight
+        // create path and stay idle-eviction-eligible until phase 2 pins them, so a
+        // concurrent bundle's admission can still evict them instead of deadlocking
+        // against a half-pinned bundle. A failure or cancellation here leaves nothing
+        // pinned: each warm lease is released as soon as its create completes.
+        var warmTasks = new List<Task>(ordered.Length);
+        try
+        {
+            for (int i = 0; i < ordered.Length; i++)
+            {
+                Task warm = WarmBundleGraphAsync(ordered[i], cancellationToken);
+                warmTasks.Add(warm);
+                if (warm.IsFaulted)
+                {
+                    // A synchronously faulted create is already known before the next
+                    // graph starts: fail fast rather than attempting graphs whose
+                    // bundle has already failed (preserves one attempt per graph).
+                    await warm.ConfigureAwait(false);
+                }
+            }
+
+            await Task.WhenAll(warmTasks).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Drain any creates already in flight so no warm lease is still being
+            // released (and no factory still running) when the failure propagates.
+            try
+            {
+                await Task.WhenAll(warmTasks).ConfigureAwait(false);
+            }
+            catch
+            {
+                // The original failure (rethrown below) is the meaningful one.
+            }
+
+            throw;
+        }
+
+        // C1 shape (b), phase 2: serialize only pin/publish in StableComparer order.
+        // While one bundle pins (re-creating any graph evicted since phase 1) and takes
+        // its gates, no other bundle is incrementally pinning in the opposite order.
         await bundleAcquireLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         var pins = new List<SessionResidency>(ordered.Length);
         try
         {
             try
             {
-                // Phase 1: create each session — no execution gates held. Under hard
+                // Pin phase (serialized, key order): sessions normally already exist
+                // from the parallel create phase — no execution gates held. Under hard
                 // admission, pin each graph resident so idle eviction cannot remove it
-                // before its gate is taken. In count mode a warm may land ephemeral and
+                // before its gate is taken; a graph evicted since its create is
+                // re-created here. In count mode a warm may land ephemeral and
                 // never reach `entries`, so a residency pin could spin forever — just
                 // warm and release instead; the bounded re-warm below retries.
                 foreach (SessionLeaseRequest request in ordered)

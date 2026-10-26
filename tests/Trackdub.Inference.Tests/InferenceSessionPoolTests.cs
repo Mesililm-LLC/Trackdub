@@ -796,6 +796,126 @@ public sealed class InferenceSessionPoolTests
     }
 
     [Fact]
+    public async Task GetLeaseBundleAsync_DisjointBundles_CreateFactoriesConcurrently()
+    {
+        // C1: disjoint bundles must not serialize behind a process-wide bundle lock.
+        // Every factory signals entry and then blocks on a gate; all four factories
+        // (two per bundle) can only be in flight at once if bundle creation overlaps.
+        // Synchronization proves overlap — no wall-clock timing is asserted.
+        using var pool = new InferenceSessionPool(maxSessions: 8);
+        int enteredCount = 0;
+        var allEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Func<CancellationToken, Task<InferenceSession>> GatedFactory() => async ct =>
+        {
+            if (Interlocked.Increment(ref enteredCount) == 4)
+            {
+                allEntered.TrySetResult();
+            }
+
+            await release.Task.WaitAsync(ct);
+            return CreateMinimalSession();
+        };
+
+        SessionLeaseRequest Req(string hash) => new(
+            new SessionPoolKey("disjoint", null, null, ExecutionProviderKind.Cpu, hash, 0, "default") { EstimatedVramMb = 16 },
+            GatedFactory());
+
+        Task<SessionLeaseBundle> t1 = Task.Run(() => pool.GetLeaseBundleAsync(
+            [Req("dx1"), Req("dx2")], CancellationToken.None));
+        Task<SessionLeaseBundle> t2 = Task.Run(() => pool.GetLeaseBundleAsync(
+            [Req("dy1"), Req("dy2")], CancellationToken.None));
+
+        try
+        {
+            await allEntered.Task.AwaitWithHangGuard(
+                "factories from disjoint bundles never ran concurrently (bundle creation is serialized)");
+            Assert.Equal(4, enteredCount);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        using SessionLeaseBundle bundle1 = await t1.AwaitWithHangGuard("first disjoint bundle never completed");
+        using SessionLeaseBundle bundle2 = await t2.AwaitWithHangGuard("second disjoint bundle never completed");
+        Assert.Equal(2, bundle1.Count);
+        Assert.Equal(2, bundle2.Count);
+    }
+
+    [Fact]
+    public async Task GetLeaseBundleAsync_OverlappingOppositeOrders_UnderEvictionPressure_BothComplete()
+    {
+        // C1 deadlock regression: two bundles request the same graphs in opposite caller
+        // orders while the host budget forces eviction of an idle filler. Both must
+        // complete (one gate-set at a time); neither may pin itself into a deadlock.
+        using var pool = new InferenceSessionPool(maxSessions: 8, hostMemoryBudgetMb: 100);
+        var shared1 = HostKey("sh1", 40);
+        var shared2 = HostKey("sh2", 40);
+        var filler = HostKey("fill", 40);
+
+        // Idle filler occupies budget that bundle creation must evict to fit.
+        using (await pool.GetLeaseAsync(filler, _ => Task.FromResult(CreateMinimalSession()), CancellationToken.None))
+        {
+        }
+
+        SessionLeaseRequest a = new(shared1, _ => Task.FromResult(CreateMinimalSession()));
+        SessionLeaseRequest b = new(shared2, _ => Task.FromResult(CreateMinimalSession()));
+
+        Task<SessionLeaseBundle> t1 = Task.Run(() => pool.GetLeaseBundleAsync([a, b], CancellationToken.None));
+        Task<SessionLeaseBundle> t2 = Task.Run(() => pool.GetLeaseBundleAsync([b, a], CancellationToken.None));
+
+        Task<SessionLeaseBundle> first = await Task.WhenAny(t1, t2)
+            .AwaitWithHangGuard("neither overlapping bundle completed under eviction pressure");
+        SessionLeaseBundle firstBundle = await first.AwaitWithHangGuard("the first overlapping bundle never resolved");
+        firstBundle.Dispose();
+
+        Task<SessionLeaseBundle> second = ReferenceEquals(first, t1) ? t2 : t1;
+        SessionLeaseBundle secondBundle = await second.AwaitWithHangGuard("the second overlapping bundle never resolved");
+        secondBundle.Dispose();
+    }
+
+    [Fact]
+    public async Task GetLeaseBundleAsync_CancellationDuringCreate_LeavesNoPinnedHalfBundle()
+    {
+        // A bundle cancelled while a later graph is still creating must not leave the
+        // earlier graph pinned: a probe that only fits by evicting that graph succeeds
+        // only if the pin was released (same probe shape as the preparation-failure test).
+        using var pool = new InferenceSessionPool(maxSessions: 8, hostMemoryBudgetMb: 100);
+        var first = HostKey("cx1", 40);
+        var second = HostKey("cx2", 40);
+        var probe = HostKey("cxp", 80);
+        var secondEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var never = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var cts = new CancellationTokenSource();
+        Task<SessionLeaseBundle> acquire = pool.GetLeaseBundleAsync(
+            [
+                new SessionLeaseRequest(first, _ => Task.FromResult(CreateMinimalSession())),
+                new SessionLeaseRequest(second, async ct =>
+                {
+                    secondEntered.TrySetResult();
+                    await never.Task.WaitAsync(ct);
+                    return CreateMinimalSession();
+                }),
+            ],
+            cts.Token);
+
+        await secondEntered.Task.AwaitWithHangGuard("the second graph factory never started");
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => acquire);
+
+        int probeCalls = 0;
+        using SessionLease lease = await pool.GetLeaseAsync(
+            probe,
+            _ => { probeCalls++; return Task.FromResult(CreateMinimalSession()); },
+            CancellationToken.None).AwaitWithHangGuard("probe never acquired — a cancelled bundle left a pinned half-bundle");
+        Assert.Equal(1, probeCalls);
+        Assert.NotNull(lease.Session);
+    }
+
+    [Fact]
     public async Task GetLeaseBundleAsync_DoesNotHoldFirstGraphWhileBlockedOnSecond()
     {
         using var pool = new InferenceSessionPool(maxSessions: 8);
