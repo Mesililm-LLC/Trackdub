@@ -76,35 +76,34 @@ internal sealed class LanguageModel : IDisposable
             throw new InvalidOperationException($"ONNX file too large ({fileInfo.Length / 1e9:F2} GB). Maximum allowed: {maxOnnxSize / 1e9:F2} GB.");
     }
 
-    private InferenceSession GetPrefillSession()
+    private InferenceSession GetDirectPrefillSession()
     {
-        if (_pooledSessions is not null)
-            return _pooledSessions.Prefill.Session;
-
         var modelPath = Path.Join(_modelDir, "talker_prefill.onnx");
         CheckModelSize(modelPath);
         return _prefillSession ??= new InferenceSession(modelPath, _sessionOptionsFactory());
     }
 
-    private InferenceSession GetDecodeSession()
+    private InferenceSession GetDirectDecodeSession()
     {
-        if (_pooledSessions is not null)
-            return _pooledSessions.Decode.Session;
-
         var modelPath = Path.Join(_modelDir, "talker_decode.onnx");
         CheckModelSize(modelPath);
         return _decodeSession ??= new InferenceSession(modelPath, _sessionOptionsFactory());
     }
 
-    private InferenceSession GetCpSession()
+    private InferenceSession GetDirectCpSession()
     {
-        if (_pooledSessions is not null)
-            return _pooledSessions.CodePredictor.Session;
-
         var modelPath = Path.Join(_modelDir, "code_predictor.onnx");
         CheckModelSize(modelPath);
         return _cpSession ??= new InferenceSession(modelPath, _sessionOptionsFactory());
     }
+
+    /// <summary>
+    /// Acquires one synthesis-scoped lease on a pooled graph, or null when pooling is off.
+    /// The lease is released when the synthesis ends so the pool entry's gate is never
+    /// held for the engine lifetime; residency still comes from the pin.
+    /// </summary>
+    private static OnnxExecutionSessionFactory.SingleSessionLease? AcquirePooledLease(QwenPooledSession? holder) =>
+        holder?.AcquireAsync(CancellationToken.None).GetAwaiter().GetResult();
 
     public long[,,] Generate(int[] tokenIds, string speaker, string language,
                              int maxNewTokens = 2048, float temperature = 0.9f,
@@ -180,6 +179,15 @@ internal sealed class LanguageModel : IDisposable
     {
         var cfg = _embeddings.Config;
 
+        // Synthesis-scoped pooled leases: the gates are held for this synthesis only,
+        // never for the engine lifetime (see QwenPooledSession).
+        using var prefillLease = AcquirePooledLease(_pooledSessions?.Prefill);
+        using var decodeLease = AcquirePooledLease(_pooledSessions?.Decode);
+        using var cpLease = AcquirePooledLease(_pooledSessions?.CodePredictor);
+        InferenceSession prefillSession = prefillLease?.Session ?? GetDirectPrefillSession();
+        InferenceSession decodeSession = decodeLease?.Session ?? GetDirectDecodeSession();
+        InferenceSession cpSession = cpLease?.Session ?? GetDirectCpSession();
+
         // Build prefill embedding
         var (inputsEmbeds, trailingTextHidden) = BuildPrefillEmbedding(
             tokenIds, speakerId, language, cfg, speakerEmbedding,
@@ -227,7 +235,6 @@ internal sealed class LanguageModel : IDisposable
             Buffer.BlockCopy(attentionMask, 0, flatMask, 0, 1 * prefillLen * sizeof(long));
             Buffer.BlockCopy(positionIds, 0, flatPosIds, 0, 3 * 1 * prefillLen * sizeof(long));
 
-            var prefillSession = GetPrefillSession();
             using var embedsOrt = OrtValue.CreateTensorValueFromMemory<float>(flatEmbeds, [1, prefillLen, _hiddenSize]);
             using var maskOrt = OrtValue.CreateTensorValueFromMemory<long>(flatMask, [1, prefillLen]);
             using var posOrt = OrtValue.CreateTensorValueFromMemory<long>(flatPosIds, [3, 1, prefillLen]);
@@ -362,7 +369,7 @@ internal sealed class LanguageModel : IDisposable
                             NamedOnnxValue.CreateFromTensor("past_values", new DenseTensor<float>(cpKvValues.AsMemory(0, cpKvElementCountPerPosition * cpPastLen), [_cpNumLayers, 1, _cpNumKvHeads, cpPastLen, _cpHeadDim]))
                         };
 
-                        using var cpOutputs = GetCpSession().Run(cpInputsList);
+                        using var cpOutputs = cpSession.Run(cpInputsList);
                         ColdStartCapture.MarkInferenceCompleted(CodePredictorRunSource);
                         var cpLogits = cpOutputs.First(x => x.Name == "logits").AsEnumerable<float>().ToArray();
                         var cpToken = SampleTokenSimple(cpLogits, temperature);
@@ -452,7 +459,7 @@ internal sealed class LanguageModel : IDisposable
                     NamedOnnxValue.CreateFromTensor("past_values", new DenseTensor<float>(kvValues.AsMemory(0, kvElementCountPerPosition * (prefillLen + step)), [_numLayers, 1, _numKvHeads, prefillLen + step, _headDim]))
                 };
 
-                using var decodeOutputs = GetDecodeSession().Run(decodeInputs);
+                using var decodeOutputs = decodeSession.Run(decodeInputs);
                 ColdStartCapture.MarkInferenceCompleted(DecodeRunSource);
                 logits = decodeOutputs.First(x => x.Name == "logits").AsEnumerable<float>().ToArray();
                 hiddenStates = decodeOutputs.First(x => x.Name == "hidden_states").AsEnumerable<float>().ToArray();

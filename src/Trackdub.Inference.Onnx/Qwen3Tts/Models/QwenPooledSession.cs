@@ -1,20 +1,17 @@
-using Microsoft.ML.OnnxRuntime;
-
 namespace Trackdub.Inference.Onnx.Qwen3Tts.Models;
 
 /// <summary>
-/// Engine-lifetime pooled session for one Qwen3-TTS graph. The residency pin keeps the
-/// session alive in <c>InferenceSessionPool</c> between syntheses; the execution lease is
-/// acquired once and cached, so a second synthesis reuses the same
-/// <see cref="InferenceSession"/> instead of disposing and recreating it. Disposing this
-/// holder returns the lease to the pool and releases the residency pin — it does not
-/// dispose the pooled session itself.
+/// Engine-lifetime pooled session holder for one Qwen3-TTS graph. The residency pin keeps
+/// the session alive in <c>InferenceSessionPool</c> between syntheses; the execution lease is
+/// acquired per synthesis (or per call) and released afterwards, so a second synthesis — or a
+/// concurrent same-key acquire from another stage — is never starved by a gate held for the
+/// engine lifetime. Disposing this holder releases the residency pin — it does not dispose
+/// the pooled session itself.
 /// </summary>
 internal sealed class QwenPooledSession : IDisposable
 {
     private readonly OnnxExecutionSessionFactory.PooledSingleSessionPin pin;
     private readonly object gate = new();
-    private OnnxExecutionSessionFactory.SingleSessionLease? lease;
     private int disposed;
 
     internal QwenPooledSession(OnnxExecutionSessionFactory.PooledSingleSessionPin pin)
@@ -22,17 +19,17 @@ internal sealed class QwenPooledSession : IDisposable
         this.pin = pin ?? throw new ArgumentNullException(nameof(pin));
     }
 
-    /// <summary>The shared pooled session, acquired lazily on first use.</summary>
-    public InferenceSession Session
+    /// <summary>
+    /// Acquires a short exclusive lease on the shared pooled session for one synthesis (or
+    /// one call). The caller owns the lease and must dispose it; the residency pin is
+    /// unaffected.
+    /// </summary>
+    public Task<OnnxExecutionSessionFactory.SingleSessionLease> AcquireAsync(CancellationToken cancellationToken)
     {
-        get
+        lock (gate)
         {
-            lock (gate)
-            {
-                ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
-                lease ??= pin.AcquireAsync(CancellationToken.None).GetAwaiter().GetResult();
-                return lease.Session;
-            }
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+            return pin.AcquireAsync(cancellationToken);
         }
     }
 
@@ -41,12 +38,6 @@ internal sealed class QwenPooledSession : IDisposable
         if (Interlocked.Exchange(ref disposed, 1) != 0)
         {
             return;
-        }
-
-        lock (gate)
-        {
-            lease?.Dispose();
-            lease = null;
         }
 
         pin.Dispose();

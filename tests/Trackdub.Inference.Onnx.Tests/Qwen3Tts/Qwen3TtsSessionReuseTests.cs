@@ -32,7 +32,10 @@ public sealed class Qwen3TtsSessionReuseTests
         InferenceSession? first = null;
         for (int synthesis = 0; synthesis < 2; synthesis++)
         {
-            InferenceSession session = prefill.Session;
+            // Each synthesis acquires and releases its own lease; both must resolve to
+            // the same pinned session without recreating it.
+            using var lease = await prefill.AcquireAsync(TestContext.Current.CancellationToken);
+            InferenceSession session = lease.Session;
             first ??= session;
             Assert.Same(first, session);
 
@@ -59,9 +62,12 @@ public sealed class Qwen3TtsSessionReuseTests
             pool,
             sessionFactory: (_, _) => new InferenceSession(model));
         var prefill = new QwenPooledSession(pin);
-        _ = prefill.Session;
+        using (await prefill.AcquireAsync(TestContext.Current.CancellationToken))
+        {
+        }
+
         prefill.Dispose();
-        Assert.Throws<ObjectDisposedException>(() => prefill.Session);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => prefill.AcquireAsync(TestContext.Current.CancellationToken));
     }
 
     private static byte[] BuildIdentityOnnxModel() =>

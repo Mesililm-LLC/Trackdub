@@ -44,15 +44,8 @@ internal sealed class Vocoder : IDisposable
         GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
     };
 
-    private InferenceSession GetSession()
+    private InferenceSession GetDirectSession()
     {
-        if (_pooledSession is not null)
-        {
-            InferenceSession pooled = _pooledSession.Session;
-            _inputName ??= pooled.InputMetadata.Keys.FirstOrDefault() ?? "codes";
-            return pooled;
-        }
-
         if (_session is null)
         {
             // SEC-3: File size pre-check to prevent out-of-memory attacks
@@ -86,12 +79,18 @@ internal sealed class Vocoder : IDisposable
                 for (int t = 0; t < timesteps; t++)
                     tensor[b, q, t] = codes[b, q, t];
 
+        // Call-scoped pooled lease: the gate is held for this decode only, never for the
+        // engine lifetime; residency still comes from the pin.
+        using var pooledLease = _pooledSession?.AcquireAsync(CancellationToken.None).GetAwaiter().GetResult();
+        InferenceSession session = pooledLease?.Session ?? GetDirectSession();
+        _inputName ??= session.InputMetadata.Keys.FirstOrDefault() ?? "codes";
+
         var inputs = new List<NamedOnnxValue>
         {
             NamedOnnxValue.CreateFromTensor(_inputName ?? "codes", tensor)
         };
 
-        using var results = GetSession().Run(inputs);
+        using var results = session.Run(inputs);
         ColdStartCapture.MarkInferenceCompleted("qwen3-tts:vocoder");
 
         // Extract waveform from first output tensor

@@ -40,13 +40,8 @@ public sealed class SpeakerEncoder : IDisposable
         GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
     };
 
-    private InferenceSession GetSession()
+    private InferenceSession GetDirectSession()
     {
-        if (_pooledSession is not null)
-        {
-            return _pooledSession.Session;
-        }
-
         if (_session is null)
         {
             _session = new InferenceSession(_modelPath, _sessionOptionsFactory());
@@ -70,12 +65,17 @@ public sealed class SpeakerEncoder : IDisposable
             for (int m = 0; m < nMels; m++)
                 tensor[0, t, m] = melSpectrogram[t, m];
 
+        // Call-scoped pooled lease: the gate is held for this encode only, never for the
+        // engine lifetime; residency still comes from the pin.
+        using var pooledLease = _pooledSession?.AcquireAsync(CancellationToken.None).GetAwaiter().GetResult();
+        InferenceSession session = pooledLease?.Session ?? GetDirectSession();
+
         var inputs = new List<NamedOnnxValue>
         {
             NamedOnnxValue.CreateFromTensor("mel_spectrogram", tensor)
         };
 
-        using var results = GetSession().Run(inputs);
+        using var results = session.Run(inputs);
         ColdStartCapture.MarkInferenceCompleted("qwen3-tts:speaker-encoder");
         var outputTensor = results.First().AsTensor<float>();
 
