@@ -130,7 +130,7 @@ public sealed class ScfrdOnnxFaceDetector : IFaceDetector
 
             return new FaceDetectionResult(FaceFound: true, Confidence: best.Score, PrimaryFace: region);
         }
-        catch
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             return NoFace;
         }
