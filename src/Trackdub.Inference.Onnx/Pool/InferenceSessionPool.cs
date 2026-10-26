@@ -925,6 +925,20 @@ internal sealed class InferenceSessionPool : IDisposable
             // Fast path: entry already exists — wait on its gate (serialises inference).
             if (entries.TryGetValue(key, out PoolEntry? existing))
             {
+                // The graph turned out resident, so its hold share (if any) is
+                // unnecessary: return it to the pending reservation before waiting
+                // on the gate. Waiting first double-counts the graph (pending share
+                // plus the published entry in CurrentReservedMb) for the whole lease
+                // held by the concurrent publisher, spuriously evicting or stalling
+                // a third acquire. If the entry is evicted while waiting, the ODE
+                // retry below falls back to ordinary admission (the relinquished
+                // share is simply gone).
+                if (bundleHold is not null
+                    && bundleHold.TryRelinquish(BucketOf(key), key, out long relinquishedMb))
+                {
+                    ReleaseReservation(BucketOf(key), relinquishedMb);
+                }
+
                 try
                 {
                     using (BenchmarkPhaseCapture.Start("pool-wait"))
@@ -940,15 +954,6 @@ internal sealed class InferenceSessionPool : IDisposable
                     if (!cacheMissRecorded)
                     {
                         BenchmarkPhaseCapture.Increment("poolHit");
-                    }
-
-                    // The graph turned out resident, so its hold share (if any) is
-                    // unnecessary: return it to the pending reservation now instead of
-                    // leaving phantom pending until every warm finishes.
-                    if (bundleHold is not null
-                        && bundleHold.TryRelinquish(BucketOf(key), key, out long relinquishedMb))
-                    {
-                        ReleaseReservation(BucketOf(key), relinquishedMb);
                     }
 
                     return BuildLease(existing);
