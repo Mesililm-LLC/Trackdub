@@ -19,6 +19,13 @@ public static class StageSkipReasonCodes
     /// <summary>User declined the stage's optional model during pre-flight provisioning.</summary>
     public const string OptionalModelDeclined = "OPTIONAL_MODEL_DECLINED";
 
+    /// <summary>
+    /// The stage's proving warmup (the single first-run smoke create) failed, so the
+    /// stage was skipped before inference instead of attempting a doomed execution.
+    /// Not benign: no verdict was recorded and the stage produced nothing.
+    /// </summary>
+    public const string WarmupFailed = "WARMUP_FAILED";
+
     private static readonly HashSet<string> BenignSkipReasonCodes = new(StringComparer.OrdinalIgnoreCase)
     {
         ExistingArtifactsValid,

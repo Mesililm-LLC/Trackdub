@@ -5,6 +5,7 @@ using Trackdub.Inference.Onnx.Runtime;
 using Trackdub.Inference.Onnx.ExecutionProviders;
 using Trackdub.Inference.Onnx.Qwen3Asr;
 using Trackdub.Inference.Onnx.NemotronAsr;
+using Trackdub.Inference.Onnx.OpusMt;
 using Trackdub.Inference.Onnx.ParakeetTdt;
 using Trackdub.Inference.Onnx.CosyVoice;
 using Trackdub.Inference.Onnx.Pool;
@@ -1541,8 +1542,16 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
             return;
         }
 
+        // Pooled with the same family/options OpusMtTranslationEngine uses, so the
+        // sessions this smoke proves are the ones the translation stage leases next.
+        // The non-pooled CreateOpusAsync pair would be disposed here and rebuilt by
+        // the stage (a second, serial session create inside the stage itself).
         using OnnxExecutionSessionFactory.OpusSessionLease sessionLease = await OnnxExecutionSessionFactory
-            .CreateOpusAsync(encoderModelPath, decoderModelPath, request.ExecutionProvider, cancellationToken)
+            .CreatePooledOpusAsync(
+                string.IsNullOrWhiteSpace(request.EngineFamily)
+                    ? OpusMtTranslationEngine.EngineFamilyName
+                    : request.EngineFamily,
+                encoderModelPath, decoderModelPath, request.ExecutionProvider, cancellationToken)
             .ConfigureAwait(false);
         EnsureSelectedProviderMatchesRequested(request.ExecutionProvider, sessionLease.SelectedProvider);
 

@@ -421,14 +421,142 @@ public sealed class DubbingPipelineEngine(
     {
         string? failedPrerequisiteStage = null;
 
-        // Optimization-only lookahead. GenAI currently has a one-entry pool, so the next
-        // stage's warmup starts only after the current stage has completed and released its
-        // model lease; starting it earlier can evict/reload the active model. At most one
-        // pending warmup exists and it is always joined before its target or on exit.
         IStageWarmupCoordinator? warmupCoordinator =
             session.Services?.GetService<IStageWarmupCoordinator>();
-        PendingStageWarmup? pendingWarmup = null;
         TtsStreamingPrefetch? ttsPrefetch = null;
+
+        try
+        {
+            await RunScheduledStagesAsync(
+                stagesToRun,
+                warmupCoordinator,
+                runtimeSelections,
+                options,
+                declinedOptionalStages,
+                gateStageAsync: async (stageName, ct) =>
+                {
+                    // Check cancellation between stages
+                    if (ct.IsCancellationRequested)
+                    {
+                        ReportProgress(progress, stageName, PipelineProgressEventKind.Skipped, "Cancelled");
+                        return BuildSkippedOutcome(stageName, "CANCELLED");
+                    }
+
+                    // Skip if a prerequisite stage failed
+                    if (failedPrerequisiteStage is not null)
+                    {
+                        ReportProgress(progress, stageName, PipelineProgressEventKind.Skipped,
+                            $"Skipped due to failed prerequisite: {failedPrerequisiteStage}");
+                        return BuildSkippedOutcome(stageName, StageSkipReasonCodes.PrerequisiteFailed);
+                    }
+
+                    // Skip optional stages whose model the user declined during pre-flight
+                    // provisioning; without the model they would fail mid-run.
+                    if (declinedOptionalStages.Contains(stageName))
+                    {
+                        ReportProgress(progress, stageName, PipelineProgressEventKind.Skipped,
+                            "Skipped — optional model setup declined");
+                        return BuildSkippedOutcome(stageName, StageSkipReasonCodes.OptionalModelDeclined);
+                    }
+
+                    // Check resumability: skip stages with valid existing artifacts
+                    if (!options.ForceRerun &&
+                        await HasValidExistingArtifactsAsync(
+                            session,
+                            options,
+                            stageName,
+                            executionSnapshot,
+                            ct).ConfigureAwait(false))
+                    {
+                        ReportProgress(progress, stageName, PipelineProgressEventKind.Skipped,
+                            "Skipped — valid artifacts from prior run");
+                        return BuildSkippedOutcome(stageName, StageSkipReasonCodes.ExistingArtifactsValid);
+                    }
+
+                    return null;
+                },
+                executeStageAsync: async (stageName, ct) =>
+                {
+                    if (ttsPrefetch is null &&
+                        ShouldOverlapTtsWithTranslation(
+                            options, stagesToRun, Array.IndexOf(stagesToRun, stageName), declinedOptionalStages))
+                    {
+                        ttsPrefetch = await TryCreateTtsPrefetchAsync(
+                            session,
+                            options,
+                            runtimeSelections,
+                            ct).ConfigureAwait(false);
+                    }
+
+                    StageOutcome outcome = await ExecuteStageAsync(
+                        session,
+                        options,
+                        stageName,
+                        executionSnapshot,
+                        runtimeSelections,
+                        progress,
+                        projectId,
+                        runId,
+                        ct,
+                        ttsPrefetch).ConfigureAwait(false);
+
+                    // Unclaimed clips are useless once TTS has run or translation produced no revision.
+                    if (ttsPrefetch is not null &&
+                        (string.Equals(stageName, StageNames.Tts, StringComparison.OrdinalIgnoreCase) ||
+                         (string.Equals(stageName, StageNames.Translation, StringComparison.OrdinalIgnoreCase) &&
+                          outcome.Status == StageStatus.Failed)))
+                    {
+                        await ttsPrefetch.DisposeAsync().ConfigureAwait(false);
+                        ttsPrefetch = null;
+                    }
+
+                    return outcome;
+                },
+                recordOutcome: outcome =>
+                {
+                    stageOutcomes.Add(outcome);
+                    if (outcome.Status == StageStatus.Failed && DubbingPipelineStages.PrerequisiteStages.Contains(outcome.StageName))
+                    {
+                        failedPrerequisiteStage = outcome.StageName;
+                    }
+                },
+                progress,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (ttsPrefetch is not null)
+            {
+                await ttsPrefetch.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Stage sequence with next-stage warmup lookahead: the warmup for the next warmable
+    /// stage is started (not awaited) immediately before the current stage executes, so
+    /// its proving session create overlaps the current stage's work instead of sitting
+    /// serially in the gap between stages. The pending warmup is joined before its
+    /// target stage's gate/execution; a failed warmup skips that stage with
+    /// <see cref="StageSkipReasonCodes.WarmupFailed"/> and the failure detail (the
+    /// coordinator records no verdict for a failed smoke), while a passed or
+    /// not-attempted-but-successful warmup leaves execution untouched. Gate-skipped
+    /// stages (cancelled, prerequisite-failed, declined, resume-valid) start no new
+    /// warmup, matching the previous post-stage scheduling for those paths.
+    /// </summary>
+    internal static async Task RunScheduledStagesAsync(
+        string[] stagesToRun,
+        IStageWarmupCoordinator? warmupCoordinator,
+        RuntimeModelSelections runtimeSelections,
+        DubbingSessionOptions options,
+        IReadOnlySet<string> declinedOptionalStages,
+        Func<string, CancellationToken, Task<StageOutcome?>> gateStageAsync,
+        Func<string, CancellationToken, Task<StageOutcome>> executeStageAsync,
+        Action<StageOutcome> recordOutcome,
+        IProgress<PipelineProgressEvent>? progress,
+        CancellationToken cancellationToken)
+    {
+        PendingStageWarmup? pendingWarmup = null;
 
         try
         {
@@ -439,90 +567,30 @@ public sealed class DubbingPipelineEngine(
                 if (pendingWarmup is not null
                     && string.Equals(pendingWarmup.StageName, stageName, StringComparison.OrdinalIgnoreCase))
                 {
-                    await ObserveWarmupAsync(pendingWarmup.Task, cancellationToken).ConfigureAwait(false);
+                    StageWarmupResult? warmupResult =
+                        await AwaitWarmupResultAsync(pendingWarmup.Task, cancellationToken).ConfigureAwait(false);
                     pendingWarmup = null;
+
+                    if (BuildWarmupSkipOutcomeIfFailed(stageName, warmupResult) is { } warmupSkip)
+                    {
+                        ReportProgress(progress, stageName, PipelineProgressEventKind.Skipped,
+                            warmupResult?.Detail is { } detail
+                                ? $"Skipped — stage warmup failed: {detail}"
+                                : "Skipped — stage warmup failed");
+                        recordOutcome(warmupSkip);
+                        continue;
+                    }
                 }
 
-                // Check cancellation between stages
-                if (cancellationToken.IsCancellationRequested)
+                StageOutcome? gateOutcome = await gateStageAsync(stageName, cancellationToken).ConfigureAwait(false);
+                if (gateOutcome is not null)
                 {
-                    stageOutcomes.Add(BuildSkippedOutcome(stageName, "CANCELLED"));
-                    ReportProgress(progress, stageName, PipelineProgressEventKind.Skipped, "Cancelled");
+                    recordOutcome(gateOutcome);
                     continue;
                 }
 
-                // Skip if a prerequisite stage failed
-                if (failedPrerequisiteStage is not null)
-                {
-                    stageOutcomes.Add(BuildSkippedOutcome(stageName, StageSkipReasonCodes.PrerequisiteFailed));
-                    ReportProgress(progress, stageName, PipelineProgressEventKind.Skipped,
-                        $"Skipped due to failed prerequisite: {failedPrerequisiteStage}");
-                    continue;
-                }
-
-                // Skip optional stages whose model the user declined during pre-flight
-                // provisioning; without the model they would fail mid-run.
-                if (declinedOptionalStages.Contains(stageName))
-                {
-                    stageOutcomes.Add(BuildSkippedOutcome(stageName, StageSkipReasonCodes.OptionalModelDeclined));
-                    ReportProgress(progress, stageName, PipelineProgressEventKind.Skipped,
-                        "Skipped — optional model setup declined");
-                    continue;
-                }
-
-                // Check resumability: skip stages with valid existing artifacts
-                if (!options.ForceRerun &&
-                    await HasValidExistingArtifactsAsync(
-                        session,
-                        options,
-                        stageName,
-                        executionSnapshot,
-                        cancellationToken).ConfigureAwait(false))
-                {
-                    stageOutcomes.Add(BuildSkippedOutcome(stageName, StageSkipReasonCodes.ExistingArtifactsValid));
-                    ReportProgress(progress, stageName, PipelineProgressEventKind.Skipped,
-                        "Skipped — valid artifacts from prior run");
-                    continue;
-                }
-
-                if (ttsPrefetch is null &&
-                    ShouldOverlapTtsWithTranslation(options, stagesToRun, i, declinedOptionalStages))
-                {
-                    ttsPrefetch = await TryCreateTtsPrefetchAsync(
-                        session,
-                        options,
-                        runtimeSelections,
-                        cancellationToken).ConfigureAwait(false);
-                }
-
-                Task<StageOutcome> stageTask = ExecuteStageAsync(
-                    session,
-                    options,
-                    stageName,
-                    executionSnapshot,
-                    runtimeSelections,
-                    progress,
-                    projectId,
-                    runId,
-                    cancellationToken,
-                    ttsPrefetch);
-
-                StageOutcome outcome = await stageTask.ConfigureAwait(false);
-                stageOutcomes.Add(outcome);
-
-                // Unclaimed clips are useless once TTS has run or translation produced no revision.
-                if (ttsPrefetch is not null &&
-                    (string.Equals(stageName, StageNames.Tts, StringComparison.OrdinalIgnoreCase) ||
-                     (string.Equals(stageName, StageNames.Translation, StringComparison.OrdinalIgnoreCase) &&
-                      outcome.Status == StageStatus.Failed)))
-                {
-                    await ttsPrefetch.DisposeAsync().ConfigureAwait(false);
-                    ttsPrefetch = null;
-                }
-
-                // Keep the active stage's GenAI residency secure through its actual work.
-                // Once released, warm the next stage; its lease is joined at the top of that
-                // stage's iteration before execution begins.
+                // Start the next stage's proving warmup now so it overlaps this
+                // stage's execution; it is joined at the top of its target iteration.
                 if (warmupCoordinator is not null && pendingWarmup is null)
                 {
                     pendingWarmup = StartNextStageWarmup(
@@ -535,19 +603,12 @@ public sealed class DubbingPipelineEngine(
                         cancellationToken);
                 }
 
-                if (outcome.Status == StageStatus.Failed && DubbingPipelineStages.PrerequisiteStages.Contains(stageName))
-                {
-                    failedPrerequisiteStage = stageName;
-                }
+                StageOutcome outcome = await executeStageAsync(stageName, cancellationToken).ConfigureAwait(false);
+                recordOutcome(outcome);
             }
         }
         finally
         {
-            if (ttsPrefetch is not null)
-            {
-                await ttsPrefetch.DisposeAsync().ConfigureAwait(false);
-            }
-
             // Stop joining warmup promptly on cancellation; the coordinator receives the
             // same token and will stop at its next cancellable checkpoint.
             if (pendingWarmup is not null)
@@ -651,20 +712,44 @@ public sealed class DubbingPipelineEngine(
     }
 
     /// <summary>
-    /// Joins a warmup task without letting its outcome affect the run: ordinary failures are
-    /// optimization-only, and cancellation is swallowed only when the run itself is cancelled.
+    /// Builds the skip outcome for a stage whose proving warmup failed, or null when the
+    /// warmup passed (or produced no result, e.g. a swallowed coordinator exception —
+    /// those stay optimization-only and the stage attempts its own execution). The
+    /// failure detail is preserved on the outcome; the coordinator has recorded no
+    /// verdict for it, so nothing is reported ready on the strength of a failed smoke.
     /// </summary>
-    internal static async Task ObserveWarmupAsync(
+    internal static StageOutcome? BuildWarmupSkipOutcomeIfFailed(
+        string stageName,
+        StageWarmupResult? warmupResult)
+    {
+        if (warmupResult is null || warmupResult.Succeeded)
+        {
+            return null;
+        }
+
+        StageOutcome outcome = BuildSkippedOutcome(stageName, StageSkipReasonCodes.WarmupFailed);
+        return string.IsNullOrWhiteSpace(warmupResult.Detail)
+            ? outcome
+            : outcome with { DegradationRecords = [warmupResult.Detail] };
+    }
+
+    /// <summary>
+    /// Joins a warmup task and returns its result: ordinary failures are returned (or
+    /// null for a faulted task) rather than thrown, and cancellation is swallowed only
+    /// when the run itself is cancelled.
+    /// </summary>
+    internal static async Task<StageWarmupResult?> AwaitWarmupResultAsync(
         Task<StageWarmupResult> warmupTask,
         CancellationToken cancellationToken)
     {
         try
         {
-            _ = await warmupTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return await warmupTask.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // Run cancelled — the warmup was optimization-only.
+            return null;
         }
         catch (OperationCanceledException)
         {
@@ -673,8 +758,21 @@ public sealed class DubbingPipelineEngine(
         }
         catch (Exception)
         {
-            // Optimization failure must not affect stage outcomes.
+            // A faulted coordinator task carries no result to consume; the target stage
+            // attempts its own execution and surfaces any real failure itself.
+            return null;
         }
+    }
+
+    /// <summary>
+    /// Joins a warmup task without letting its outcome affect the run: ordinary failures are
+    /// optimization-only, and cancellation is swallowed only when the run itself is cancelled.
+    /// </summary>
+    internal static async Task ObserveWarmupAsync(
+        Task<StageWarmupResult> warmupTask,
+        CancellationToken cancellationToken)
+    {
+        _ = await AwaitWarmupResultAsync(warmupTask, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

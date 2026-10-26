@@ -116,6 +116,169 @@ public class StageWarmupSchedulingTests
         Assert.False(warmup.Task.IsCompleted);
     }
 
+    private static StageOutcome Succeeded(string stageName) => new()
+    {
+        StageName = stageName,
+        Status = StageStatus.Succeeded,
+        StartTime = DateTimeOffset.UtcNow,
+        EndTime = DateTimeOffset.UtcNow,
+        ArtifactPaths = [],
+    };
+
+    [Fact]
+    public async Task RunScheduledStagesAsync_NextStageWarmupOverlapsCurrentStageExecution()
+    {
+        var events = new List<string>();
+        void Record(string e) { lock (events) events.Add(e); }
+        var coordinator = new ControlledWarmupCoordinator(() => Record("warmup:start"));
+        string[] stages = [StageNames.Vad, StageNames.Asr];
+        var outcomes = new List<StageOutcome>();
+        var vadRecorded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task run = DubbingPipelineEngine.RunScheduledStagesAsync(
+            stages,
+            coordinator,
+            Selections(),
+            Options(),
+            new HashSet<string>(),
+            gateStageAsync: (_, _) => Task.FromResult<StageOutcome?>(null),
+            executeStageAsync: async (stage, ct) =>
+            {
+                if (stage == StageNames.Vad)
+                {
+                    Record("vad:start");
+                    // Deadlocks (test-token timeout) unless the ASR warmup was
+                    // already started before VAD execution began.
+                    await coordinator.Started.Task.WaitAsync(ct).ConfigureAwait(false);
+                    Record("vad:end");
+                }
+                else
+                {
+                    Record("asr:exec");
+                }
+
+                return Succeeded(stage);
+            },
+            recordOutcome: outcome =>
+            {
+                outcomes.Add(outcome);
+                if (outcome.StageName == StageNames.Vad) vadRecorded.TrySetResult();
+            },
+            progress: null,
+            TestContext.Current.CancellationToken);
+
+        // VAD finished while the ASR warmup is still blocked: ASR must not have run.
+        await vadRecorded.Task.WaitAsync(TestContext.Current.CancellationToken);
+        lock (events) Assert.DoesNotContain("asr:exec", events);
+        Assert.False(coordinator.Release.Task.IsCompleted);
+
+        coordinator.Release.SetResult(new StageWarmupResult(Attempted: true, Succeeded: true));
+        await run.WaitAsync(TestContext.Current.CancellationToken);
+
+        string[] snapshot;
+        lock (events) snapshot = [.. events];
+        Assert.True(Array.IndexOf(snapshot, "warmup:start") < Array.IndexOf(snapshot, "vad:end"),
+            "warmup for stage N+1 must start before stage N finishes");
+        Assert.Equal([StageNames.Vad, StageNames.Asr], outcomes.Select(o => o.StageName));
+        Assert.All(outcomes, o => Assert.Equal(StageStatus.Succeeded, o.Status));
+        Assert.Equal(RuntimeStage.Asr, Assert.Single(coordinator.Requests).Stage);
+    }
+
+    [Fact]
+    public async Task RunScheduledStagesAsync_WarmupFailureSkipsTargetStageWithReason_AndLaterStagesStillRun()
+    {
+        var coordinator = new DelegateWarmupCoordinator(_ =>
+            Task.FromResult(new StageWarmupResult(
+                Attempted: true, Succeeded: false, Detail: "provider failed")));
+        string[] stages = [StageNames.Vad, StageNames.Asr, StageNames.Translation];
+        var outcomes = new List<StageOutcome>();
+        var executed = new List<string>();
+
+        await DubbingPipelineEngine.RunScheduledStagesAsync(
+            stages,
+            coordinator,
+            Selections(),
+            Options(),
+            new HashSet<string>(),
+            gateStageAsync: (_, _) => Task.FromResult<StageOutcome?>(null),
+            executeStageAsync: (stage, _) =>
+            {
+                executed.Add(stage);
+                return Task.FromResult(Succeeded(stage));
+            },
+            recordOutcome: outcomes.Add,
+            progress: null,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal([StageNames.Vad, StageNames.Translation], executed);
+        Assert.Equal(3, outcomes.Count);
+        Assert.Equal(StageStatus.Succeeded, outcomes[0].Status);
+        Assert.Equal(StageStatus.Skipped, outcomes[1].Status);
+        Assert.Equal(StageNames.Asr, outcomes[1].StageName);
+        Assert.Equal(StageSkipReasonCodes.WarmupFailed, outcomes[1].ReasonCode);
+        Assert.Contains("provider failed", outcomes[1].DegradationRecords ?? []);
+        Assert.Equal(StageStatus.Succeeded, outcomes[2].Status);
+    }
+
+    [Fact]
+    public async Task RunScheduledStagesAsync_WarmupFinishingEarly_DoesNotChangeOrderingOrOutcomes()
+    {
+        var coordinator = new DelegateWarmupCoordinator(_ =>
+            Task.FromResult(new StageWarmupResult(Attempted: true, Succeeded: true)));
+        string[] stages = [StageNames.Vad, StageNames.Asr];
+        var outcomes = new List<StageOutcome>();
+        var executed = new List<string>();
+
+        await DubbingPipelineEngine.RunScheduledStagesAsync(
+            stages,
+            coordinator,
+            Selections(),
+            Options(),
+            new HashSet<string>(),
+            gateStageAsync: (_, _) => Task.FromResult<StageOutcome?>(null),
+            executeStageAsync: (stage, _) =>
+            {
+                executed.Add(stage);
+                return Task.FromResult(Succeeded(stage));
+            },
+            recordOutcome: outcomes.Add,
+            progress: null,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(stages, executed);
+        Assert.Equal(stages, outcomes.Select(o => o.StageName));
+        Assert.All(outcomes, o => Assert.Equal(StageStatus.Succeeded, o.Status));
+    }
+
+    private sealed class ControlledWarmupCoordinator(Action onStarted) : IStageWarmupCoordinator
+    {
+        public TaskCompletionSource Started { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource<StageWarmupResult> Release { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public List<StageWarmupRequest> Requests { get; } = [];
+
+        public Task<StageWarmupResult> WarmAsync(
+            StageWarmupRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            Requests.Add(request);
+            onStarted();
+            Started.TrySetResult();
+            return Release.Task;
+        }
+    }
+
+    private sealed class DelegateWarmupCoordinator(
+        Func<StageWarmupRequest, Task<StageWarmupResult>> handler) : IStageWarmupCoordinator
+    {
+        public Task<StageWarmupResult> WarmAsync(
+            StageWarmupRequest request,
+            CancellationToken cancellationToken = default) => handler(request);
+    }
+
     private sealed class FakeWarmupCoordinator : IStageWarmupCoordinator
     {
         public List<StageWarmupRequest> Requests { get; } = [];
