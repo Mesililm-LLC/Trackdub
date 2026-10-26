@@ -290,8 +290,11 @@ public sealed class SidecarCacheTests
     [Fact]
     public async Task GetOrAddAsync_CancellingOneCallersWait_DoesNotCancelTheSharedLoad()
     {
-        // The Qwen3-ASR engine loads its tokenizer with CancellationToken.None and applies each caller's
-        // token to its own wait, so one cancelled transcription cannot abort a read that others await.
+        // Pins the cache primitive the Qwen3-ASR engine relies on: GetOrAddAsync shares one load
+        // per key, and a caller's own WaitAsync must be able to give up without cancelling that
+        // shared work. This does NOT exercise the engine itself, so it would not catch the engine
+        // regressing to pass its caller's token into the load factory; it only guarantees the
+        // primitive keeps offering the isolation the engine's CancellationToken.None call needs.
         var cache = new SidecarCache<string>();
         var load = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var cancellation = new CancellationTokenSource();
