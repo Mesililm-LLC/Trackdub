@@ -63,8 +63,9 @@ public sealed class EpContextCompiler
         if (!EpContextLoadPathResolver.HasIdentifiedHardware)
         {
             return new CompileResult(false, null, 0,
-                "Hardware identity is not loaded yet, so an EP-context compile would be stamped " +
-                "'unknown'. Run host startup or EP-context warmup before compiling.");
+                "Hardware identity is not available (GPU architecture, driver version, or " +
+                "host ORT version is unknown), so an EP-context compile would be stamped " +
+                "'unknown'. Run host startup or EP-context warmup on a machine with an identifiable GPU.");
         }
 
         // TensorRT RTX is a standalone ORT EP ABI plugin. Unless registered before the first OrtEnv

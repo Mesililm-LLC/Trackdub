@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.Hosting;
 using Trackdub.Application.Pipeline;
 using Trackdub.Contracts;
@@ -52,9 +53,20 @@ public sealed class EngineAutoWarmInstaller : IHostedService
         // through this host: session creation consumes the already-computed identity and
         // never probes or blocks. Hosts that skip this service keep the honest behaviour —
         // EP-context lookups miss and nothing is stamped 'unknown' — rather than a fake hit.
+        // A failing probe must not abort host startup: keep the placeholder identity so
+        // lookups stay honest misses (as the old lazy ProbeHardware's ("unknown", null)
+        // fallback did) instead of faulting HeadlessDubbingHost.Create/TrackdubBuilder.Build.
         if (epContextWarmupService is not null)
         {
-            await epContextWarmupService.InitializeHardwareIdentityAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await epContextWarmupService.InitializeHardwareIdentityAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+            {
+                Trace.TraceWarning(
+                    $"EP-context hardware identity could not be loaded: {ex.Message}");
+            }
         }
 
         // Call the contract directly for every implementation: a type-specific branch would leave
