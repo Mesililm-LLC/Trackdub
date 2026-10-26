@@ -57,6 +57,9 @@ internal sealed class NemotronAsrGreedyDecoder(
         float[]? cacheTime = null;
         float[]? decoderState1 = null;
         float[]? decoderState2 = null;
+        int[]? decoderStateShape = null;
+        TensorElementType targetsElementType = TensorElementType.Int64;
+        TensorElementType targetLengthElementType = TensorElementType.Int64;
         long cacheChannelLength = 0;
         if (!useDeviceBoundRuns)
         {
@@ -68,17 +71,21 @@ internal sealed class NemotronAsrGreedyDecoder(
             cacheChannel = new float[GetElementCount(cacheChannelShape)];
             cacheTime = new float[GetElementCount(cacheTimeShape)];
 
-            int[] decoderStateShape = ResolveCacheShape(
-                sessionLease.DecoderJointSession.InputMetadata,
+            // Hoisted out of the per-symbol decode loop: session metadata and the
+            // resolved state shape cannot change while this lease is held.
+            IReadOnlyDictionary<string, NodeMetadata> decoderMetadata = sessionLease.DecoderJointSession.InputMetadata;
+            decoderStateShape = ResolveCacheShape(
+                decoderMetadata,
                 "input_states_1",
                 [config.DecoderLstmLayers, 1, config.DecoderLstmDim]);
             decoderState1 = new float[GetElementCount(decoderStateShape)];
             decoderState2 = new float[GetElementCount(decoderStateShape)];
+            targetsElementType = ResolveTokenElementType(decoderMetadata, "targets");
+            targetLengthElementType = ResolveTokenElementType(decoderMetadata, "target_length");
         }
 
         int totalFrames = mel.GetLength(1);
         var allTokens = new List<int>();
-        var featureExtractor = new NemotronAsrMelFeatureExtractor();
         int chunkIndex = 0;
 
         // BuildChunk is a pure function of `mel` and the frame offset, and `mel` is fully
@@ -91,7 +98,7 @@ internal sealed class NemotronAsrGreedyDecoder(
             cancellationToken.ThrowIfCancellationRequested();
             int mainFrameCount = Math.Min(NemotronAsrMelFeatureExtractor.ChunkFrames, totalFrames - frameOffset);
             float[] chunkData = prefetchedChunk is null
-                ? featureExtractor.BuildChunk(mel, frameOffset, mainFrameCount, includePreEncodeCache: chunkIndex > 0)
+                ? NemotronAsrMelFeatureExtractor.BuildChunk(mel, frameOffset, mainFrameCount, includePreEncodeCache: chunkIndex > 0)
                 : prefetchedChunk.GetAwaiter().GetResult();
 
             int nextFrameOffset = frameOffset + NemotronAsrMelFeatureExtractor.ChunkFrames;
@@ -101,7 +108,7 @@ internal sealed class NemotronAsrGreedyDecoder(
                     NemotronAsrMelFeatureExtractor.ChunkFrames,
                     totalFrames - nextFrameOffset);
                 // A prefetched chunk is never the first one, so it always carries the pre-encode cache.
-                prefetchedChunk = Task.Run(() => featureExtractor.BuildChunk(
+                prefetchedChunk = Task.Run(() => NemotronAsrMelFeatureExtractor.BuildChunk(
                     mel,
                     nextFrameOffset,
                     nextFrameCount,
@@ -154,6 +161,9 @@ internal sealed class NemotronAsrGreedyDecoder(
                     ref cacheChannelLength,
                     decoderState1!,
                     decoderState2!,
+                    decoderStateShape!,
+                    targetsElementType,
+                    targetLengthElementType,
                     ref lastToken,
                     cancellationToken);
             }
@@ -242,6 +252,9 @@ internal sealed class NemotronAsrGreedyDecoder(
         ref long cacheChannelLength,
         float[] decoderState1,
         float[] decoderState2,
+        int[] decoderStateShape,
+        TensorElementType targetsElementType,
+        TensorElementType targetLengthElementType,
         ref int lastToken,
         CancellationToken cancellationToken)
     {
@@ -277,6 +290,9 @@ internal sealed class NemotronAsrGreedyDecoder(
             tokens,
             decoderState1,
             decoderState2,
+            decoderStateShape,
+            targetsElementType,
+            targetLengthElementType,
             ref lastToken,
             cancellationToken);
 
@@ -291,6 +307,9 @@ internal sealed class NemotronAsrGreedyDecoder(
         List<int> tokens,
         float[] decoderState1,
         float[] decoderState2,
+        int[] decoderStateShape,
+        TensorElementType targetsElementType,
+        TensorElementType targetLengthElementType,
         ref int lastToken,
         CancellationToken cancellationToken)
     {
@@ -303,7 +322,9 @@ internal sealed class NemotronAsrGreedyDecoder(
             DenseTensor<float> frame = NemotronAsrEncodedTensorLayout.SliceFrame(encoded, layout, frameIndex);
             for (int symbol = 0; symbol < MaxSymbolsPerStep; symbol++)
             {
-                int nextToken = RunManagedDecoder(frame, lastToken, decoderState1, decoderState2, cancellationToken);
+                int nextToken = RunManagedDecoder(
+                    frame, lastToken, decoderState1, decoderState2, decoderStateShape,
+                    targetsElementType, targetLengthElementType, cancellationToken);
                 if (nextToken == config.BlankId)
                 {
                     // RNNT: blank consumes no token, so the predictor state must not advance.
@@ -321,18 +342,16 @@ internal sealed class NemotronAsrGreedyDecoder(
         int lastToken,
         float[] state1,
         float[] state2,
+        int[] stateShape,
+        TensorElementType targetsElementType,
+        TensorElementType targetLengthElementType,
         CancellationToken cancellationToken)
     {
-        IReadOnlyDictionary<string, NodeMetadata> decoderMetadata = sessionLease.DecoderJointSession.InputMetadata;
-        int[] stateShape = ResolveCacheShape(
-            decoderMetadata,
-            "input_states_1",
-            [config.DecoderLstmLayers, 1, config.DecoderLstmDim]);
         var decoderInputs = new List<NamedOnnxValue>
         {
             NamedOnnxValue.CreateFromTensor("encoder_outputs", frame),
-            CreateTokenInput(decoderMetadata, "targets", lastToken, [1, 1]),
-            CreateTokenInput(decoderMetadata, "target_length", 1, [1]),
+            CreateTokenInput(targetsElementType, "targets", lastToken, [1, 1]),
+            CreateTokenInput(targetLengthElementType, "target_length", 1, [1]),
             NamedOnnxValue.CreateFromTensor("input_states_1", new DenseTensor<float>(state1, stateShape)),
             NamedOnnxValue.CreateFromTensor("input_states_2", new DenseTensor<float>(state2, stateShape))
         };
@@ -352,15 +371,19 @@ internal sealed class NemotronAsrGreedyDecoder(
         return nextToken;
     }
 
-    private static NamedOnnxValue CreateTokenInput(
+    private static TensorElementType ResolveTokenElementType(
         IReadOnlyDictionary<string, NodeMetadata> metadata,
+        string name) =>
+        metadata.TryGetValue(name, out NodeMetadata? nodeMetadata)
+            ? nodeMetadata.ElementDataType
+            : TensorElementType.Int64;
+
+    private static NamedOnnxValue CreateTokenInput(
+        TensorElementType elementType,
         string name,
         long value,
         int[] dimensions)
     {
-        TensorElementType elementType = metadata.TryGetValue(name, out NodeMetadata? nodeMetadata)
-            ? nodeMetadata.ElementDataType
-            : TensorElementType.Int64;
         return elementType switch
         {
             TensorElementType.Int32 => NamedOnnxValue.CreateFromTensor(

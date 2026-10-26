@@ -608,7 +608,7 @@ public sealed class OnnxTranscriptEnginesTests
         Assert.Equal(NemotronAsrMelFeatureExtractor.MelBins, mel.GetLength(0));
         Assert.True(mel.GetLength(1) > NemotronAsrMelFeatureExtractor.ChunkFrames);
 
-        float[] chunk = extractor.BuildChunk(
+        float[] chunk = NemotronAsrMelFeatureExtractor.BuildChunk(
             mel,
             frameOffset: 0,
             mainFrameCount: NemotronAsrMelFeatureExtractor.ChunkFrames,
