@@ -2,6 +2,7 @@ using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using Trackdub.Contracts.Diagnostics;
 using Trackdub.Contracts.Pipeline;
+using Trackdub.Domain;
 using Trackdub.Domain.LipSynthesis;
 using Trackdub.Inference.Onnx.LipSynthesis;
 
@@ -10,12 +11,43 @@ namespace Trackdub.Inference.Onnx.FaceAnalysis;
 /// <summary>
 /// SCRFD-500M ONNX face detector (InsightFace, MIT license).
 /// Reports IsAvailable=false until scrfd_500m.onnx is present at the configured model root.
+/// Sessions come from the shared pool (as in sibling pooled engines) instead of a new
+/// <see cref="InferenceSession"/> per detection call.
 /// </summary>
-public sealed class ScfrdOnnxFaceDetector(
-    BenchmarkModelPathResolver modelPathResolver,
-    IVideoFrameExtractor frameExtractor)
-    : IFaceDetector
+public sealed class ScfrdOnnxFaceDetector : IFaceDetector
 {
+    private readonly BenchmarkModelPathResolver modelPathResolver;
+    private readonly IVideoFrameExtractor frameExtractor;
+    private readonly Func<string?> modelPathProvider;
+    private readonly Func<string, CancellationToken, Task<OnnxExecutionSessionFactory.SingleSessionLease>> sessionLeaseFactory;
+
+    public ScfrdOnnxFaceDetector(
+        BenchmarkModelPathResolver modelPathResolver,
+        IVideoFrameExtractor frameExtractor)
+        : this(modelPathResolver, frameExtractor, modelPathProvider: null, sessionLeaseFactory: null)
+    {
+    }
+
+    internal ScfrdOnnxFaceDetector(
+        BenchmarkModelPathResolver modelPathResolver,
+        IVideoFrameExtractor frameExtractor,
+        Func<string?>? modelPathProvider,
+        Func<string, CancellationToken, Task<OnnxExecutionSessionFactory.SingleSessionLease>>? sessionLeaseFactory)
+    {
+        this.modelPathResolver = modelPathResolver ?? throw new ArgumentNullException(nameof(modelPathResolver));
+        this.frameExtractor = frameExtractor ?? throw new ArgumentNullException(nameof(frameExtractor));
+        this.modelPathProvider = modelPathProvider ?? (() => ResolveModelPath());
+        this.sessionLeaseFactory = sessionLeaseFactory ?? CreatePooledSessionLeaseAsync;
+    }
+
+    private static Task<OnnxExecutionSessionFactory.SingleSessionLease> CreatePooledSessionLeaseAsync(
+        string modelPath,
+        CancellationToken cancellationToken) =>
+        OnnxExecutionSessionFactory.CreatePooledSingleAsync(
+            LatentSyncModelPaths.ScfrdEngineFamily,
+            modelPath,
+            ExecutionProviderKind.Cpu,
+            cancellationToken);
     private const string ModelAlias = "InsightFace/scrfd-500m";
     private const int InferSize = 640;
     private const float ScoreThreshold = 0.3f;
@@ -30,7 +62,7 @@ public sealed class ScfrdOnnxFaceDetector(
         {
             try
             {
-                return ResolveModelPath() is not null;
+                return modelPathProvider() is not null;
             }
             catch
             {
@@ -43,7 +75,7 @@ public sealed class ScfrdOnnxFaceDetector(
         FaceAnalysisRequest request,
         CancellationToken cancellationToken)
     {
-        string? modelPath = ResolveModelPath();
+        string? modelPath = modelPathProvider();
         if (modelPath is null)
             return NoFace;
 
@@ -73,13 +105,9 @@ public sealed class ScfrdOnnxFaceDetector(
             float letterboxScale = LetterboxScale(extracted.FrameWidth, extracted.FrameHeight);
             float[] inputData = NormalizeFrameBgr(rgba, extracted.FrameWidth, extracted.FrameHeight);
 
-            var opts = new SessionOptions
-            {
-                GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
-                ExecutionMode = ExecutionMode.ORT_SEQUENTIAL
-            };
-
-            using var session = new InferenceSession(modelPath, opts);
+            using OnnxExecutionSessionFactory.SingleSessionLease sessionLease =
+                await sessionLeaseFactory(modelPath, cancellationToken).ConfigureAwait(false);
+            InferenceSession session = sessionLease.Session;
             string inputName = session.InputMetadata.Keys.First();
             var inputTensor = new DenseTensor<float>(inputData, [1, 3, InferSize, InferSize]);
 
