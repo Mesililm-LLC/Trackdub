@@ -362,6 +362,113 @@ internal sealed class InferenceSessionPool : IDisposable
     /// </summary>
     private readonly record struct AdmissionBucket(bool IsHost, ExecutionProviderKind? AcceleratorProvider, int DeviceId);
 
+    /// <summary>
+    /// One bundle's aggregate admission credit, per bucket. The credit already sits in
+    /// <see cref="pendingCreateMbByBucket"/> (taken all-or-nothing by
+    /// <see cref="AcquireBundleAdmissionHoldAsync"/> before any graph in the bundle is
+    /// created); a graph create that consumes credit here skips its own per-graph
+    /// admission wait, and the create path's existing reservation release on publish or
+    /// failure draws the pending charge down exactly as for a per-graph reservation.
+    /// Unconsumed credit (graphs that turned out resident, or a failed bundle) is
+    /// returned by <see cref="ReleaseBundleHoldCredit"/>.
+    /// </summary>
+    private sealed class BundleAdmissionHold
+    {
+        private readonly object gate = new();
+        private readonly Dictionary<AdmissionBucket, long> creditByBucket = new();
+
+        public void AddCredit(AdmissionBucket bucket, long mb)
+        {
+            lock (gate)
+            {
+                creditByBucket[bucket] = creditByBucket.GetValueOrDefault(bucket) + mb;
+            }
+        }
+
+        public bool TryConsume(AdmissionBucket bucket, long mb)
+        {
+            lock (gate)
+            {
+                if (!creditByBucket.TryGetValue(bucket, out long credit) || credit < mb)
+                {
+                    return false;
+                }
+
+                creditByBucket[bucket] = credit - mb;
+                return true;
+            }
+        }
+
+        public List<KeyValuePair<AdmissionBucket, long>> DrainRemaining()
+        {
+            lock (gate)
+            {
+                var remaining = new List<KeyValuePair<AdmissionBucket, long>>(creditByBucket);
+                creditByBucket.Clear();
+                return remaining;
+            }
+        }
+    }
+
+    private void ReleaseBundleHoldCredit(BundleAdmissionHold hold)
+    {
+        foreach (KeyValuePair<AdmissionBucket, long> remaining in hold.DrainRemaining())
+        {
+            if (remaining.Value > 0)
+            {
+                ReleaseReservation(remaining.Key, remaining.Value);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Takes one aggregate admission reservation per bucket for every graph in the
+    /// bundle that is not already resident, before any graph is created. The wait is
+    /// all-or-nothing per bucket — <see cref="WaitForAdmissionBudgetAsync"/> only takes
+    /// its pending reservation on success — so a bundle still waiting here holds no
+    /// pins and (within a bucket) no reservation another bundle could deadlock against.
+    /// Buckets are taken in one global order (host, then device id, then accelerator
+    /// provider) for every bundle, so multi-bucket bundles cannot take them in
+    /// opposite orders either. Graphs already resident are excluded: their estimate
+    /// already counts in the bucket's pooled total, and charging them again could make
+    /// this wait evict the very sessions the bundle is about to reuse. A resident graph
+    /// evicted before its warm runs simply falls back to ordinary per-graph admission.
+    /// </summary>
+    private async Task<BundleAdmissionHold> AcquireBundleAdmissionHoldAsync(
+        SessionLeaseRequest[] ordered,
+        CancellationToken cancellationToken)
+    {
+        var hold = new BundleAdmissionHold();
+        try
+        {
+            IEnumerable<IGrouping<AdmissionBucket, SessionLeaseRequest>> groups = ordered
+                .GroupBy(request => BucketOf(request.Key))
+                .OrderBy(group => group.Key.IsHost ? 0 : 1)
+                .ThenBy(group => group.Key.DeviceId)
+                .ThenBy(group => group.Key.AcceleratorProvider?.ToString(), StringComparer.Ordinal);
+            foreach (IGrouping<AdmissionBucket, SessionLeaseRequest> group in groups)
+            {
+                long missingMb = group
+                    .Where(request => !entries.ContainsKey(request.Key))
+                    .Sum(request => ResolveReservationMb(request.Key));
+                if (missingMb <= 0)
+                {
+                    continue;
+                }
+
+                await WaitForAdmissionBudgetAsync(missingMb, group.Key, cancellationToken).ConfigureAwait(false);
+                hold.AddCredit(group.Key, missingMb);
+            }
+
+            return hold;
+        }
+        catch
+        {
+            ReleaseBundleHoldCredit(hold);
+            throw;
+        }
+    }
+
     private static bool IsHostProvider(ExecutionProviderKind provider) =>
         provider is ExecutionProviderKind.Cpu or ExecutionProviderKind.Dnnl;
 
@@ -514,7 +621,14 @@ internal sealed class InferenceSessionPool : IDisposable
     internal async Task<SessionResidency> GetResidencyReportingProviderAsync(
         SessionPoolKey key,
         Func<CancellationToken, Task<CreatedPoolSession>> factory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) =>
+        await GetResidencyReportingProviderAsync(key, factory, cancellationToken, bundleHold: null).ConfigureAwait(false);
+
+    private async Task<SessionResidency> GetResidencyReportingProviderAsync(
+        SessionPoolKey key,
+        Func<CancellationToken, Task<CreatedPoolSession>> factory,
+        CancellationToken cancellationToken,
+        BundleAdmissionHold? bundleHold)
     {
         ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(factory);
@@ -524,7 +638,7 @@ internal sealed class InferenceSessionPool : IDisposable
             ObjectDisposedException.ThrowIf(disposed, this);
 
             // Ensure the session exists (single-flight create). Release the lease immediately.
-            using (await GetLeaseReportingProviderAsync(key, factory, cancellationToken).ConfigureAwait(false))
+            using (await GetLeaseReportingProviderAsync(key, factory, cancellationToken, bundleHold).ConfigureAwait(false))
             {
             }
 
@@ -716,7 +830,14 @@ internal sealed class InferenceSessionPool : IDisposable
     public async Task<SessionLease> GetLeaseReportingProviderAsync(
         SessionPoolKey key,
         Func<CancellationToken, Task<CreatedPoolSession>> factory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) =>
+        await GetLeaseReportingProviderAsync(key, factory, cancellationToken, bundleHold: null).ConfigureAwait(false);
+
+    private async Task<SessionLease> GetLeaseReportingProviderAsync(
+        SessionPoolKey key,
+        Func<CancellationToken, Task<CreatedPoolSession>> factory,
+        CancellationToken cancellationToken,
+        BundleAdmissionHold? bundleHold)
     {
         ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(factory);
@@ -842,7 +963,18 @@ internal sealed class InferenceSessionPool : IDisposable
 
                     if (enableMemoryAdmission)
                     {
-                        reserved = TryReserveAdmissionBudget(bucket, needMb, observation);
+                        // A bundle graph whose bundle already holds aggregate credit in
+                        // this bucket (charged once, up front) draws on it instead of
+                        // re-running per-graph admission: re-waiting here is what let a
+                        // sibling graph's freshly created session — counted in the
+                        // process-GPU floor — admission-evict a warmed bundle graph.
+                        // The pending charge is already taken; the reservation releases
+                        // below (publish/failure) draw it down as usual.
+                        reserved = bundleHold is not null && bundleHold.TryConsume(bucket, needMb);
+                        if (!reserved)
+                        {
+                            reserved = TryReserveAdmissionBudget(bucket, needMb, observation);
+                        }
                         // else: do not hold a reservation while waiting — that deadlocks
                         // when every waiter reserves and nobody can release.
                     }
@@ -1150,33 +1282,52 @@ internal sealed class InferenceSessionPool : IDisposable
     }
 
     /// <summary>
-    /// Creates (or reuses) one bundle graph and immediately releases the lease, leaving
-    /// the session pooled and idle-eviction-eligible. Used by the parallel create phase
-    /// of <see cref="GetLeaseBundleAsync"/>; residency pinning happens later, serialized
-    /// in key order.
+    /// Creates (or reuses) one bundle graph and, under memory admission, pins it
+    /// resident the moment its own create completes, so it is never idle-eviction-
+    /// eligible while sibling graphs are still being created. The caller owns the
+    /// returned pin (<see langword="null"/> in count mode, where a warm may land
+    /// ephemeral and never reach <c>entries</c>, so a residency pin could spin — the
+    /// warm lease is released instead, as in the pin phase). Drawing on the bundle's
+    /// aggregate <paramref name="bundleHold"/> means the create does not re-run
+    /// per-graph admission against the floor its own siblings raised.
     /// </summary>
-    private async Task WarmBundleGraphAsync(
+    private async Task<SessionResidency?> WarmBundleGraphAsync(
         SessionLeaseRequest request,
+        BundleAdmissionHold? bundleHold,
         CancellationToken cancellationToken)
     {
+        if (enableMemoryAdmission)
+        {
+            return await GetResidencyReportingProviderAsync(
+                request.Key, request.CreateReportingProviderAsync, cancellationToken, bundleHold).ConfigureAwait(false);
+        }
+
         using SessionLease warm = await GetLeaseReportingProviderAsync(
             request.Key, request.CreateReportingProviderAsync, cancellationToken).ConfigureAwait(false);
+        return null;
     }
 
     /// <summary>
     /// Acquires every graph in <paramref name="requests"/> as one all-or-nothing bundle
     /// (audit §3A: never hold an encoder while waiting indefinitely for a decoder).
-    /// C1 shape (b): graph sessions are created in parallel with no process-wide lock
-    /// held — per-key single-flight creation and admission in
-    /// <see cref="GetLeaseReportingProviderAsync"/> already serialize only the brief
-    /// publish step per key — then only pin/publish is serialized, under
-    /// <c>bundleAcquireLock</c> and in <see cref="SessionPoolKey.StableComparer"/>
-    /// order: residency pins are taken in that order and exclusive gates are tried
-    /// non-blockingly in that order, rolling back on any busy gate. Because no factory
-    /// runs and no admission wait happens while a residency pin is incrementally held
-    /// across bundles in opposing order, opposing bundles cannot pin themselves into
-    /// a memory deadlock; a bundle whose graphs were evicted between the parallel
-    /// create and the pin phase re-creates them inside the pin phase, where the
+    /// C1 shape (b), admission-safe: under memory admission one aggregate reservation
+    /// per bucket is taken up front (<see cref="AcquireBundleAdmissionHoldAsync"/>),
+    /// so graph sessions can then be created in parallel with no process-wide lock
+    /// held and no per-graph admission re-wait — per-key single-flight creation in
+    /// <see cref="GetLeaseReportingProviderAsync"/> draws on the aggregate credit and
+    /// serializes only the brief publish step per key. Each graph is pinned resident
+    /// the moment its own create completes (see <see cref="WarmBundleGraphAsync"/>),
+    /// so a warmed graph is never idle-eviction-eligible while its siblings are still
+    /// creating. Holding those early pins is deadlock-safe precisely because of the
+    /// aggregate order: a bundle only pins graphs after its whole aggregate was
+    /// granted and its remaining creates are pre-reserved, while a bundle still
+    /// waiting for its aggregate holds neither pins nor (per bucket) a reservation for
+    /// another bundle to deadlock against. Finally only pin/publish is serialized,
+    /// under <c>bundleAcquireLock</c> and in <see cref="SessionPoolKey.StableComparer"/>
+    /// order: residency pins are (re)taken in that order and exclusive gates are tried
+    /// non-blockingly in that order, rolling back on any busy gate. A bundle whose
+    /// graphs were removed between the parallel create and the pin phase (explicit
+    /// eviction ignores pins) re-creates them inside the pin phase, where the
     /// aggregate admission check (repeated after each pin) still fails fast instead
     /// of waiting on memory its own pins hold. Duplicate keys are rejected. When
     /// memory admission is enabled, an aggregate per-bucket budget check fails the
@@ -1198,18 +1349,24 @@ internal sealed class InferenceSessionPool : IDisposable
             ValidateBundleAdmission(ordered);
         }
 
-        // C1 shape (b), phase 1: create every graph in parallel, holding no lock and no
-        // residency pins. Created sessions are published per key by the single-flight
-        // create path and stay idle-eviction-eligible until phase 2 pins them, so a
-        // concurrent bundle's admission can still evict them instead of deadlocking
-        // against a half-pinned bundle. A failure or cancellation here leaves nothing
-        // pinned: each warm lease is released as soon as its create completes.
-        var warmTasks = new List<Task>(ordered.Length);
+        // C1 shape (b), phase 1: take one aggregate admission reservation for the
+        // whole bundle, then create every graph in parallel, holding no lock. Each
+        // graph draws on the aggregate credit instead of re-running admission against
+        // the process-GPU floor its already-created siblings raised, and is pinned
+        // resident the moment its own create completes — so later graphs (and any
+        // concurrent admission) cannot evict it mid-acquire. A failure or
+        // cancellation here releases every pin taken so far and any unconsumed
+        // aggregate credit: no pinned half-bundle survives.
+        BundleAdmissionHold? bundleHold = enableMemoryAdmission
+            ? await AcquireBundleAdmissionHoldAsync(ordered, cancellationToken).ConfigureAwait(false)
+            : null;
+        var warmTasks = new List<Task<SessionResidency?>>(ordered.Length);
+        var earlyPins = new List<SessionResidency>();
         try
         {
             for (int i = 0; i < ordered.Length; i++)
             {
-                Task warm = WarmBundleGraphAsync(ordered[i], cancellationToken);
+                Task<SessionResidency?> warm = WarmBundleGraphAsync(ordered[i], bundleHold, cancellationToken);
                 warmTasks.Add(warm);
                 if (warm.IsFaulted)
                 {
@@ -1220,12 +1377,19 @@ internal sealed class InferenceSessionPool : IDisposable
                 }
             }
 
-            await Task.WhenAll(warmTasks).ConfigureAwait(false);
+            foreach (SessionResidency? pin in await Task.WhenAll(warmTasks).ConfigureAwait(false))
+            {
+                if (pin is not null)
+                {
+                    earlyPins.Add(pin);
+                }
+            }
         }
         catch
         {
-            // Drain any creates already in flight so no warm lease is still being
-            // released (and no factory still running) when the failure propagates.
+            // Drain any creates already in flight so no factory is still running when
+            // the failure propagates, then release the pins of the graphs that did
+            // complete: a failed or cancelled graph releases the whole bundle.
             try
             {
                 await Task.WhenAll(warmTasks).ConfigureAwait(false);
@@ -1235,14 +1399,45 @@ internal sealed class InferenceSessionPool : IDisposable
                 // The original failure (rethrown below) is the meaningful one.
             }
 
+            foreach (Task<SessionResidency?> warm in warmTasks)
+            {
+                if (warm.IsCompletedSuccessfully && warm.Result is { } pin)
+                {
+                    pin.Dispose();
+                }
+            }
+
             throw;
+        }
+        finally
+        {
+            // Every warm has finished (or been drained): consumed credit was drawn
+            // down by the create path, so return whatever remains. Phase 2 re-creates
+            // use ordinary per-graph admission under the bundle lock, as before.
+            if (bundleHold is not null)
+            {
+                ReleaseBundleHoldCredit(bundleHold);
+            }
         }
 
         // C1 shape (b), phase 2: serialize only pin/publish in StableComparer order.
-        // While one bundle pins (re-creating any graph evicted since phase 1) and takes
-        // its gates, no other bundle is incrementally pinning in the opposite order.
-        await bundleAcquireLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        var pins = new List<SessionResidency>(ordered.Length);
+        // While one bundle pins (re-creating any graph removed since phase 1) and
+        // takes its gates, no other bundle is incrementally pinning in the opposite
+        // order. The phase-1 pins are carried into this phase and released with it.
+        var pins = new List<SessionResidency>(earlyPins);
+        try
+        {
+            await bundleAcquireLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            foreach (SessionResidency pin in pins)
+            {
+                pin.Dispose();
+            }
+
+            throw;
+        }
         try
         {
             try

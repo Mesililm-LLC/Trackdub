@@ -951,6 +951,81 @@ public sealed class InferenceSessionPoolTests
     }
 
     [Fact]
+    public async Task GetLeaseBundleAsync_SiblingCountsAgainstGpuFloor_DoesNotEvictWarmedGraphMidAcquire()
+    {
+        // Regression for the C1 bundle-admission stall: graph A's freshly created
+        // session raises the process-GPU observation floor, so on the old shape
+        // graph B's per-graph admission wait found the bucket observation-blocked
+        // and evicted the only idle entry — A itself, still unpinned until phase 2 —
+        // then phase 2 re-created A (in production each such cycle also resets the
+        // other wait's stall progress). The scripted reader models exactly that:
+        // no floor until A is created, a hot 90 MB floor for the next few reads
+        // (A's session counts against the 100 MB budget), then drained.
+        var reader = new FloorAfterFirstCreateReader(hotMb: 90, drainedMb: 10, hotReads: 3);
+        using var pool = new InferenceSessionPool(
+            maxSessions: 8,
+            memoryBudgetMb: 100,
+            hostMemoryBudgetMb: 100,
+            processGpuMemoryReader: () => reader);
+        var graphA = new SessionPoolKey("bundlefloor", null, null, ExecutionProviderKind.DirectMl, "bf-a", 0, "a-graph") { EstimatedVramMb = 40 };
+        var graphB = new SessionPoolKey("bundlefloor", null, null, ExecutionProviderKind.DirectMl, "bf-b", 0, "b-graph") { EstimatedVramMb = 40 };
+        int aCalls = 0;
+        int bCalls = 0;
+
+        using SessionLeaseBundle bundle = await pool.GetLeaseBundleAsync(
+            [
+                new SessionLeaseRequest(graphA, _ =>
+                {
+                    aCalls++;
+                    reader.MarkCreated();
+                    return Task.FromResult(CreateMinimalSession());
+                }),
+                new SessionLeaseRequest(graphB, _ =>
+                {
+                    bCalls++;
+                    return Task.FromResult(CreateMinimalSession());
+                }),
+            ],
+            CancellationToken.None).AwaitWithHangGuard("bundle under a sibling-raised GPU floor never completed");
+
+        Assert.Equal(2, bundle.Count);
+        // A created exactly once: it was never evicted mid-acquire and re-created in
+        // the pin phase. B likewise.
+        Assert.Equal(1, aCalls);
+        Assert.Equal(1, bCalls);
+    }
+
+    [Fact]
+    public async Task GetLeaseBundleAsync_DisjointBundles_BudgetFitsOnlyOne_BothCompleteWithoutDeadlock()
+    {
+        // Pinning each graph as its create completes is only deadlock-safe because the
+        // aggregate reservation is taken all-or-nothing first: with a budget that fits
+        // just one bundle, the losing bundle must wait at the aggregate step holding
+        // no pins, and complete once the winner's leases are released. (Pin-first
+        // without the aggregate would let each bundle pin one graph and then wait
+        // forever on the other's memory.)
+        using var pool = new InferenceSessionPool(maxSessions: 8, hostMemoryBudgetMb: 100);
+
+        SessionLeaseRequest Req(string hash) => new(
+            HostKey(hash, 40), _ => Task.FromResult(CreateMinimalSession()));
+
+        Task<SessionLeaseBundle> t1 = Task.Run(() => pool.GetLeaseBundleAsync(
+            [Req("db1a"), Req("db1b")], CancellationToken.None));
+        Task<SessionLeaseBundle> t2 = Task.Run(() => pool.GetLeaseBundleAsync(
+            [Req("db2a"), Req("db2b")], CancellationToken.None));
+
+        Task<SessionLeaseBundle> first = await Task.WhenAny(t1, t2)
+            .AwaitWithHangGuard("neither disjoint bundle completed under a one-bundle budget");
+        SessionLeaseBundle firstBundle = await first.AwaitWithHangGuard("the first disjoint bundle never resolved");
+        firstBundle.Dispose();
+
+        Task<SessionLeaseBundle> second = ReferenceEquals(first, t1) ? t2 : t1;
+        SessionLeaseBundle secondBundle = await second.AwaitWithHangGuard(
+            "the second disjoint bundle never resolved — early pins deadlocked the aggregate wait");
+        secondBundle.Dispose();
+    }
+
+    [Fact]
     public async Task GetLeaseBundleAsync_DoesNotHoldFirstGraphWhileBlockedOnSecond()
     {
         using var pool = new InferenceSessionPool(maxSessions: 8);
@@ -1754,6 +1829,32 @@ public sealed class InferenceSessionPoolTests
 
         public long? ReadDedicatedGpuMemoryBytes() =>
             Interlocked.Increment(ref reads) <= hotReads ? hotBytes : 0;
+    }
+
+    /// <summary>
+    /// No GPU floor until <see cref="MarkCreated"/> (the first bundle graph's factory),
+    /// then a hot floor for a fixed number of reads — the created sibling counting
+    /// against admission — then a drained floor.
+    /// </summary>
+    private sealed class FloorAfterFirstCreateReader(long hotMb, long drainedMb, int hotReads) : IProcessGpuMemoryReader
+    {
+        private int created;
+        private int hotReadsRemaining = hotReads;
+
+        public string UnavailableReason => "Test double: floor appears after first create.";
+
+        public void MarkCreated() => Volatile.Write(ref created, 1);
+
+        public long? ReadDedicatedGpuMemoryBytes()
+        {
+            if (Volatile.Read(ref created) == 0)
+            {
+                return null;
+            }
+
+            long mb = Interlocked.Decrement(ref hotReadsRemaining) >= 0 ? hotMb : drainedMb;
+            return mb * 1024 * 1024;
+        }
     }
 
     /// <summary>
