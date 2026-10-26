@@ -30,6 +30,14 @@ public sealed record StageWarmupResult(
 /// </summary>
 public interface IStageWarmupCoordinator
 {
+    /// <summary>
+    /// Whether the next stage's warmup may run while the current stage still holds its
+    /// model residency. False by default: with a single-entry GenAI pool, concurrent
+    /// warmup could evict the active stage's model. Implementations opt in only when
+    /// residency capacity makes overlap safe.
+    /// </summary>
+    bool AllowsConcurrentWarmup => false;
+
     Task<StageWarmupResult> WarmAsync(
         StageWarmupRequest request,
         CancellationToken cancellationToken = default);

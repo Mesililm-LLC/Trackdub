@@ -21,9 +21,11 @@ public sealed class RuntimeStageWarmupCoordinator(
     IExecutionProviderSmokeTester executionProviderSmokeTester,
     IRuntimePlanningPreferences? runtimePlanningPreferences = null,
     IInferenceWorkerClient? inferenceWorkerClient = null,
-    Func<bool>? hostCudaProviderListed = null)
+    Func<bool>? hostCudaProviderListed = null,
+    bool allowsConcurrentWarmup = false)
     : IStageWarmupCoordinator
 {
+    public bool AllowsConcurrentWarmup => allowsConcurrentWarmup;
     public async Task<StageWarmupResult> WarmAsync(
         StageWarmupRequest request,
         CancellationToken cancellationToken = default)

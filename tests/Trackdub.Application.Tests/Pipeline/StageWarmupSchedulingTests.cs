@@ -116,9 +116,27 @@ public class StageWarmupSchedulingTests
         Assert.False(warmup.Task.IsCompleted);
     }
 
+    [Fact]
+    public void ShouldStartConcurrentWarmup_RequiresCapacityAndNoPendingWarmup()
+    {
+        var singleEntry = new FakeWarmupCoordinator();
+        var multiEntry = new FakeWarmupCoordinator { AllowsConcurrent = true };
+        var pending = new DubbingPipelineEngine.PendingStageWarmup(
+            StageNames.Asr, Task.FromResult(new StageWarmupResult(true, true)));
+
+        Assert.False(DubbingPipelineEngine.ShouldStartConcurrentWarmup(null, null));
+        Assert.False(DubbingPipelineEngine.ShouldStartConcurrentWarmup(singleEntry, null));
+        Assert.True(DubbingPipelineEngine.ShouldStartConcurrentWarmup(multiEntry, null));
+        Assert.False(DubbingPipelineEngine.ShouldStartConcurrentWarmup(multiEntry, pending));
+    }
+
     private sealed class FakeWarmupCoordinator : IStageWarmupCoordinator
     {
         public List<StageWarmupRequest> Requests { get; } = [];
+
+        public bool AllowsConcurrent { get; init; }
+
+        bool IStageWarmupCoordinator.AllowsConcurrentWarmup => AllowsConcurrent;
 
         public Task<StageWarmupResult> WarmAsync(
             StageWarmupRequest request,

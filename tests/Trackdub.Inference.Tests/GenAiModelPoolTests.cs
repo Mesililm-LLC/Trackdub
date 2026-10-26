@@ -98,6 +98,90 @@ public class GenAiModelPoolTests
     }
 
     [Fact]
+    public async Task GetLeaseAsync_ABASequenceAtCapacityTwo_LoadsAOnce()
+    {
+        using var admission = NewAdmissionPool(hostBudgetMb: 400);
+        var created = new List<FakeGenAiModelResource>();
+        using var pool = new GenAiModelPool(admission, TrackingFactory(created), maxEntries: 2);
+        var keyA = Key("seq-a");
+        var keyB = Key("seq-b");
+
+        IGenAiModelResource firstA;
+        using (GenAiModelLease lease = await pool.GetLeaseAsync(keyA, CancellationToken.None))
+        {
+            firstA = lease.Resource;
+        }
+
+        using (await pool.GetLeaseAsync(keyB, CancellationToken.None))
+        {
+        }
+
+        using GenAiModelLease secondA = await pool.GetLeaseAsync(keyA, CancellationToken.None)
+            .WaitAsync(HangGuard);
+
+        // A stayed resident across B: no reload, no disposal.
+        Assert.Equal(2, created.Count);
+        Assert.Same(firstA, secondA.Resource);
+        Assert.All(created, resource => Assert.Equal(0, resource.DisposeCount));
+    }
+
+    [Fact]
+    public async Task GetLeaseAsync_PastCapacityTwo_EvictsAndDisposesOldestIdle()
+    {
+        using var admission = NewAdmissionPool(hostBudgetMb: 400);
+        var created = new List<FakeGenAiModelResource>();
+        using var pool = new GenAiModelPool(admission, TrackingFactory(created), maxEntries: 2);
+
+        using (await pool.GetLeaseAsync(Key("cap-a"), CancellationToken.None))
+        {
+        }
+
+        using (await pool.GetLeaseAsync(Key("cap-b"), CancellationToken.None))
+        {
+        }
+
+        using GenAiModelLease third = await pool.GetLeaseAsync(Key("cap-c"), CancellationToken.None)
+            .WaitAsync(HangGuard);
+
+        Assert.Equal(3, created.Count);
+        // Exactly one idle entry was evicted and disposed (A/B release ticks can share a
+        // millisecond, so which of them is "oldest" is not deterministic).
+        Assert.Equal(1, created[0].DisposeCount + created[1].DisposeCount);
+        Assert.Equal(0, created[2].DisposeCount);
+        Assert.Same(created[2], third.Resource);
+    }
+
+    [Theory]
+    [InlineData(9170, 16384, 1)] // RTX 5070 12 GB scaled budgets: only the largest model fits
+    [InlineData(4096, 4096, 1)]
+    [InlineData(24172, 4096, 2)] // budget holds two largest-model estimates
+    [InlineData(40000, 4096, 3)]
+    [InlineData(1_000_000, 1_000_000, 3)] // capped at the pipeline's GenAI stage count
+    public void GenAiModelPoolCapacity_ScalesWithBudget(long acceleratorMb, long hostMb, int expected)
+    {
+        Assert.Equal(expected, GenAiModelPoolCapacity.Resolve(acceleratorMb, hostMb));
+    }
+
+    [Fact]
+    public void GenAiModelPoolCapacity_ExplicitOverrideAlwaysWins()
+    {
+        Assert.Equal(2, GenAiModelPoolCapacity.Resolve(4096, 4096, overrideEntries: 2));
+        Assert.Equal(1, GenAiModelPoolCapacity.Resolve(1_000_000, 1_000_000, overrideEntries: 1));
+    }
+
+    [Fact]
+    public void GenAiModelPool_DefaultCapacity_ResolvesFromAdmissionBudgets()
+    {
+        using var smallAdmission = NewAdmissionPool(hostBudgetMb: 100, acceleratorBudgetMb: 100);
+        using var smallPool = new GenAiModelPool(smallAdmission, TrackingFactory([]));
+        Assert.Equal(1, smallPool.MaxEntries);
+
+        using var largeAdmission = NewAdmissionPool(hostBudgetMb: 30000, acceleratorBudgetMb: 30000);
+        using var largePool = new GenAiModelPool(largeAdmission, TrackingFactory([]));
+        Assert.Equal(2, largePool.MaxEntries);
+    }
+
+    [Fact]
     public async Task GetLeaseAsync_AtCapacity_EvictsOldestIdleBeforeNewFactoryPublishes()
     {
         using var admission = NewAdmissionPool();

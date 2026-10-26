@@ -428,6 +428,12 @@ internal sealed class InferenceSessionPool : IDisposable
         this.processGpuMemoryReader = processGpuMemoryReader;
     }
 
+    /// <summary>Per-device accelerator admission budget backing this pool, in MiB.</summary>
+    internal long MemoryBudgetMb => memoryBudgetMb;
+
+    /// <summary>Shared host-RAM admission budget backing this pool, in MiB.</summary>
+    internal long HostMemoryBudgetMb => hostMemoryBudgetMb;
+
     private static TaskCompletionSource<bool> CreateBundleStateChangedSignal() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 

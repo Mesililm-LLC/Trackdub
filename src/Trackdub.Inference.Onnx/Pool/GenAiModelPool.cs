@@ -253,7 +253,8 @@ internal sealed class GenAiModelLease : IDisposable
 /// instances. Memory is admitted through <see cref="InferenceSessionPool.ReserveExternalAsync"/>
 /// before native load, so GenAI models share the same host RAM / per-device accelerator
 /// ceiling as pooled ONNX sessions — and become eviction candidates for ONNX admission once
-/// idle. Default capacity is one resident model.
+/// idle. Capacity is hardware-scaled by <see cref="GenAiModelPoolCapacity"/> (1 on a 12 GB
+/// card, where only the largest measured model fits with headroom).
 /// </summary>
 internal sealed class GenAiModelPool : IDisposable
 {
@@ -275,17 +276,31 @@ internal sealed class GenAiModelPool : IDisposable
     private volatile bool disposed;
     private int disposeOnce;
 
+    /// <param name="maxEntries">
+    /// Resident entry cap. A positive value always wins; 0 (the default) resolves the
+    /// hardware-scaled capacity from the admission pool's budgets via
+    /// <see cref="GenAiModelPoolCapacity.Resolve"/>, honouring
+    /// <see cref="GenAiModelPoolCapacity.MaxEntriesVariable"/>.
+    /// </param>
     internal GenAiModelPool(
         InferenceSessionPool admissionPool,
         Func<GenAiModelKey, CancellationToken, Task<IGenAiModelResource>>? factory = null,
-        int maxEntries = 1)
+        int maxEntries = 0)
     {
         ArgumentNullException.ThrowIfNull(admissionPool);
-        ArgumentOutOfRangeException.ThrowIfLessThan(maxEntries, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxEntries, 0);
         this.admissionPool = admissionPool;
         this.factory = factory ?? CreateNativeResourceAsync;
-        this.maxEntries = maxEntries;
+        this.maxEntries = maxEntries > 0
+            ? maxEntries
+            : GenAiModelPoolCapacity.Resolve(
+                admissionPool.MemoryBudgetMb,
+                admissionPool.HostMemoryBudgetMb,
+                GenAiModelPoolCapacity.ReadOverride());
     }
+
+    /// <summary>Resolved resident entry cap (explicit or hardware-scaled).</summary>
+    internal int MaxEntries => maxEntries;
 
     internal async Task<GenAiModelLease> GetLeaseAsync(
         GenAiModelKey key,

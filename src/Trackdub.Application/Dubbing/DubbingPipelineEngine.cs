@@ -421,10 +421,13 @@ public sealed class DubbingPipelineEngine(
     {
         string? failedPrerequisiteStage = null;
 
-        // Optimization-only lookahead. GenAI currently has a one-entry pool, so the next
-        // stage's warmup starts only after the current stage has completed and released its
-        // model lease; starting it earlier can evict/reload the active model. At most one
-        // pending warmup exists and it is always joined before its target or on exit.
+        // Optimization-only lookahead. When the GenAI pool's hardware-scaled capacity
+        // holds more than one resident model (coordinator AllowsConcurrentWarmup), the
+        // next stage's warmup starts before the current stage executes so the loads
+        // overlap. At capacity 1 it starts only after the current stage has completed
+        // and released its model lease; starting it earlier could evict/reload the
+        // active model. At most one pending warmup exists and it is always joined
+        // before its target or on exit.
         IStageWarmupCoordinator? warmupCoordinator =
             session.Services?.GetService<IStageWarmupCoordinator>();
         PendingStageWarmup? pendingWarmup = null;
@@ -493,6 +496,20 @@ public sealed class DubbingPipelineEngine(
                         options,
                         runtimeSelections,
                         cancellationToken).ConfigureAwait(false);
+                }
+
+                // Capacity permitting, warm the next stage while this one executes;
+                // otherwise the post-stage start below keeps the active model resident.
+                if (ShouldStartConcurrentWarmup(warmupCoordinator, pendingWarmup))
+                {
+                    pendingWarmup = StartNextStageWarmup(
+                        warmupCoordinator!,
+                        stagesToRun,
+                        i + 1,
+                        runtimeSelections,
+                        options,
+                        declinedOptionalStages,
+                        cancellationToken);
                 }
 
                 Task<StageOutcome> stageTask = ExecuteStageAsync(
@@ -598,6 +615,16 @@ public sealed class DubbingPipelineEngine(
             return null;
         }
     }
+
+    /// <summary>
+    /// Concurrent next-stage warmup is safe only when the coordinator's residency
+    /// capacity can hold the next model alongside the active one, and no warmup is
+    /// already in flight.
+    /// </summary>
+    internal static bool ShouldStartConcurrentWarmup(
+        IStageWarmupCoordinator? coordinator,
+        PendingStageWarmup? pendingWarmup) =>
+        coordinator is { AllowsConcurrentWarmup: true } && pendingWarmup is null;
 
     /// <summary>An in-flight warmup for a named pipeline stage; optimization-only.</summary>
     internal sealed record PendingStageWarmup(string StageName, Task<StageWarmupResult> Task);
