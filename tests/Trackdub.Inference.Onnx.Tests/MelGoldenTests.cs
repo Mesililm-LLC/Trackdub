@@ -117,6 +117,7 @@ public sealed class MelGoldenTests
     private static void AssertGolden(
         Dictionary<string, GoldenCase> goldens,
         string key,
+        int melBins,
         int frames,
         Func<int, int, float> valueAt,
         (int Mel, int Frame)[] peaks)
@@ -130,9 +131,18 @@ public sealed class MelGoldenTests
 
         foreach ((int mel, int frame) in peaks)
         {
-            // Peak expectation is recorded as a spot-free entry checked by callers.
-            _ = mel;
-            _ = frame;
+            int actualPeak = 0;
+            for (int candidate = 1; candidate < melBins; candidate++)
+            {
+                if (valueAt(candidate, frame) > valueAt(actualPeak, frame))
+                {
+                    actualPeak = candidate;
+                }
+            }
+
+            Assert.True(
+                actualPeak == mel,
+                $"{key} frame {frame}: expected peak mel bin {mel}, actual argmax {actualPeak}");
         }
     }
 
@@ -160,14 +170,15 @@ public sealed class MelGoldenTests
         float[] sineData = sine.Buffer.ToArray();
         Assert.Equal(26, ExpectedPeakBin(1000, 80)); // analytic HTK center 1005.6 Hz
         Assert.Equal(ExpectedPeakBin(1000, 80), PeakBin(sineData, 80, 3000, 50));
-        AssertGolden(goldens, "whisper-sine1000", 3000, (m, f) => sineData[(m * 3000) + f], []);
+        AssertGolden(goldens, "whisper-sine1000", 80, 3000, (m, f) => sineData[(m * 3000) + f], [(ExpectedPeakBin(1000, 80), 50), (ExpectedPeakBin(1000, 80), 10)]);
 
         var chirp = extractor.Extract(Chirp());
         float[] chirpData = chirp.Buffer.ToArray();
         int early = PeakBin(chirpData, 80, 3000, 10);
         int late = PeakBin(chirpData, 80, 3000, 90);
         Assert.True(early < late, $"Chirp peak should rise: early {early}, late {late}");
-        AssertGolden(goldens, "whisper-chirp", 3000, (m, f) => chirpData[(m * 3000) + f], []);
+        // Chirp is ~490 Hz at frame 10 and ~3610 Hz at frame 90 (100->4000 Hz over 1 s).
+        AssertGolden(goldens, "whisper-chirp", 80, 3000, (m, f) => chirpData[(m * 3000) + f], [(ExpectedPeakBin(490, 80), 10), (ExpectedPeakBin(3610, 80), 90)]);
     }
 
     // --- Qwen (QwenMelSpectrogramMath via Qwen3Asr extractor, 128 bins) ---
@@ -241,7 +252,7 @@ public sealed class MelGoldenTests
         int frames = sine.Dimensions[2];
         float[] sineData = sine.Buffer.ToArray();
         Assert.Equal(ExpectedPeakBin(1000, 128), PeakBin(sineData, 128, frames, 50));
-        AssertGolden(goldens, "qwen-sine1000", frames, (m, f) => sineData[(m * frames) + f], []);
+        AssertGolden(goldens, "qwen-sine1000", 128, frames, (m, f) => sineData[(m * frames) + f], [(ExpectedPeakBin(1000, 128), 50), (ExpectedPeakBin(1000, 128), 10)]);
 
         var chirp = extractor.Extract(Chirp());
         int chirpFrames = chirp.Dimensions[2];
@@ -249,7 +260,7 @@ public sealed class MelGoldenTests
         Assert.True(
             PeakBin(chirpData, 128, chirpFrames, 10) < PeakBin(chirpData, 128, chirpFrames, 90),
             "Chirp peak should rise");
-        AssertGolden(goldens, "qwen-chirp", chirpFrames, (m, f) => chirpData[(m * chirpFrames) + f], []);
+        AssertGolden(goldens, "qwen-chirp", 128, chirpFrames, (m, f) => chirpData[(m * chirpFrames) + f], [(ExpectedPeakBin(490, 128), 10), (ExpectedPeakBin(3610, 128), 90)]);
     }
 
     // --- Nemotron (128 bins, pre-emphasis, natural log) ---
@@ -290,11 +301,12 @@ public sealed class MelGoldenTests
 
         float[,] sine = extractor.Extract(Sine(1000));
         Assert.Equal(ExpectedPeakBin(1000, 128), PeakBin(sine, 50));
-        AssertGolden(goldens, "nemotron-sine1000", sine.GetLength(1), (m, f) => sine[m, f], []);
+        AssertGolden(goldens, "nemotron-sine1000", 128, sine.GetLength(1), (m, f) => sine[m, f], [(ExpectedPeakBin(1000, 128), 50), (ExpectedPeakBin(1000, 128), 10)]);
 
         float[,] chirp = extractor.Extract(Chirp());
         Assert.True(PeakBin(chirp, 10) < PeakBin(chirp, 90), "Chirp peak should rise");
-        AssertGolden(goldens, "nemotron-chirp", chirp.GetLength(1), (m, f) => chirp[m, f], []);
+        // Nemotron framing lands the early chirp argmax one bin below the analytic center.
+        AssertGolden(goldens, "nemotron-chirp", 128, chirp.GetLength(1), (m, f) => chirp[m, f], [(19, 10), (95, 90)]);
     }
 
     // --- Gated golden generator (not a normal test) ---

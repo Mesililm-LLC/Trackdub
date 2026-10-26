@@ -111,6 +111,73 @@ public sealed class AudioResamplerAntiAliasTests
         }
     }
 
+    [Fact]
+    public void ChannelResampler_AboveNyquistSine_DoesNotFoldIntoPassband()
+    {
+        // Channel mirror of the mono streaming test: ch0 is 12 kHz (above the
+        // 8 kHz output Nyquist, would fold to 4 kHz unfiltered), ch1 is a
+        // 1 kHz passband control proving the channel path filters rather
+        // than mutes. Guards the ReadChannelSamples anti-alias branch.
+        using IAudioChannelSamples source = new ArrayChannelAudioSamples(
+            [Sine(12_000, 48_000, 48_000), Sine(1000, 48_000, 48_000)], 48_000);
+        using IAudioChannelSamples resampled = AudioResampler.CreateResampledChannelStream(source, 16_000);
+        Assert.Equal(16_000, resampled.SampleRate);
+        Assert.Equal(16_000, resampled.SampleFrameCount);
+        Assert.Equal(2, resampled.ChannelCount);
+
+        var aliased = new float[16_000];
+        resampled.ReadChannelSamples(0, 0, aliased);
+        Assert.True(Rms(aliased, 100) < 0.05, $"Channel aliased RMS {Rms(aliased, 100):F4} should be < 0.05");
+
+        var passband = new float[16_000];
+        resampled.ReadChannelSamples(0, 1, passband);
+        Assert.Equal(0.9 / Math.Sqrt(2), Rms(passband, 100), 0.05);
+    }
+
+    private sealed class ArrayChannelAudioSamples(float[][] channels, int sampleRate) : IAudioChannelSamples
+    {
+        public int SampleRate => sampleRate;
+
+        public long SampleFrameCount => channels[0].Length;
+
+        public int ChannelCount => channels.Length;
+
+        public void ReadMonoSamples(long startFrame, Span<float> destination)
+        {
+            destination.Clear();
+            var buffer = new float[destination.Length];
+            foreach (float[] channel in channels)
+            {
+                ReadChannel(startFrame, channel, buffer);
+                for (int i = 0; i < destination.Length; i++)
+                {
+                    destination[i] += buffer[i] / channels.Length;
+                }
+            }
+        }
+
+        public void ReadChannelSamples(long startFrame, int channelIndex, Span<float> destination)
+        {
+            destination.Clear();
+            ReadChannel(startFrame, channels[channelIndex], destination);
+        }
+
+        private static void ReadChannel(long startFrame, float[] samples, Span<float> destination)
+        {
+            if (startFrame < 0 || startFrame >= samples.Length)
+            {
+                return;
+            }
+
+            int count = (int)Math.Min(destination.Length, samples.Length - startFrame);
+            samples.AsSpan((int)startFrame, count).CopyTo(destination);
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+
     private sealed class ArrayAudioSamples(float[] samples, int sampleRate) : IAudioSamples
     {
         public int SampleRate => sampleRate;
