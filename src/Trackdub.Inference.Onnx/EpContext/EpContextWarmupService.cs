@@ -48,6 +48,7 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
         CancellationToken cancellationToken = default)
     {
         HardwareProfile hardware = await _hardwareProfileProvider.GetCurrentAsync(cancellationToken).ConfigureAwait(false);
+        EpContextLoadPathResolver.SetCurrentHardware(hardware);
         string fingerprint = provider is ExecutionProviderKind.TensorRt
             ? OnnxExecutionSessionFactory.BuildClassicTensorRtEnvironmentFingerprint()
             : EpContextLoadPathResolver.CurrentEnvironmentFingerprint;
