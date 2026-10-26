@@ -68,6 +68,29 @@ public sealed class TtsPipeline : ITtsPipeline
                                      string language = "auto", string? instruct = null,
                                      IProgress<string>? progress = null)
     {
+        var waveform = SynthesizeSamples(text, speaker, language, instruct, progress);
+
+        // Write WAV file
+        progress?.Report("Writing WAV file...");
+        await WavWriter.WriteAsync(outputPath, waveform, sampleRate: 24000);
+
+        var duration = waveform.Length / 24000.0;
+        progress?.Report($"Saved {Path.GetFileName(outputPath)} ({waveform.Length} samples, {duration:F2}s)");
+    }
+
+    /// <summary>
+    /// Synthesizes speech and returns the 24 kHz PCM samples in memory, without any
+    /// temp WAV file round-trip.
+    /// </summary>
+    public Task<float[]> SynthesizeSamplesAsync(string text, string speaker,
+                                     string language = "auto", string? instruct = null,
+                                     IProgress<string>? progress = null) =>
+        Task.FromResult(SynthesizeSamples(text, speaker, language, instruct, progress));
+
+    private float[] SynthesizeSamples(string text, string speaker,
+                                     string language, string? instruct,
+                                     IProgress<string>? progress)
+    {
         // Input validation
         ArgumentNullException.ThrowIfNull(text);
         if (text.Length == 0)
@@ -101,14 +124,7 @@ public sealed class TtsPipeline : ITtsPipeline
 
         // Decode to waveform via vocoder
         progress?.Report("Decoding waveform via vocoder...");
-        var waveform = _vocoder.Decode(generatedCodecCodes);
-
-        // Write WAV file
-        progress?.Report("Writing WAV file...");
-        await WavWriter.WriteAsync(outputPath, waveform, sampleRate: 24000);
-
-        var duration = waveform.Length / 24000.0;
-        progress?.Report($"Saved {Path.GetFileName(outputPath)} ({waveform.Length} samples, {duration:F2}s)");
+        return _vocoder.Decode(generatedCodecCodes);
     }
 
     /// <summary>

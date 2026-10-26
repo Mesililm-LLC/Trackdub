@@ -97,65 +97,46 @@ public sealed class Qwen3TtsEngine(
                 .AcquireAsync(admissionProvider, cancellationToken)
                 .ConfigureAwait(false);
 
-            string tempPath = Path.Join(Path.GetTempPath(), $"qwen3tts_{Guid.NewGuid():N}.wav");
-            try
+            // In-memory samples: no temp WAV round-trip between the pipeline and the
+            // WAV encoding below.
+            float[] samples;
+            if (modelFiles.IsBaseModel)
             {
-                if (modelFiles.IsBaseModel)
-                {
-                    await pipeline.VoiceClonePipeline!.SynthesizeAsync(
-                        request.Text,
-                        request.VoiceCloneReference!.ReferenceClipPath,
-                        tempPath,
-                        request.VoiceCloneReference.ReferenceTranscript!.Trim(),
-                        MapLanguage(request.LanguageCode),
-                        progress: null).ConfigureAwait(false);
-                }
-                else
-                {
-                    string speaker = ResolveSpeakerName(request.Voice.VoiceId, modelFiles.RootDirectory);
-                    await pipeline.CustomVoicePipeline!.SynthesizeAsync(
-                        request.Text,
-                        speaker,
-                        tempPath,
-                        MapLanguage(request.LanguageCode),
-                        instruct: null,
-                        progress: null).ConfigureAwait(false);
-                }
-
-                float[] samples = await ReadMonoFloat32Async(tempPath, SampleRate, cancellationToken)
-                    .ConfigureAwait(false);
-                byte[] wavBytes = WaveAudioWriter.EncodeMonoPcm16(samples, SampleRate);
-
-                LastExecutionSummary = new StageRuntimeExecutionSummary(
-                    pipeline.RequestedProviderLabel,
-                    pipeline.SelectedProviderLabel,
-                    plan.ModelId,
-                    plan.ModelAlias,
-                    plan.Variant,
-                    pipeline.BootstrapDetail);
-
-                return new TtsSynthesisResult(
-                    wavBytes,
-                    samples.Length,
-                    SampleRate,
-                    plan.ModelId ?? EngineFamilyName,
-                    request.Voice.VoiceId,
-                    pipeline.SelectedProviderLabel);
+                samples = await pipeline.VoiceClonePipeline!.SynthesizeSamplesAsync(
+                    request.Text,
+                    request.VoiceCloneReference!.ReferenceClipPath,
+                    request.VoiceCloneReference.ReferenceTranscript!.Trim(),
+                    MapLanguage(request.LanguageCode),
+                    progress: null).ConfigureAwait(false);
             }
-            finally
+            else
             {
-                try
-                {
-                    if (File.Exists(tempPath))
-                    {
-                        File.Delete(tempPath);
-                    }
-                }
-                catch
-                {
-                    // Best-effort temp cleanup.
-                }
+                string speaker = ResolveSpeakerName(request.Voice.VoiceId, modelFiles.RootDirectory);
+                samples = await pipeline.CustomVoicePipeline!.SynthesizeSamplesAsync(
+                    request.Text,
+                    speaker,
+                    MapLanguage(request.LanguageCode),
+                    instruct: null,
+                    progress: null).ConfigureAwait(false);
             }
+
+            byte[] wavBytes = WaveAudioWriter.EncodeMonoPcm16(samples, SampleRate);
+
+            LastExecutionSummary = new StageRuntimeExecutionSummary(
+                pipeline.RequestedProviderLabel,
+                pipeline.SelectedProviderLabel,
+                plan.ModelId,
+                plan.ModelAlias,
+                plan.Variant,
+                pipeline.BootstrapDetail);
+
+            return new TtsSynthesisResult(
+                wavBytes,
+                samples.Length,
+                SampleRate,
+                plan.ModelId ?? EngineFamilyName,
+                request.Voice.VoiceId,
+                pipeline.SelectedProviderLabel);
         }
         finally
         {
@@ -360,24 +341,6 @@ public sealed class Qwen3TtsEngine(
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(disposeSignaled != 0, this);
-    }
-
-    private static async Task<float[]> ReadMonoFloat32Async(
-        string path,
-        int targetSampleRate,
-        CancellationToken cancellationToken)
-    {
-        using IAudioSamples audio = await WaveAudioReader.ReadMonoPcm16Async(path, cancellationToken)
-            .ConfigureAwait(false);
-        if (audio.SampleRate != targetSampleRate)
-        {
-            throw new InvalidOperationException(
-                $"Expected {targetSampleRate} Hz WAV from Qwen3-TTS output but found {audio.SampleRate} Hz.");
-        }
-
-        var samples = new float[audio.SampleFrameCount];
-        audio.ReadMonoSamples(0, samples);
-        return samples;
     }
 
     private sealed class PinnedPipeline : IDisposable

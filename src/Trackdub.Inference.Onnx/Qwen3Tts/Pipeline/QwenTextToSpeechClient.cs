@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using Trackdub.Inference.Onnx.Audio;
 
 namespace Trackdub.Inference.Onnx.Qwen3Tts.Pipeline;
 
@@ -69,25 +70,17 @@ public sealed class QwenTextToSpeechClient : ITextToSpeechClient
         var language = options?.Language ?? _defaultLanguage;
         var instruct = options?.Instruct;
 
-        // Write to temp file, read into memory, then clean up
-        var tempPath = Path.Join(Path.GetTempPath(), $"qwentts_{Guid.NewGuid():N}.wav");
-        try
-        {
-            await _pipeline!.SynthesizeAsync(text, voice, tempPath, language, instruct);
-            var audioData = await File.ReadAllBytesAsync(tempPath, cancellationToken);
+        // Synthesize in memory and encode directly; no temp WAV file.
+        float[] samples = await _pipeline!.SynthesizeSamplesAsync(text, voice, language, instruct);
+        byte[] audioData = WaveAudioWriter.EncodeMonoPcm16(samples, 24000);
 
-            return new TextToSpeechResponse
-            {
-                AudioData = audioData,
-                MediaType = "audio/wav",
-                SampleRate = 24000,
-                ModelId = options?.ModelId ?? "qwen3-tts",
-            };
-        }
-        finally
+        return new TextToSpeechResponse
         {
-            try { File.Delete(tempPath); } catch { /* cleanup best-effort */ }
-        }
+            AudioData = audioData,
+            MediaType = "audio/wav",
+            SampleRate = 24000,
+            ModelId = options?.ModelId ?? "qwen3-tts",
+        };
     }
 
     /// <inheritdoc />

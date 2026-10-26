@@ -144,6 +144,37 @@ public sealed class VoiceClonePipeline : IDisposable
     }
 
     /// <summary>
+    /// Synthesize speech with a cloned voice and return the 24 kHz PCM samples in
+    /// memory, without any temp WAV file round-trip. Enables ICL mode when
+    /// <paramref name="refText"/> is provided.
+    /// </summary>
+    public Task<float[]> SynthesizeSamplesAsync(string text, string referenceAudioPath,
+                                      string? refText, string language = "auto", IProgress<string>? progress = null)
+    {
+        progress?.Report("Extracting speaker embedding from reference audio...");
+        var speakerEmbedding = ExtractSpeakerEmbedding(referenceAudioPath);
+        progress?.Report($"Speaker embedding extracted ({speakerEmbedding.Length} dimensions)");
+
+        if (refText != null)
+        {
+            progress?.Report("Encoding reference audio for ICL mode...");
+            var speechTokenizer = GetSpeechTokenizer();
+            var refAudioCodes = speechTokenizer.EncodeFromWav(referenceAudioPath);
+            int tFrames = refAudioCodes.GetLength(1);
+            progress?.Report($"Reference audio encoded ({tFrames} frames)");
+
+            var refTokenIds = _tokenizer.Encode(refText);
+            progress?.Report($"Reference text tokenized ({refTokenIds.Length} tokens)");
+
+            return Task.FromResult(GenerateSamplesWithEmbedding(
+                text, speakerEmbedding, refTokenIds, refAudioCodes, language, progress));
+        }
+
+        return Task.FromResult(GenerateSamplesWithEmbedding(
+            text, speakerEmbedding, refTokenIds: null, refAudioCodes: null, language, progress));
+    }
+
+    /// <summary>
     /// Synthesize speech using a pre-extracted speaker embedding with optional ICL reference data.
     /// When refText and refAudioCodes are provided, enables In-Context Learning mode.
     /// </summary>
@@ -158,14 +189,31 @@ public sealed class VoiceClonePipeline : IDisposable
                                                     string? refText = null, long[,,]? refAudioCodes = null,
                                                     string language = "auto", IProgress<string>? progress = null)
     {
-        var tokenIds = _tokenizer.BuildCustomVoicePrompt(text, "none", language, instruct: null);
-        progress?.Report($"Tokenized input ({tokenIds.Length} tokens)");
-
-        // Tokenize reference text for ICL mode if provided
         int[]? refTokenIds = null;
         if (refText != null)
         {
             refTokenIds = _tokenizer.Encode(refText);
+        }
+
+        var waveform = GenerateSamplesWithEmbedding(text, speakerEmbedding, refTokenIds, refAudioCodes, language, progress);
+
+        // Write WAV file
+        progress?.Report("Writing WAV file...");
+        await WavWriter.WriteAsync(outputPath, waveform, sampleRate: 24000);
+
+        var duration = waveform.Length / 24000.0;
+        progress?.Report($"Saved {Path.GetFileName(outputPath)} ({waveform.Length} samples, {duration:F2}s)");
+    }
+
+    private float[] GenerateSamplesWithEmbedding(string text, float[] speakerEmbedding,
+                                                    int[]? refTokenIds, long[,,]? refAudioCodes,
+                                                    string language, IProgress<string>? progress)
+    {
+        var tokenIds = _tokenizer.BuildCustomVoicePrompt(text, "none", language, instruct: null);
+        progress?.Report($"Tokenized input ({tokenIds.Length} tokens)");
+
+        if (refTokenIds != null)
+        {
             progress?.Report($"ICL mode: {refTokenIds.Length} ref text tokens, {refAudioCodes?.GetLength(1) ?? 0} ref audio frames");
         }
 
@@ -190,14 +238,7 @@ public sealed class VoiceClonePipeline : IDisposable
 
         // Decode to waveform via vocoder
         progress?.Report("Decoding waveform via vocoder...");
-        var waveform = _vocoder.Decode(generatedCodecCodes);
-
-        // Write WAV file
-        progress?.Report("Writing WAV file...");
-        await WavWriter.WriteAsync(outputPath, waveform, sampleRate: 24000);
-
-        var duration = waveform.Length / 24000.0;
-        progress?.Report($"Saved {Path.GetFileName(outputPath)} ({waveform.Length} samples, {duration:F2}s)");
+        return _vocoder.Decode(generatedCodecCodes);
     }
 
     /// <summary>

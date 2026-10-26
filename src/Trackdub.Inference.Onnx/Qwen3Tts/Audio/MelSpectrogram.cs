@@ -144,8 +144,11 @@ public static class MelSpectrogram
             }
             else if (chunkId == "data")
             {
+                // Bulk-read the whole chunk, then decode from the buffer instead of
+                // one BinaryReader call per sample per channel.
+                byte[] data = reader.ReadBytes(chunkSize);
                 int bytesPerSample = bitsPerSample / 8;
-                int totalSamples = chunkSize / bytesPerSample;
+                int totalSamples = data.Length / bytesPerSample;
                 int monoSamples = totalSamples / numChannels;
                 var samples = new float[monoSamples];
 
@@ -154,11 +157,11 @@ public static class MelSpectrogram
                     double sum = 0;
                     for (int ch = 0; ch < numChannels; ch++)
                     {
+                        int offset = ((i * numChannels) + ch) * bytesPerSample;
                         sum += bitsPerSample switch
                         {
-                            16 => reader.ReadInt16() / 32768.0,
-                            32 => reader.ReadSingle(),
-                            _ => reader.ReadInt16() / 32768.0
+                            32 => BitConverter.ToSingle(data, offset),
+                            _ => System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(data.AsSpan(offset)) / 32768.0
                         };
                     }
                     samples[i] = (float)(sum / numChannels);

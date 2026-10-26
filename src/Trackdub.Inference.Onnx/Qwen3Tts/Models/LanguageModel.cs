@@ -822,47 +822,9 @@ internal sealed class LanguageModel : IDisposable
                     probs[i] = float.NegativeInfinity;
             }
 
-            // Temperature
-            if (temperature > 0)
-            {
-                for (int i = 0; i < vocabSize; i++)
-                    probs[i] /= temperature;
-            }
-
-            // Top-k
-            if (topK > 0 && topK < vocabSize)
-            {
-                var indexed = probs.AsSpan(0, vocabSize).ToArray().Select((p, i) => (p, i)).OrderByDescending(x => x.p).ToArray();
-                for (int i = topK; i < vocabSize; i++)
-                    probs[indexed[i].i] = float.NegativeInfinity;
-            }
-
-            // Softmax
-            float maxLogit = float.NegativeInfinity;
-            for (int i = 0; i < vocabSize; i++)
-            {
-                if (probs[i] > maxLogit) maxLogit = probs[i];
-            }
-            float sumExp = 0;
-            for (int i = 0; i < vocabSize; i++)
-            {
-                probs[i] = MathF.Exp(probs[i] - maxLogit);
-                sumExp += probs[i];
-            }
-            for (int i = 0; i < vocabSize; i++)
-                probs[i] /= sumExp;
-
-            // Multinomial sample
-            float rand = Random.Shared.NextSingle();
-            float cumSum = 0;
-            for (int i = 0; i < vocabSize; i++)
-            {
-                cumSum += probs[i];
-                if (rand < cumSum)
-                    return i;
-            }
-
-            return vocabSize - 1;
+            // Partial top-k/top-p selection plus sampling (no full-vocab sort).
+            return TokenSampling.Sample(
+                probs.AsSpan(0, vocabSize), temperature, topK, topP, Random.Shared.NextSingle());
         }
         finally
         {
@@ -879,24 +841,16 @@ internal sealed class LanguageModel : IDisposable
         {
             Array.Copy(logits, logits.Length - vocabSize, probs, 0, vocabSize);
 
-            // Top-k filtering (subtalker_top_k=50 from Python generation_config.json)
+            // Top-k filtering (subtalker_top_k=50 from Python generation_config.json).
+            // The cutoff is the k-th largest logit found by partial selection; entries
+            // equal to it survive, exactly as with the previous full sort.
             if (topK > 0 && topK < vocabSize)
             {
-                var sorted = ArrayPool<float>.Shared.Rent(vocabSize);
-                try
+                float threshold = TokenSampling.FindKthLargest(probs.AsSpan(0, vocabSize), topK);
+                for (int i = 0; i < vocabSize; i++)
                 {
-                    Array.Copy(probs, 0, sorted, 0, vocabSize);
-                    Array.Sort(sorted, 0, vocabSize);
-                    float threshold = sorted[vocabSize - topK];
-                    for (int i = 0; i < vocabSize; i++)
-                    {
-                        if (probs[i] < threshold)
-                            probs[i] = float.NegativeInfinity;
-                    }
-                }
-                finally
-                {
-                    ArrayPool<float>.Shared.Return(sorted);
+                    if (probs[i] < threshold)
+                        probs[i] = float.NegativeInfinity;
                 }
             }
 
