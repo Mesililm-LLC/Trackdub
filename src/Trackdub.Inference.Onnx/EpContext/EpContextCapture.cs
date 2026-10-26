@@ -180,6 +180,16 @@ internal static class EpContextCapture
             return;
         }
 
+        // Publishing now would stamp the artifact with the placeholder "unknown" hardware
+        // identity, producing an artifact no lookup can validate (and displacing a valid
+        // one). The session itself is unaffected; only the capture is deferred.
+        if (!EpContextLoadPathResolver.HasIdentifiedHardware)
+        {
+            MarkFailed(sourceModelPath,
+                "Hardware identity is not loaded yet; EP-context capture deferred until host startup or EP-context warmup loads it.");
+            return;
+        }
+
         (string gpuArchitecture, string? driverVersion) = EpContextLoadPathResolver.CurrentHardware;
         string compileOptionsIdentity = EpContextLoadPathResolver.BuildCompileOptionsIdentity(sourceModelPath, effectiveTrtOptions);
         EpContextArtifact.PublishStagedArtifact(stagingDirectory, sourceModelPath,

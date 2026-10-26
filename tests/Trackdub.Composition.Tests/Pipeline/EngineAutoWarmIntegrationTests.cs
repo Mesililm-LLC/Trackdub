@@ -83,6 +83,42 @@ public class EngineAutoWarmIntegrationTests
         Assert.True(queue.IsHostStarted);
     }
 
+    [Fact]
+    public async Task Installer_awaits_ep_context_hardware_identity_before_host_activation()
+    {
+        // Session creation consumes the EP-context hardware identity without probing, so
+        // host startup must load it before marking the host started (the point after which
+        // pooled sessions may be created). Order matters, not just that both happen.
+        var order = new List<string>();
+        var queue = new RecordingQueue(order);
+        var warmup = new RecordingEpContextWarmupService(order);
+        var installer = new EngineAutoWarmInstaller(queue, epContextWarmupService: warmup);
+
+        await installer.StartAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(warmup.WasInitialized);
+        Assert.Equal(["ep-context-hardware-identity", "host-started"], order);
+    }
+
+    private sealed class RecordingEpContextWarmupService(List<string> order) : IEpContextWarmupService
+    {
+        public bool WasInitialized { get; private set; }
+
+        public Task InitializeHardwareIdentityAsync(CancellationToken cancellationToken = default)
+        {
+            WasInitialized = true;
+            order.Add("ep-context-hardware-identity");
+            return Task.CompletedTask;
+        }
+
+        public Task<EpContextWarmReport> WarmAsync(
+            IReadOnlyList<string>? sourceModelPaths = null,
+            IProgress<string>? progress = null,
+            ExecutionProviderKind provider = ExecutionProviderKind.TensorRTRtx,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
+
     private sealed class RecordingLicenseInitializer : ILicenseInitializer
     {
         public bool WasInitialized { get; private set; }
@@ -94,7 +130,7 @@ public class EngineAutoWarmIntegrationTests
         }
     }
 
-    private sealed class RecordingQueue : IEngineAutoWarmQueue
+    private sealed class RecordingQueue(List<string>? order = null) : IEngineAutoWarmQueue
     {
         public List<string> Requests { get; } = [];
 
@@ -114,6 +150,7 @@ public class EngineAutoWarmIntegrationTests
             Activate();
             bool changed = !IsHostStarted;
             IsHostStarted = true;
+            order?.Add("host-started");
             return changed;
         }
 

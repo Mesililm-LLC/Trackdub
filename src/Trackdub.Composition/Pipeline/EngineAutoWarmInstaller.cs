@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using Trackdub.Application.Pipeline;
+using Trackdub.Contracts;
 using Trackdub.Contracts.Licensing;
 using Trackdub.Licensing;
 using Trackdub.Composition.Tts;
@@ -14,15 +15,18 @@ public sealed class EngineAutoWarmInstaller : IHostedService
     private readonly IEngineAutoWarmQueue queue;
     private readonly ILicenseInitializer? licenseInitializer;
     private readonly KokoroVoiceCatalogHolder? voiceCatalogHolder;
+    private readonly IEpContextWarmupService? epContextWarmupService;
 
     public EngineAutoWarmInstaller(
         IEngineAutoWarmQueue queue,
         ILicenseInitializer? licenseInitializer = null,
-        KokoroVoiceCatalogHolder? voiceCatalogHolder = null)
+        KokoroVoiceCatalogHolder? voiceCatalogHolder = null,
+        IEpContextWarmupService? epContextWarmupService = null)
     {
         this.queue = queue ?? throw new ArgumentNullException(nameof(queue));
         this.licenseInitializer = licenseInitializer;
         this.voiceCatalogHolder = voiceCatalogHolder;
+        this.epContextWarmupService = epContextWarmupService;
     }
 
     /// <summary>
@@ -42,6 +46,15 @@ public sealed class EngineAutoWarmInstaller : IHostedService
         if (licenseInitializer is not null)
         {
             await licenseInitializer.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        // Load the EP-context hardware identity before any pooled session can be created
+        // through this host: session creation consumes the already-computed identity and
+        // never probes or blocks. Hosts that skip this service keep the honest behaviour —
+        // EP-context lookups miss and nothing is stamped 'unknown' — rather than a fake hit.
+        if (epContextWarmupService is not null)
+        {
+            await epContextWarmupService.InitializeHardwareIdentityAsync(cancellationToken).ConfigureAwait(false);
         }
 
         // Call the contract directly for every implementation: a type-specific branch would leave

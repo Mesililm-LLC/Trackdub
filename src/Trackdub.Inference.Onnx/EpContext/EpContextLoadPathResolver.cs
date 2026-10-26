@@ -9,13 +9,34 @@ namespace Trackdub.Inference.Onnx.EpContext;
 
 /// <summary>
 /// Cached machine fingerprint + optional valid EP-context load path for session creation.
-/// Fingerprints are expensive (registry/GPU probe), so they are computed once per process.
+/// The hardware identity is populated asynchronously during host startup / EP-context warmup
+/// (<see cref="EpContextWarmupService.InitializeHardwareIdentityAsync"/>); this type never probes
+/// or blocks on the session-creation path. Until the identity is known, lookups are honest
+/// cache misses and no stamp may be written from the placeholder identity.
 /// </summary>
 internal static class EpContextLoadPathResolver
 {
     private sealed record HardwareIdentity(string GpuArchitecture, string? DriverVersion);
 
     private static HardwareIdentity hardware = new("unknown", null);
+
+    /// <summary>
+    /// True only once a real GPU architecture, driver, and host ORT version are known.
+    /// The placeholder ("unknown") identity must never resolve or stamp an artifact.
+    /// </summary>
+    internal static bool HasIdentifiedHardware
+    {
+        get
+        {
+            (string gpuArchitecture, string? driverVersion) = CurrentHardware;
+            return !IsUnknown(gpuArchitecture) && !IsUnknown(driverVersion) &&
+                !IsUnknown(EpContextArtifact.HostOrtRuntimeVersion);
+        }
+    }
+
+    private static bool IsUnknown(string? value) =>
+        string.IsNullOrWhiteSpace(value) ||
+        value.Trim().Equals("unknown", StringComparison.OrdinalIgnoreCase);
 
     public static string CurrentEnvironmentFingerprint =>
         $"{CurrentHardware.GpuArchitecture}|{(string.IsNullOrWhiteSpace(CurrentHardware.DriverVersion) ? "unknown" : CurrentHardware.DriverVersion)}|{TensorRtRtxProviderConstants.BundledFingerprintVersion}|{EpContextArtifact.HostOrtRuntimeVersion}";
@@ -36,6 +57,9 @@ internal static class EpContextLoadPathResolver
         Volatile.Write(ref hardware, new HardwareIdentity(profile.NvidiaGpuArchitecture.ToString(), profile.GpuDriverVersion));
     }
 
+    internal static void ResetCurrentHardwareForTesting() =>
+        Volatile.Write(ref hardware, new HardwareIdentity("unknown", null));
+
     /// <summary>
     /// Valid EP-context sibling for <paramref name="sourceModelPath"/>, or <see langword="null"/>.
     /// Stamp identity (including the TensorRT RTX options the session appends) and
@@ -45,6 +69,14 @@ internal static class EpContextLoadPathResolver
         string sourceModelPath,
         IReadOnlyDictionary<string, string> effectiveTrtOptions)
     {
+        // Pre-warmup (hardware identity not yet loaded): an honest miss. Comparing against
+        // the placeholder "unknown" fingerprint could never match a valid stamp — stamps
+        // require identified hardware — and must never be treated as a real environment.
+        if (!HasIdentifiedHardware)
+        {
+            return null;
+        }
+
         string compileOptionsIdentity = BuildCompileOptionsIdentity(sourceModelPath, effectiveTrtOptions);
         string? compiledPath = EpContextArtifact.TryResolveValidLoadPath(
             sourceModelPath,

@@ -41,14 +41,23 @@ public sealed class EpContextWarmupService : IEpContextWarmupService
         _compiler = compiler ?? new EpContextCompiler();
     }
 
+    public async Task InitializeHardwareIdentityAsync(CancellationToken cancellationToken = default) =>
+        _ = await LoadHardwareIdentityAsync(cancellationToken).ConfigureAwait(false);
+
+    private async Task<HardwareProfile> LoadHardwareIdentityAsync(CancellationToken cancellationToken)
+    {
+        HardwareProfile hardware = await _hardwareProfileProvider.GetCurrentAsync(cancellationToken).ConfigureAwait(false);
+        EpContextLoadPathResolver.SetCurrentHardware(hardware);
+        return hardware;
+    }
+
     public async Task<EpContextWarmReport> WarmAsync(
         IReadOnlyList<string>? sourceModelPaths = null,
         IProgress<string>? progress = null,
         ExecutionProviderKind provider = ExecutionProviderKind.TensorRTRtx,
         CancellationToken cancellationToken = default)
     {
-        HardwareProfile hardware = await _hardwareProfileProvider.GetCurrentAsync(cancellationToken).ConfigureAwait(false);
-        EpContextLoadPathResolver.SetCurrentHardware(hardware);
+        HardwareProfile hardware = await LoadHardwareIdentityAsync(cancellationToken).ConfigureAwait(false);
         string fingerprint = provider is ExecutionProviderKind.TensorRt
             ? OnnxExecutionSessionFactory.BuildClassicTensorRtEnvironmentFingerprint()
             : EpContextLoadPathResolver.CurrentEnvironmentFingerprint;
