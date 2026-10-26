@@ -466,6 +466,30 @@ public sealed class LocalModelCacheRecordStoreTests : IDisposable
             ModelOptimizationFallbackPolicy.None,
             ScriptIdentifiers: ["script-a"]));
 
+    [Fact]
+    public async Task Lookup_caches_records_until_store_write_invalidates_them()
+    {
+        LocalModelCacheRecordStore store = CreateStore();
+        string modelRoot = Path.Join(tempRoot, "models", "example-model");
+        var record = new LocalModelCacheRecord(
+            "example/model",
+            modelRoot,
+            "rev-a",
+            new string('a', 64),
+            DateTimeOffset.UnixEpoch);
+        await store.MutateAsync(_ => [record], CancellationToken.None);
+        var lookup = new LocalModelCacheRecordLookup(store);
+
+        LocalModelCacheRecord first = Assert.IsType<LocalModelCacheRecord>(lookup.Find(record.ModelId, modelRoot));
+        LocalModelCacheRecord second = Assert.IsType<LocalModelCacheRecord>(lookup.Find(record.ModelId, modelRoot));
+        Assert.Same(first, second);
+
+        await store.MutateAsync(_ => [record with { Revision = "rev-b" }], CancellationToken.None);
+        LocalModelCacheRecord updated = Assert.IsType<LocalModelCacheRecord>(lookup.Find(record.ModelId, modelRoot));
+        Assert.Equal("rev-b", updated.Revision);
+        Assert.NotSame(first, updated);
+    }
+
     private LocalModelCacheRecordStore CreateStore() => new(CreateStoragePaths());
 
     private TrackdubStoragePaths CreateStoragePaths()

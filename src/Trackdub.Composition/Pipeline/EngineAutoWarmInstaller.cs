@@ -2,6 +2,7 @@ using Microsoft.Extensions.Hosting;
 using Trackdub.Application.Pipeline;
 using Trackdub.Contracts.Licensing;
 using Trackdub.Licensing;
+using Trackdub.Composition.Tts;
 
 namespace Trackdub.Composition.Pipeline;
 
@@ -12,11 +13,16 @@ public sealed class EngineAutoWarmInstaller : IHostedService
 {
     private readonly IEngineAutoWarmQueue queue;
     private readonly ILicenseInitializer? licenseInitializer;
+    private readonly KokoroVoiceCatalogHolder? voiceCatalogHolder;
 
-    public EngineAutoWarmInstaller(IEngineAutoWarmQueue queue, ILicenseInitializer? licenseInitializer = null)
+    public EngineAutoWarmInstaller(
+        IEngineAutoWarmQueue queue,
+        ILicenseInitializer? licenseInitializer = null,
+        KokoroVoiceCatalogHolder? voiceCatalogHolder = null)
     {
         this.queue = queue ?? throw new ArgumentNullException(nameof(queue));
         this.licenseInitializer = licenseInitializer;
+        this.voiceCatalogHolder = voiceCatalogHolder;
     }
 
     /// <summary>
@@ -28,6 +34,11 @@ public sealed class EngineAutoWarmInstaller : IHostedService
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (voiceCatalogHolder is not null)
+        {
+            await voiceCatalogHolder.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         if (licenseInitializer is not null)
         {
             await licenseInitializer.InitializeAsync(cancellationToken).ConfigureAwait(false);
