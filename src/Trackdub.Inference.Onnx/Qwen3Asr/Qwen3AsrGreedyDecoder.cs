@@ -47,12 +47,15 @@ internal static class Qwen3AsrGreedyDecoder
         }
 
         int position = promptLength;
+        // Reused per step: the step inputs built from it are consumed (and their
+        // results cloned) before the next lookup overwrites it.
+        var tokenEmbedding = new float[embedTokens.HiddenSize];
         try
         {
             for (int step = 1; step < maxTokens; step++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                float[] tokenEmbedding = embedTokens.Lookup(nextToken);
+                embedTokens.Lookup(nextToken, tokenEmbedding.AsSpan());
                 using Qwen3AsrInputSet stepInputs = BuildDecoderStepInputs(tokenEmbedding, position, kvState);
                 using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> stepResults =
                     sessionLease.DecoderStepSession.RunWithRetry(stepInputs.Values, cancellationToken: cancellationToken);
@@ -197,11 +200,9 @@ internal static class Qwen3AsrGreedyDecoder
         var embedBuffer = new float[promptIds.Count * hiddenSize];
         for (int tokenIndex = 0; tokenIndex < promptIds.Count; tokenIndex++)
         {
-            float[] tokenEmbedding = embedTokens.Lookup(promptIds[tokenIndex]);
-            for (int hiddenIndex = 0; hiddenIndex < hiddenSize; hiddenIndex++)
-            {
-                embedBuffer[(tokenIndex * hiddenSize) + hiddenIndex] = tokenEmbedding[hiddenIndex];
-            }
+            embedTokens.Lookup(
+                promptIds[tokenIndex],
+                embedBuffer.AsSpan(tokenIndex * hiddenSize, hiddenSize));
         }
 
         var inputEmbeds = new DenseTensor<float>(embedBuffer, [1, promptIds.Count, hiddenSize]);
