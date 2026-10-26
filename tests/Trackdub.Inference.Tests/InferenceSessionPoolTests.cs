@@ -879,6 +879,52 @@ public sealed class InferenceSessionPoolTests
         Assert.Equal(2, bundle2.Count);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task GetLeaseBundleAsync_SynchronousFactories_CreateBundleGraphsConcurrently(bool enableMemoryAdmission)
+    {
+        // Production factories are ct => Task.FromResult(CreateSession(...)): the session
+        // is created synchronously on the calling thread before the task exists, so no
+        // await inside the create path ever yields. Bundle warming must still overlap the
+        // graphs of one bundle (the yielding factories in the disjoint-bundle test above
+        // cannot catch a serial loop). Every factory signals entry, then blocks its thread
+        // on a gate; all three can only be entered before release if creation overlaps.
+        using var pool = new InferenceSessionPool(maxSessions: 8, enableMemoryAdmission: enableMemoryAdmission);
+        int enteredCount = 0;
+        using var allEntered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+
+        Func<CancellationToken, Task<InferenceSession>> SyncGatedFactory() => _ =>
+        {
+            if (Interlocked.Increment(ref enteredCount) == 3)
+            {
+                allEntered.Set();
+            }
+
+            release.Wait();
+            return Task.FromResult(CreateMinimalSession());
+        };
+
+        SessionLeaseRequest Req(string hash) => new(
+            new SessionPoolKey("syncbundle", null, null, ExecutionProviderKind.Cpu, hash, 0, "default") { EstimatedVramMb = 16 },
+            SyncGatedFactory());
+
+        Task<SessionLeaseBundle> acquire = Task.Run(() => pool.GetLeaseBundleAsync(
+            [Req("sx1"), Req("sx2"), Req("sx3")], CancellationToken.None));
+
+        // Release (and drain the acquire) before asserting so a serial bundle fails
+        // cleanly instead of leaving a factory blocked on the gate.
+        bool overlapped = allEntered.Wait(TimeSpan.FromSeconds(10));
+        release.Set();
+        using SessionLeaseBundle bundle = await acquire.AwaitWithHangGuard("the synchronous-factory bundle never completed");
+
+        Assert.True(overlapped,
+            "synchronous factories never overlapped within one bundle (bundle graph creation is serial)");
+        Assert.Equal(3, Volatile.Read(ref enteredCount));
+        Assert.Equal(3, bundle.Count);
+    }
+
     [Fact]
     public async Task GetLeaseBundleAsync_OverlappingOppositeOrders_UnderEvictionPressure_BothComplete()
     {

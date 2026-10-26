@@ -1296,14 +1296,26 @@ internal sealed class InferenceSessionPool : IDisposable
         BundleAdmissionHold? bundleHold,
         CancellationToken cancellationToken)
     {
+        // Production factories are ct => Task.FromResult(CreateSession(...)): the whole
+        // create runs synchronously on the calling thread, so an uncontended create path
+        // never yields and the bundle loop would only start graph i+1 after graph i
+        // completed — serial creation despite the warm-task list. Offload each graph so
+        // the loop actually overlaps them. Task.Run flows the ambient async context
+        // (phase capture), the admission hold is lock-gated, the token stops not-yet-
+        // started work and is still passed through to the create itself, and the pin-on-
+        // complete inside the residency path stays glued to its create.
         if (enableMemoryAdmission)
         {
-            return await GetResidencyReportingProviderAsync(
-                request.Key, request.CreateReportingProviderAsync, cancellationToken, bundleHold).ConfigureAwait(false);
+            return await Task.Run(
+                () => GetResidencyReportingProviderAsync(
+                    request.Key, request.CreateReportingProviderAsync, cancellationToken, bundleHold),
+                cancellationToken).ConfigureAwait(false);
         }
 
-        using SessionLease warm = await GetLeaseReportingProviderAsync(
-            request.Key, request.CreateReportingProviderAsync, cancellationToken).ConfigureAwait(false);
+        using SessionLease warm = await Task.Run(
+            () => GetLeaseReportingProviderAsync(
+                request.Key, request.CreateReportingProviderAsync, cancellationToken),
+            cancellationToken).ConfigureAwait(false);
         return null;
     }
 
@@ -1370,9 +1382,10 @@ internal sealed class InferenceSessionPool : IDisposable
                 warmTasks.Add(warm);
                 if (warm.IsFaulted)
                 {
-                    // A synchronously faulted create is already known before the next
-                    // graph starts: fail fast rather than attempting graphs whose
-                    // bundle has already failed (preserves one attempt per graph).
+                    // A create already known faulted before the next graph starts:
+                    // fail fast rather than starting more graphs for a failed bundle.
+                    // (Best-effort now that warms run offloaded — a graph already in
+                    // flight when a sibling faults still counts as its one attempt.)
                     await warm.ConfigureAwait(false);
                 }
             }
