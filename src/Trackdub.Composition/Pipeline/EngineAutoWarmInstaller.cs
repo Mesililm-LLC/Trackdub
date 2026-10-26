@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Trackdub.Application.Pipeline;
+using Trackdub.Contracts.Licensing;
+using Trackdub.Licensing;
 
 namespace Trackdub.Composition.Pipeline;
 
@@ -9,9 +11,13 @@ namespace Trackdub.Composition.Pipeline;
 public sealed class EngineAutoWarmInstaller : IHostedService
 {
     private readonly IEngineAutoWarmQueue queue;
+    private readonly ILicenseInitializer? licenseInitializer;
 
-    public EngineAutoWarmInstaller(IEngineAutoWarmQueue queue) =>
+    public EngineAutoWarmInstaller(IEngineAutoWarmQueue queue, ILicenseInitializer? licenseInitializer = null)
+    {
         this.queue = queue ?? throw new ArgumentNullException(nameof(queue));
+        this.licenseInitializer = licenseInitializer;
+    }
 
     /// <summary>
     /// Records host activation of the warm queue. This is not a processing gate: the coordinator
@@ -19,13 +25,17 @@ public sealed class EngineAutoWarmInstaller : IHostedService
     /// works whether or not a host ever starts this service. Starting it makes activation
     /// observable, which is how a misconfigured host becomes visible rather than silent.
     /// </summary>
-    public Task StartAsync(CancellationToken cancellationToken)
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (licenseInitializer is not null)
+        {
+            await licenseInitializer.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         // Call the contract directly for every implementation: a type-specific branch would leave
         // other IEngineAutoWarmQueue implementations with IsHostStarted stuck at false.
         queue.MarkHostStarted();
-        return Task.CompletedTask;
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;

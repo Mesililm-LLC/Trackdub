@@ -4,7 +4,9 @@ using Trackdub.Application.Pipeline;
 using Trackdub.Composition.Pipeline;
 using Trackdub.Composition.Runtime;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Licensing;
 using Trackdub.Domain;
+using Trackdub.Licensing;
 using Xunit;
 
 namespace Trackdub.Composition.Tests.Pipeline;
@@ -66,6 +68,30 @@ public class EngineAutoWarmIntegrationTests
         // A second activation reports that it changed nothing, so callers can tell the difference.
         Assert.False(queue.Activate());
         Assert.True(queue.IsActive);
+    }
+
+    [Fact]
+    public async Task Installer_awaits_license_initialization_before_host_activation()
+    {
+        var queue = new RecordingQueue();
+        var initializer = new RecordingLicenseInitializer();
+        var installer = new EngineAutoWarmInstaller(queue, initializer);
+
+        await installer.StartAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(initializer.WasInitialized);
+        Assert.True(queue.IsHostStarted);
+    }
+
+    private sealed class RecordingLicenseInitializer : ILicenseInitializer
+    {
+        public bool WasInitialized { get; private set; }
+
+        public Task<LicenseValidationResult> InitializeAsync(CancellationToken cancellationToken = default)
+        {
+            WasInitialized = true;
+            return Task.FromResult(new LicenseValidationResult(LicenseTier.Free, null, 0, 0, null, null));
+        }
     }
 
     private sealed class RecordingQueue : IEngineAutoWarmQueue

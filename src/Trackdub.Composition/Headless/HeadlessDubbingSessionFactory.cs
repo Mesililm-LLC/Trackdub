@@ -15,9 +15,7 @@ public sealed class HeadlessDubbingSessionFactory : IDubbingSessionFactory
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly Trackdub.Contracts.Benchmarking.IProcessGpuMemoryReader? _processGpuReader;
     private readonly IReadOnlyDictionary<int, long>? _adapterLuidMap;
-    private readonly object _licenseInitGate = new();
     private volatile bool _disposed;
-    private volatile bool _licenseInitialized;
 
     public HeadlessDubbingSessionFactory(ServiceProvider serviceProvider)
     {
@@ -39,8 +37,6 @@ public sealed class HeadlessDubbingSessionFactory : IDubbingSessionFactory
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(projectRootPath);
-
-        EnsureLicenseInitialized();
 
         IServiceScope scope = _scopeFactory.CreateScope();
         try
@@ -64,27 +60,5 @@ public sealed class HeadlessDubbingSessionFactory : IDubbingSessionFactory
         HeadlessCompositionRoot.ClearSharedPoolProcessGpuAdmission(_processGpuReader);
         HeadlessCompositionRoot.ClearSharedPoolAdapterLuidMap(_adapterLuidMap);
         _serviceProvider.Dispose();
-    }
-
-    private void EnsureLicenseInitialized()
-    {
-        if (_licenseInitialized)
-            return;
-
-        lock (_licenseInitGate)
-        {
-            if (_licenseInitialized)
-                return;
-
-            ILicenseInitializer? initializer = _serviceProvider.GetService<ILicenseInitializer>();
-            if (initializer is null)
-            {
-                _licenseInitialized = true;
-                return;
-            }
-
-            initializer.InitializeAsync().GetAwaiter().GetResult();
-            _licenseInitialized = true;
-        }
     }
 }
