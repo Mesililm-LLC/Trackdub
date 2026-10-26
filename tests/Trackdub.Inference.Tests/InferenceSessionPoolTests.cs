@@ -678,6 +678,41 @@ public sealed class InferenceSessionPoolTests
         Assert.Equal(80, maxima["pendingReservationMb"]);
     }
 
+    [Fact]
+    public async Task GetLeaseAsync_AdmissionWait_RecordsPoolAdmissionWaitSpan()
+    {
+        // The admission wait was the one un-spanned async wait in the create path: a
+        // tight-budget wait could burn hundreds of seconds invisibly (no phase total,
+        // no log line). It must record under 'pool-admission-wait' like the other
+        // pool waits (pool-wait, pool-single-flight-wait, pool-creation-lock-wait).
+        using var pool = new InferenceSessionPool(
+            maxSessions: 4,
+            enableMemoryAdmission: true,
+            memoryBudgetMb: 100,
+            hostMemoryBudgetMb: 100);
+        var key1 = new SessionPoolKey("eng", null, null, ExecutionProviderKind.Cpu, "aw1", 0, "default") { EstimatedVramMb = 80 };
+        var key2 = new SessionPoolKey("eng", null, null, ExecutionProviderKind.Cpu, "aw2", 0, "default") { EstimatedVramMb = 80 };
+
+        var capture = new BenchmarkPhaseCapture();
+        using (BenchmarkPhaseCapture.Activate(capture))
+        {
+            using SessionLease lease1 = await pool.GetLeaseAsync(
+                key1, _ => Task.FromResult(CreateMinimalSession()), CancellationToken.None);
+
+            // 80 MB leased of a 100 MB budget: key2 parks in the admission wait until
+            // the caller cancels — that wait is the span under test.
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => pool.GetLeaseAsync(key2, _ => Task.FromResult(CreateMinimalSession()), cts.Token));
+        }
+
+        IReadOnlyDictionary<string, double?> phases = capture.SnapshotMilliseconds();
+        Assert.True(
+            phases.TryGetValue("phase:pool-admission-wait", out double? waitMs),
+            "admission wait recorded no 'pool-admission-wait' phase span");
+        Assert.True(waitMs > 0, "admission wait span recorded no elapsed time");
+    }
+
     // ── Residency ≠ execution exclusivity (audit §3A) ─────────────────────────
 
     [Fact]

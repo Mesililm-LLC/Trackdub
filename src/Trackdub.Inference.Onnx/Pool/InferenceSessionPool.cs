@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Linq;
 using Microsoft.ML.OnnxRuntime;
 using Trackdub.Contracts.Benchmarking;
+using Trackdub.Contracts.Diagnostics;
 using Trackdub.Domain;
 using Trackdub.Inference.Onnx.TensorRtRtx;
 
@@ -1676,6 +1677,14 @@ internal sealed class InferenceSessionPool : IDisposable
     internal static int ObservedBlockBusyFailFastPasses { get; set; } = 1200;
 
     /// <summary>
+    /// How long one admission wait may run before it logs once (device, observed floor,
+    /// budget, pending charge). This wait was previously invisible — no phase span and no
+    /// log line — so a tight process-GPU floor could burn hundreds of seconds here with
+    /// no trace in run evidence. Mutable so tests can pin the threshold.
+    /// </summary>
+    internal static TimeSpan AdmissionWaitLogThreshold { get; set; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>
     /// Waits until <paramref name="needMb"/> fits in <paramref name="bucket"/>'s budget
     /// (evicting idle sessions in that bucket as needed), then takes the reservation.
     /// Never holds a reservation while waiting unless <paramref name="alreadyReserved"/> is set.
@@ -1694,6 +1703,12 @@ internal sealed class InferenceSessionPool : IDisposable
         CancellationToken cancellationToken,
         bool alreadyReserved = false)
     {
+        // Mirror the other pool waits (pool-wait, pool-single-flight-wait,
+        // pool-creation-lock-wait): without this span the admission wait is the one
+        // async wait in the create path that leaves no trace in phase evidence.
+        using BenchmarkPhaseCapture.Timer admissionWaitSpan = BenchmarkPhaseCapture.Start("pool-admission-wait");
+        var waitStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        bool waitLogged = false;
         BenchmarkPhaseCapture.ObserveMaximum("admissionWaiters", Interlocked.Increment(ref admissionWaiters));
         try
         {
@@ -1791,6 +1806,7 @@ internal sealed class InferenceSessionPool : IDisposable
                 {
                     foreach (PoolEntry entry in toDispose)
                     {
+                        BenchmarkPhaseCapture.Increment("admissionWaitEvictions");
                         entry.Dispose();
                     }
                 }
@@ -1891,6 +1907,27 @@ internal sealed class InferenceSessionPool : IDisposable
 
                 if (reservationBlocked || observedBlocked)
                 {
+                    if (!waitLogged && waitStopwatch.Elapsed >= AdmissionWaitLogThreshold)
+                    {
+                        waitLogged = true;
+                        pendingCreateMbByBucket.TryGetValue(bucket, out long pendingMb);
+                        string message =
+                            $"Session pool admission wait on {DescribeBucket(bucket)}: needs ~{needMb} MB against a "
+                            + $"{BudgetFor(bucket)} MB budget (observed process GPU floor "
+                            + $"~{ObservedProcessGpuUsageMb(bucket, observation)} MB, reserved "
+                            + $"~{CurrentReservedMb(bucket)} MB incl. ~{pendingMb} MB pending, "
+                            + $"waited {waitStopwatch.Elapsed.TotalSeconds:F1}s); waiting for memory "
+                            + "to drain or sessions to be released.";
+                        if (ColdStartCapture.Current?.Logger is { } logger)
+                        {
+                            logger.LogInformation(message);
+                        }
+                        else
+                        {
+                            System.Diagnostics.Trace.TraceInformation(message);
+                        }
+                    }
+
                     // Doesn't fit yet — poll instead of blocking a thread-pool thread on
                     // Monitor.Wait. Bounded delay; loops back to retake creationLock and
                     // recheck (an eviction, a lease release, or the process's own GPU usage
