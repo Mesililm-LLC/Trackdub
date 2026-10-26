@@ -33,7 +33,9 @@ public static class DeviceFallbackSessionCreator
         StageRuntimePlan plan = initialPlan;
         (DeviceDegradationKind Kind, int DeviceIndex, string Adapter, string Detail)? pending = null;
         ExceptionDispatchInfo? lastDeviceException = null;
-        int attempts = Math.Max(1, maxAttempts);
+        const int maxSessionCreateAttempts = 4;
+        int attempts = Math.Clamp(maxAttempts, 1, maxSessionCreateAttempts);
+        int? exhaustedDeviceIndex = null;
 
         for (int attempt = 0; attempt < attempts; attempt++)
         {
@@ -68,6 +70,16 @@ public static class DeviceFallbackSessionCreator
                 }
 
                 pending = (kind, failedDeviceIndex, adapter, ex.Message);
+                if (kind == DeviceDegradationKind.MemoryExhausted && exhaustedDeviceIndex == failedDeviceIndex)
+                {
+                    lastDeviceException.Throw();
+                }
+
+                if (kind == DeviceDegradationKind.MemoryExhausted)
+                {
+                    exhaustedDeviceIndex = failedDeviceIndex;
+                }
+
                 plan = await replanAsync(cancellationToken).ConfigureAwait(false);
             }
         }
