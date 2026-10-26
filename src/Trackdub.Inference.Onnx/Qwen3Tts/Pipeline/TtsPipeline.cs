@@ -30,6 +30,11 @@ public sealed class TtsPipeline : ITtsPipeline
     /// <param name="vocoderSessionOptionsFactory">Optional separate factory for the vocoder model. Useful when GPU EP doesn't support vocoder ops (e.g., DirectML). When null, uses sessionOptionsFactory.</param>
     /// <param name="variant">Model size variant. Used to determine feature support (e.g., instruction control).</param>
     public TtsPipeline(string modelDir, Func<SessionOptions>? sessionOptionsFactory = null, Func<SessionOptions>? vocoderSessionOptionsFactory = null, QwenModelVariant variant = QwenModelVariant.Qwen06B)
+        : this(modelDir, sessionOptionsFactory, vocoderSessionOptionsFactory, variant, pooledSessions: null)
+    {
+    }
+
+    internal TtsPipeline(string modelDir, Func<SessionOptions>? sessionOptionsFactory, Func<SessionOptions>? vocoderSessionOptionsFactory, QwenModelVariant variant, Qwen3TtsPooledSessions? pooledSessions)
     {
         var tokenizerDir = Path.Join(modelDir, "tokenizer");
         var embeddingsDir = Path.Join(modelDir, "embeddings");
@@ -38,8 +43,8 @@ public sealed class TtsPipeline : ITtsPipeline
         _variant = variant;
         _tokenizer = new TextTokenizer(tokenizerDir);
         _embeddings = new EmbeddingStore(embeddingsDir, configPath);
-        _languageModel = new LanguageModel(modelDir, _embeddings, sessionOptionsFactory);
-        _vocoder = new Vocoder(Path.Join(modelDir, "vocoder.onnx"), vocoderSessionOptionsFactory ?? sessionOptionsFactory);
+        _languageModel = new LanguageModel(modelDir, _embeddings, sessionOptionsFactory, pooledSessions);
+        _vocoder = new Vocoder(Path.Join(modelDir, "vocoder.onnx"), vocoderSessionOptionsFactory ?? sessionOptionsFactory, pooledSessions?.Vocoder);
     }
 
     /// <summary>Available speaker names from the model.</summary>

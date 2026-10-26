@@ -21,6 +21,7 @@ internal sealed class LanguageModel : IDisposable
     private InferenceSession? _prefillSession;
     private InferenceSession? _decodeSession;
     private InferenceSession? _cpSession;
+    private readonly Qwen3TtsPooledSessions? _pooledSessions;
     private readonly EmbeddingStore _embeddings;
     private readonly string _modelDir;
     private readonly Func<SessionOptions> _sessionOptionsFactory;
@@ -36,11 +37,12 @@ internal sealed class LanguageModel : IDisposable
     private readonly int _cpNumKvHeads;     // code_predictor num_key_value_heads
     private readonly int _cpHeadDim;        // code_predictor head_dim
 
-    public LanguageModel(string modelDir, EmbeddingStore embeddings, Func<SessionOptions>? sessionOptionsFactory = null)
+    public LanguageModel(string modelDir, EmbeddingStore embeddings, Func<SessionOptions>? sessionOptionsFactory = null, Qwen3TtsPooledSessions? pooledSessions = null)
     {
         _embeddings = embeddings;
         _modelDir = modelDir;
         _sessionOptionsFactory = sessionOptionsFactory ?? CreateDefaultOptions;
+        _pooledSessions = pooledSessions;
 
         // Read dimensions from config.json (loaded by EmbeddingStore)
         var cfg = embeddings.Config;
@@ -65,39 +67,42 @@ internal sealed class LanguageModel : IDisposable
         EnableCpuMemArena = true
     };
 
-    private InferenceSession GetPrefillSession()
+    private static void CheckModelSize(string modelPath)
     {
         // SEC-3: File size pre-check to prevent out-of-memory attacks
-        var modelPath = Path.Join(_modelDir, "talker_prefill.onnx");
         var fileInfo = new FileInfo(modelPath);
         const long maxOnnxSize = 8_000_000_000; // 8 GB (1.7B models are ~5.4 GB)
         if (fileInfo.Length > maxOnnxSize)
             throw new InvalidOperationException($"ONNX file too large ({fileInfo.Length / 1e9:F2} GB). Maximum allowed: {maxOnnxSize / 1e9:F2} GB.");
+    }
 
+    private InferenceSession GetPrefillSession()
+    {
+        if (_pooledSessions is not null)
+            return _pooledSessions.Prefill.Session;
+
+        var modelPath = Path.Join(_modelDir, "talker_prefill.onnx");
+        CheckModelSize(modelPath);
         return _prefillSession ??= new InferenceSession(modelPath, _sessionOptionsFactory());
     }
 
     private InferenceSession GetDecodeSession()
     {
-        // SEC-3: File size pre-check to prevent out-of-memory attacks
-        var modelPath = Path.Join(_modelDir, "talker_decode.onnx");
-        var fileInfo = new FileInfo(modelPath);
-        const long maxOnnxSize = 8_000_000_000; // 8 GB (1.7B models are ~5.4 GB)
-        if (fileInfo.Length > maxOnnxSize)
-            throw new InvalidOperationException($"ONNX file too large ({fileInfo.Length / 1e9:F2} GB). Maximum allowed: {maxOnnxSize / 1e9:F2} GB.");
+        if (_pooledSessions is not null)
+            return _pooledSessions.Decode.Session;
 
+        var modelPath = Path.Join(_modelDir, "talker_decode.onnx");
+        CheckModelSize(modelPath);
         return _decodeSession ??= new InferenceSession(modelPath, _sessionOptionsFactory());
     }
 
     private InferenceSession GetCpSession()
     {
-        // SEC-3: File size pre-check to prevent out-of-memory attacks
-        var modelPath = Path.Join(_modelDir, "code_predictor.onnx");
-        var fileInfo = new FileInfo(modelPath);
-        const long maxOnnxSize = 8_000_000_000; // 8 GB (1.7B models are ~5.4 GB)
-        if (fileInfo.Length > maxOnnxSize)
-            throw new InvalidOperationException($"ONNX file too large ({fileInfo.Length / 1e9:F2} GB). Maximum allowed: {maxOnnxSize / 1e9:F2} GB.");
+        if (_pooledSessions is not null)
+            return _pooledSessions.CodePredictor.Session;
 
+        var modelPath = Path.Join(_modelDir, "code_predictor.onnx");
+        CheckModelSize(modelPath);
         return _cpSession ??= new InferenceSession(modelPath, _sessionOptionsFactory());
     }
 
@@ -259,22 +264,10 @@ internal sealed class LanguageModel : IDisposable
             }
         }
 
-        // Release prefill session to free memory before loading decode + CP sessions. This runs
-        // outside the prefill try, so a throw here would strand the rented KV buffers: hand them
-        // back before rethrowing, since the generation loop's finally never runs in that case.
-        try
-        {
-            _prefillSession?.Dispose();
-            _prefillSession = null;
-        }
-        catch
-        {
-            ArrayPool<float>.Shared.Return(kvKeys);
-            ArrayPool<float>.Shared.Return(kvValues);
-            ArrayPool<float>.Shared.Return(cpKvKeys);
-            ArrayPool<float>.Shared.Return(cpKvValues);
-            throw;
-        }
+        // The prefill session is intentionally NOT released here: it is either owned by
+        // this model for its whole lifetime or shared through the session pool, and the
+        // next synthesis reuses it. Disposing it per synthesis forced a full session
+        // reload (and, on TensorRT routes, an engine load) on every call.
 
         // Generation loop
         var generatedCodes = new List<long[]>();
@@ -984,5 +977,11 @@ internal sealed class LanguageModel : IDisposable
         _prefillSession?.Dispose();
         _decodeSession?.Dispose();
         _cpSession?.Dispose();
+        if (_pooledSessions is not null)
+        {
+            _pooledSessions.Prefill.Dispose();
+            _pooledSessions.Decode.Dispose();
+            _pooledSessions.CodePredictor.Dispose();
+        }
     }
 }

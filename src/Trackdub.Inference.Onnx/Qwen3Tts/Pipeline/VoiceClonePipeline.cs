@@ -31,6 +31,11 @@ public sealed class VoiceClonePipeline : IDisposable
     /// <param name="modelDir">Directory containing ONNX models, embeddings, and tokenizer.</param>
     /// <param name="sessionOptionsFactory">Optional factory for ONNX Runtime session options (e.g., for GPU acceleration). When null, uses CPU with max optimization.</param>
     public VoiceClonePipeline(string modelDir, Func<SessionOptions>? sessionOptionsFactory = null)
+        : this(modelDir, sessionOptionsFactory, pooledSessions: null)
+    {
+    }
+
+    internal VoiceClonePipeline(string modelDir, Func<SessionOptions>? sessionOptionsFactory, Qwen3TtsPooledSessions? pooledSessions)
     {
         _modelDir = modelDir;
         _sessionOptionsFactory = sessionOptionsFactory;
@@ -47,9 +52,9 @@ public sealed class VoiceClonePipeline : IDisposable
 
         _tokenizer = new TextTokenizer(tokenizerDir);
         _embeddings = new EmbeddingStore(embeddingsDir, configPath);
-        _languageModel = new LanguageModel(modelDir, _embeddings, sessionOptionsFactory);
-        _vocoder = new Vocoder(Path.Join(modelDir, "vocoder.onnx"), sessionOptionsFactory);
-        _speakerEncoder = new SpeakerEncoder(speakerEncoderPath, sessionOptionsFactory);
+        _languageModel = new LanguageModel(modelDir, _embeddings, sessionOptionsFactory, pooledSessions);
+        _vocoder = new Vocoder(Path.Join(modelDir, "vocoder.onnx"), sessionOptionsFactory, pooledSessions?.Vocoder);
+        _speakerEncoder = new SpeakerEncoder(speakerEncoderPath, sessionOptionsFactory, pooledSessions?.SpeakerEncoder);
     }
 
     /// <summary>

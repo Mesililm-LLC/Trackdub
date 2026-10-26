@@ -15,6 +15,7 @@ internal sealed class Vocoder : IDisposable
     private string? _inputName;
     private readonly string _modelPath;
     private readonly Func<SessionOptions> _sessionOptionsFactory;
+    private readonly QwenPooledSession? _pooledSession;
 
     public int SampleRate => 24000;
 
@@ -27,9 +28,15 @@ internal sealed class Vocoder : IDisposable
     /// <param name="modelPath">Path to the vocoder ONNX model.</param>
     /// <param name="sessionOptionsFactory">Optional factory for ONNX Runtime session options (e.g., for GPU acceleration).</param>
     public Vocoder(string modelPath, Func<SessionOptions>? sessionOptionsFactory = null)
+        : this(modelPath, sessionOptionsFactory, pooledSession: null)
+    {
+    }
+
+    internal Vocoder(string modelPath, Func<SessionOptions>? sessionOptionsFactory, QwenPooledSession? pooledSession)
     {
         _modelPath = modelPath;
         _sessionOptionsFactory = sessionOptionsFactory ?? CreateDefaultOptions;
+        _pooledSession = pooledSession;
     }
 
     private static SessionOptions CreateDefaultOptions() => new()
@@ -39,6 +46,13 @@ internal sealed class Vocoder : IDisposable
 
     private InferenceSession GetSession()
     {
+        if (_pooledSession is not null)
+        {
+            InferenceSession pooled = _pooledSession.Session;
+            _inputName ??= pooled.InputMetadata.Keys.FirstOrDefault() ?? "codes";
+            return pooled;
+        }
+
         if (_session is null)
         {
             // SEC-3: File size pre-check to prevent out-of-memory attacks
@@ -106,5 +120,6 @@ internal sealed class Vocoder : IDisposable
     public void Dispose()
     {
         _session?.Dispose();
+        _pooledSession?.Dispose();
     }
 }

@@ -274,36 +274,57 @@ public sealed class Qwen3TtsEngine(
             ? "qwen3-tts"
             : $"qwen3-tts; {sessionOptions.BootstrapDetail}";
 
-        if (modelFiles.IsBaseModel)
+        // Sessions now come from OnnxExecutionSessionFactory pooling (residency pins)
+        // instead of per-pipeline direct InferenceSession creation, so a second
+        // synthesis reuses the warm prefill/decode/code-predictor/vocoder sessions.
+        ExecutionProviderKind vocoderProvider = sessionOptions.SelectedProvider is ExecutionProviderKind.DirectMl
+            ? ExecutionProviderKind.Cpu
+            : sessionOptions.SelectedProvider;
+        Qwen3TtsPooledSessions pooledSessions = await Qwen3TtsPooledSessions.CreateAsync(
+            modelFiles.RootDirectory,
+            requestedProvider,
+            vocoderProvider,
+            modelFiles.IsBaseModel,
+            cancellationToken).ConfigureAwait(false);
+        try
         {
-            var clonePipeline = new VoiceClonePipeline(modelFiles.RootDirectory, sessionOptions.CreateOptions);
+            if (modelFiles.IsBaseModel)
+            {
+                var clonePipeline = new VoiceClonePipeline(modelFiles.RootDirectory, sessionOptions.CreateOptions, pooledSessions);
+                return new PinnedPipeline(
+                    modelFiles.RootDirectory,
+                    true,
+                    requestedProvider,
+                    sessionOptions.SelectedProvider,
+                    requestedLabel,
+                    selectedLabel,
+                    bootstrapDetail,
+                    null,
+                    clonePipeline);
+            }
+
+            var customPipeline = new TtsPipeline(
+                modelFiles.RootDirectory,
+                sessionOptions.CreateOptions,
+                ResolveVocoderSessionOptionsFactory(sessionOptions),
+                modelFiles.IsLargeModel ? QwenModelVariant.Qwen17B : QwenModelVariant.Qwen06B,
+                pooledSessions);
             return new PinnedPipeline(
                 modelFiles.RootDirectory,
-                true,
+                false,
                 requestedProvider,
                 sessionOptions.SelectedProvider,
                 requestedLabel,
                 selectedLabel,
                 bootstrapDetail,
-                null,
-                clonePipeline);
+                customPipeline,
+                null);
         }
-
-        var customPipeline = new TtsPipeline(
-            modelFiles.RootDirectory,
-            sessionOptions.CreateOptions,
-            ResolveVocoderSessionOptionsFactory(sessionOptions),
-            modelFiles.IsLargeModel ? QwenModelVariant.Qwen17B : QwenModelVariant.Qwen06B);
-        return new PinnedPipeline(
-            modelFiles.RootDirectory,
-            false,
-            requestedProvider,
-            sessionOptions.SelectedProvider,
-            requestedLabel,
-            selectedLabel,
-            bootstrapDetail,
-            customPipeline,
-            null);
+        catch
+        {
+            pooledSessions.Dispose();
+            throw;
+        }
     }
 
     private static Func<SessionOptions> ResolveVocoderSessionOptionsFactory(

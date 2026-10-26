@@ -15,6 +15,7 @@ public sealed class SpeakerEncoder : IDisposable
     private InferenceSession? _session;
     private readonly string _modelPath;
     private readonly Func<SessionOptions> _sessionOptionsFactory;
+    private readonly QwenPooledSession? _pooledSession;
 
     /// <summary>Embedding dimension (1024 for ECAPA-TDNN in Qwen3-TTS).</summary>
     public int EmbeddingDim => 1024;
@@ -23,9 +24,15 @@ public sealed class SpeakerEncoder : IDisposable
     public int MelDim => 128;
 
     public SpeakerEncoder(string modelPath, Func<SessionOptions>? sessionOptionsFactory = null)
+        : this(modelPath, sessionOptionsFactory, pooledSession: null)
+    {
+    }
+
+    internal SpeakerEncoder(string modelPath, Func<SessionOptions>? sessionOptionsFactory, QwenPooledSession? pooledSession)
     {
         _modelPath = modelPath;
         _sessionOptionsFactory = sessionOptionsFactory ?? CreateDefaultOptions;
+        _pooledSession = pooledSession;
     }
 
     private static SessionOptions CreateDefaultOptions() => new()
@@ -35,6 +42,11 @@ public sealed class SpeakerEncoder : IDisposable
 
     private InferenceSession GetSession()
     {
+        if (_pooledSession is not null)
+        {
+            return _pooledSession.Session;
+        }
+
         if (_session is null)
         {
             _session = new InferenceSession(_modelPath, _sessionOptionsFactory());
@@ -89,5 +101,6 @@ public sealed class SpeakerEncoder : IDisposable
     public void Dispose()
     {
         _session?.Dispose();
+        _pooledSession?.Dispose();
     }
 }
