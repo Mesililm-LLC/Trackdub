@@ -39,3 +39,13 @@ concurrent next-stage warmup (the coordinator's `AllowsConcurrentWarmup`): the n
 GenAI model loads while the current stage still holds its lease. At capacity 1 the
 previous behaviour is kept — warmup starts only after the current stage releases
 its model, so it cannot evict the active model.
+
+GenAI warmup itself is non-evicting at any capacity
+(`GenAiModelPool.TryGetWarmupLeaseAsync`): it leases the target only when that
+model is already resident or a free entry slot exists whose admission fits without
+eviction. Concurrent warmup starts before the current stage re-leases its model,
+so that model is resident-but-idle with the pool's oldest release tick — exactly
+the entry an evicting acquire would discard. When no non-evicting lease is
+possible the warmup is recorded as skipped (`genAiModelWarmupSkipped` /
+`stageWarmupSkipped`, `Attempted: false`) and the stage loads inline; the real
+stage acquire keeps the regular evicting behaviour.

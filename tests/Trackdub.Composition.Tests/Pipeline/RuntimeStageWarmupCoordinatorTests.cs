@@ -94,6 +94,8 @@ public class RuntimeStageWarmupCoordinatorTests
         Assert.Equal("/models/x", capturedSmoke.ModelRootPath);
         Assert.Equal("/models/x/graph.onnx", capturedSmoke.EntryPath);
         Assert.Equal("deadbeef", capturedSmoke.ModelRevisionHash);
+        // Warmup smokes are optimization-only: they must never evict a resident model.
+        Assert.True(capturedSmoke.NonEvictingWarmup);
 
         IReadOnlyDictionary<string, long> counters = capture.SnapshotCounters();
         Assert.Equal(1L, counters["stageWarmupAttempt"]);
@@ -129,6 +131,35 @@ public class RuntimeStageWarmupCoordinatorTests
         Assert.False(result.Succeeded);
         Assert.Contains("no runnable plan", result.Detail);
         Assert.Equal(0, smokeCalls);
+    }
+
+    [Fact]
+    public async Task WarmAsync_SmokeNotAttempted_ReportsSkippedNotFailed()
+    {
+        var planner = new FakeRuntimePlanner { PlanHandler = RunnablePlan };
+        var smoke = new FakeExecutionProviderSmokeTester(
+            _ => new ExecutionProviderSmokeTestResult(
+                false, "GenAI warmup skipped: would evict a resident model")
+            {
+                NotAttempted = true,
+            });
+        var capture = new BenchmarkPhaseCapture();
+        using IDisposable? activation = BenchmarkPhaseCapture.Activate(capture);
+        var coordinator = new RuntimeStageWarmupCoordinator(planner, smoke);
+
+        StageWarmupResult result = await coordinator.WarmAsync(
+            new StageWarmupRequest(RuntimeStage.TextRefinement, Selections()),
+            CancellationToken.None);
+
+        // Honest non-attempt: not a failure, and no readiness is implied either way.
+        Assert.False(result.Attempted);
+        Assert.False(result.Succeeded);
+        Assert.Contains("would evict a resident model", result.Detail);
+
+        IReadOnlyDictionary<string, long> counters = capture.SnapshotCounters();
+        Assert.Equal(1L, counters["stageWarmupSkipped"]);
+        Assert.False(counters.ContainsKey("stageWarmupFailure"));
+        Assert.False(counters.ContainsKey("stageWarmupSuccess"));
     }
 
     [Fact]

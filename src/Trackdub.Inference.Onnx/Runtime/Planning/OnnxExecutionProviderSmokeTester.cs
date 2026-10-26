@@ -172,6 +172,7 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
                         request.Variant,
                         request.ModelRevisionHash,
                         request.ExecutionProvider,
+                        request.NonEvictingWarmup,
                         cancellationToken).ConfigureAwait(false);
                     break;
                 case RuntimeStage.SpeechEnhancement:
@@ -193,10 +194,43 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
         {
             throw;
         }
+        catch (GenAiWarmupSkippedException ex)
+        {
+            // Honest non-attempt: warmup declined to evict a resident model. No provider
+            // verdict was produced, so this must not read as a smoke failure.
+            return new ExecutionProviderSmokeTestResult(false, ex.Message) { NotAttempted = true };
+        }
         catch (Exception ex)
         {
             return new ExecutionProviderSmokeTestResult(false, ex.Message);
         }
+    }
+
+    /// <summary>Signals a non-evicting GenAI warmup that declined to load its model.</summary>
+    private sealed class GenAiWarmupSkippedException(string message) : Exception(message);
+
+    /// <summary>
+    /// Leases a GenAI model for a smoke. Authoritative smokes use the regular
+    /// (evicting) lease; non-evicting warmup smokes lease only an already-resident
+    /// model or a free slot and throw <see cref="GenAiWarmupSkippedException"/> when
+    /// loading would evict a resident model.
+    /// </summary>
+    private async Task<GenAiModelLease> GetGenAiLeaseForSmokeAsync(
+        GenAiModelKey key,
+        bool nonEvictingWarmup,
+        CancellationToken cancellationToken)
+    {
+        if (!nonEvictingWarmup)
+        {
+            return await genAiModelPool.GetLeaseAsync(key, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        GenAiModelLease? lease = await genAiModelPool
+            .TryGetWarmupLeaseAsync(key, cancellationToken).ConfigureAwait(false);
+        return lease ?? throw new GenAiWarmupSkippedException(
+            $"GenAI warmup skipped for '{key}': loading it would evict a resident model " +
+            "(GenAI pool at capacity or admission budget full). The stage will load it inline.");
     }
 
     private async Task SmokeTestTextRefinementGenAiAsync(
@@ -206,6 +240,7 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
         string? variant,
         string? modelRevisionHash,
         ExecutionProviderKind provider,
+        bool nonEvictingWarmup,
         CancellationToken cancellationToken)
     {
         ThrowIfGenAiTensorRtProvider(provider);
@@ -220,8 +255,8 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
         GenAiModelKey key = await GenAiModelKey.CreateAsync(
             genAiRoot, provider, modelId, variant, deviceId: null,
             modelRevisionHash: modelRevisionHash, cancellationToken: cancellationToken).ConfigureAwait(false);
-        using GenAiModelLease lease = await genAiModelPool.GetLeaseAsync(key, cancellationToken)
-            .ConfigureAwait(false);
+        using GenAiModelLease lease = await GetGenAiLeaseForSmokeAsync(
+            key, nonEvictingWarmup, cancellationToken).ConfigureAwait(false);
         using IDisposable? executionAdmission = await CpuExecutionAdmission.Shared
             .AcquireAsync(provider, cancellationToken).ConfigureAwait(false);
         Model model = lease.Model;
@@ -400,6 +435,7 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
                     request.Variant,
                     request.ModelRevisionHash,
                     request.ExecutionProvider,
+                    request.NonEvictingWarmup,
                     cancellationToken)
                 .ConfigureAwait(false);
             return;
@@ -425,6 +461,7 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
         string? variant,
         string? modelRevisionHash,
         ExecutionProviderKind provider,
+        bool nonEvictingWarmup,
         CancellationToken cancellationToken)
     {
         ThrowIfGenAiTensorRtProvider(provider);
@@ -439,8 +476,8 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
         GenAiModelKey key = await GenAiModelKey.CreateAsync(
             genAiRoot, provider, modelId, variant, deviceId: null,
             modelRevisionHash: modelRevisionHash, cancellationToken: cancellationToken).ConfigureAwait(false);
-        using GenAiModelLease lease = await genAiModelPool.GetLeaseAsync(key, cancellationToken)
-            .ConfigureAwait(false);
+        using GenAiModelLease lease = await GetGenAiLeaseForSmokeAsync(
+            key, nonEvictingWarmup, cancellationToken).ConfigureAwait(false);
         using IDisposable? executionAdmission = await CpuExecutionAdmission.Shared
             .AcquireAsync(provider, cancellationToken).ConfigureAwait(false);
         await WhisperGenAiAudioTranscriptionEngine
@@ -1528,6 +1565,7 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
                 request.Variant,
                 request.ModelRevisionHash,
                 request.ExecutionProvider,
+                request.NonEvictingWarmup,
                 cancellationToken).ConfigureAwait(false);
             return;
         }

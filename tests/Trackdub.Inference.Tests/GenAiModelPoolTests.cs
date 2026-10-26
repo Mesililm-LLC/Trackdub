@@ -151,6 +151,116 @@ public class GenAiModelPoolTests
         Assert.Same(created[2], third.Resource);
     }
 
+    [Fact]
+    public async Task TryGetWarmupLeaseAsync_AtCapacityTwo_DoesNotEvictResidentIdleModels()
+    {
+        using var admission = NewAdmissionPool(hostBudgetMb: 400);
+        var created = new List<FakeGenAiModelResource>();
+        using var pool = new GenAiModelPool(admission, TrackingFactory(created), maxEntries: 2);
+        var capture = new BenchmarkPhaseCapture();
+        using IDisposable? activation = BenchmarkPhaseCapture.Activate(capture);
+
+        IGenAiModelResource firstA;
+        using (GenAiModelLease lease = await pool.GetLeaseAsync(Key("warm-a"), CancellationToken.None))
+        {
+            firstA = lease.Resource;
+        }
+
+        using (await pool.GetLeaseAsync(Key("warm-b"), CancellationToken.None))
+        {
+        }
+
+        // Review scenario: the next stage's warmup starts before the current stage
+        // re-leases its resident-but-idle model (here A, the oldest idle). At capacity
+        // the warmup must skip instead of evicting A for its slot.
+        GenAiModelLease? warmup = await pool
+            .TryGetWarmupLeaseAsync(Key("warm-c"), CancellationToken.None)
+            .WaitAsync(HangGuard);
+
+        Assert.Null(warmup);
+        Assert.Equal(2, created.Count); // no warmup factory ran
+        Assert.All(created, resource => Assert.Equal(0, resource.DisposeCount));
+        Assert.Equal(1L, capture.SnapshotCounters()["genAiModelWarmupSkipped"]);
+
+        // The current stage's model is still resident: same resource, no reload.
+        using GenAiModelLease current = await pool.GetLeaseAsync(Key("warm-a"), CancellationToken.None)
+            .WaitAsync(HangGuard);
+        Assert.Same(firstA, current.Resource);
+        Assert.Equal(2, created.Count);
+    }
+
+    [Fact]
+    public async Task TryGetWarmupLeaseAsync_FreeSlot_CreatesAndKeepsResidentModelWarm()
+    {
+        using var admission = NewAdmissionPool(hostBudgetMb: 400);
+        var created = new List<FakeGenAiModelResource>();
+        using var pool = new GenAiModelPool(admission, TrackingFactory(created), maxEntries: 2);
+
+        using (await pool.GetLeaseAsync(Key("slot-a"), CancellationToken.None))
+        {
+        }
+
+        // One of two slots is free: the warmup creates its model normally.
+        IGenAiModelResource warmed;
+        using (GenAiModelLease? warmup = await pool
+                   .TryGetWarmupLeaseAsync(Key("slot-b"), CancellationToken.None)
+                   .WaitAsync(HangGuard))
+        {
+            Assert.NotNull(warmup);
+            warmed = warmup!.Resource;
+        }
+
+        Assert.Equal(2, created.Count);
+        Assert.All(created, resource => Assert.Equal(0, resource.DisposeCount));
+
+        // Already-resident fast path: warming the same model again leases it in place.
+        using (GenAiModelLease? again = await pool
+                   .TryGetWarmupLeaseAsync(Key("slot-b"), CancellationToken.None)
+                   .WaitAsync(HangGuard))
+        {
+            Assert.NotNull(again);
+            Assert.Same(warmed, again!.Resource);
+        }
+
+        Assert.Equal(2, created.Count);
+
+        // And the real stage acquire reuses the warmed model.
+        using GenAiModelLease stage = await pool.GetLeaseAsync(Key("slot-b"), CancellationToken.None)
+            .WaitAsync(HangGuard);
+        Assert.Same(warmed, stage.Resource);
+    }
+
+    [Fact]
+    public async Task TryGetWarmupLeaseAsync_AdmissionWouldEvict_SkipsDespiteFreeEntrySlot()
+    {
+        // Entry capacity is 2, but the 100 MB host bucket holds only one 80 MB model:
+        // admitting the warmup would evict the resident idle model through external
+        // admission even though an entry slot is free.
+        using var admission = NewAdmissionPool(hostBudgetMb: 100);
+        var created = new List<FakeGenAiModelResource>();
+        using var pool = new GenAiModelPool(admission, TrackingFactory(created), maxEntries: 2);
+
+        IGenAiModelResource resident;
+        using (GenAiModelLease lease = await pool.GetLeaseAsync(
+                   Key("budget-a", estimatedMb: 80), CancellationToken.None))
+        {
+            resident = lease.Resource;
+        }
+
+        GenAiModelLease? warmup = await pool
+            .TryGetWarmupLeaseAsync(Key("budget-b", estimatedMb: 80), CancellationToken.None)
+            .WaitAsync(HangGuard);
+
+        Assert.Null(warmup);
+        Assert.Single(created);
+        Assert.Equal(0, created[0].DisposeCount);
+
+        using GenAiModelLease current = await pool.GetLeaseAsync(
+                Key("budget-a", estimatedMb: 80), CancellationToken.None)
+            .WaitAsync(HangGuard);
+        Assert.Same(resident, current.Resource);
+    }
+
     [Theory]
     [InlineData(9170, 16384, 1)] // RTX 5070 12 GB scaled budgets: only the largest model fits
     [InlineData(4096, 4096, 1)]

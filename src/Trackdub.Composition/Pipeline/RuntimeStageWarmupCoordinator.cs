@@ -121,7 +121,10 @@ public sealed class RuntimeStageWarmupCoordinator(
 
                 // The smoke profile is the actual per-run warmup: it exercises provider
                 // registration plus the pooled session/GenAI load path, so a persisted
-                // planner verdict must not skip it.
+                // planner verdict must not skip it. It runs non-evicting for GenAI:
+                // this warmup can start before the current stage leases its resident
+                // GenAI model, and evicting that idle-but-imminent model to warm the
+                // next stage would force a multi-GB reload and lose the overlap.
                 ExecutionProviderSmokeTestResult smoke = await executionProviderSmokeTester
                     .SmokeTestAsync(
                         new ExecutionProviderSmokeTestRequest(
@@ -133,9 +136,22 @@ public sealed class RuntimeStageWarmupCoordinator(
                             provider,
                             plan.ModelRootPath,
                             plan.ModelEntryPath,
-                            plan.ModelRevisionHash),
+                            plan.ModelRevisionHash)
+                        {
+                            NonEvictingWarmup = true,
+                        },
                         cancellationToken)
                     .ConfigureAwait(false);
+
+                if (smoke.NotAttempted)
+                {
+                    BenchmarkPhaseCapture.Increment("stageWarmupSkipped");
+                    return new StageWarmupResult(
+                        Attempted: false,
+                        Succeeded: false,
+                        Detail: smoke.Detail
+                            ?? "Warmup skipped: loading the model would evict a resident model.");
+                }
 
                 BenchmarkPhaseCapture.Increment(
                     smoke.Passed ? "stageWarmupSuccess" : "stageWarmupFailure");

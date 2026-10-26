@@ -103,8 +103,27 @@ public sealed record ExecutionProviderSmokeTestRequest(
     ExecutionProviderKind ExecutionProvider,
     string ModelRootPath,
     string EntryPath,
-    string? ModelRevisionHash = null);
+    string? ModelRevisionHash = null)
+{
+    /// <summary>
+    /// Set only by optimization-only warmup callers: a GenAI smoke must then never evict
+    /// a resident model (or wait for eviction headroom) to make room. When loading the
+    /// target model would require eviction, the smoke reports
+    /// <see cref="ExecutionProviderSmokeTestResult.NotAttempted"/> instead of loading it.
+    /// Planner verification leaves this false — its verdict is authoritative, so it uses
+    /// the regular evicting lease.
+    /// </summary>
+    public bool NonEvictingWarmup { get; init; }
+}
 
 public sealed record ExecutionProviderSmokeTestResult(
     bool Passed,
-    string? Detail = null);
+    string? Detail = null)
+{
+    /// <summary>
+    /// True when the smoke honestly did not run (a non-evicting warmup skipped because
+    /// loading would have evicted a resident model). Distinct from a failed smoke:
+    /// nothing was proven or disproven about the provider/model pair.
+    /// </summary>
+    public bool NotAttempted { get; init; }
+}
