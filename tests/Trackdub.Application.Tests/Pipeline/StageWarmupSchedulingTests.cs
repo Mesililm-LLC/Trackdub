@@ -344,6 +344,27 @@ public class StageWarmupSchedulingTests
             outcomes[1] with { ReasonCode = StageSkipReasonCodes.ExistingArtifactsValid }));
     }
 
+    [Fact]
+    public void DetermineOverallStatus_PrerequisiteVadNoRegionsSkip_IsBenign()
+    {
+        var outcomes = new List<StageOutcome>
+        {
+            Succeeded(StageNames.Vad),
+            Succeeded(StageNames.Asr) with
+            {
+                Status = StageStatus.Skipped,
+                ReasonCode = StageSkipReasonCodes.VadNoRegions,
+            },
+            Succeeded(StageNames.Export),
+        };
+
+        Assert.True(StageSkipReasonCodes.IsBenignSkip(StageSkipReasonCodes.VadNoRegions));
+        Assert.False(DubbingPipelineEngine.IsBlockingPrerequisiteOutcome(outcomes[1]));
+        Assert.NotEqual(
+            DubbingRunStatus.Failed,
+            DubbingPipelineEngine.DetermineOverallStatus(outcomes));
+    }
+
     private sealed class ControlledWarmupCoordinator(Action onStarted) : IStageWarmupCoordinator
     {
         public TaskCompletionSource Started { get; } =

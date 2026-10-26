@@ -87,7 +87,7 @@ public sealed class AsrGenerationStage(
                 .StartAsync(stageRunStore, context.Project.Id, StageNames.Asr, cancellationToken)
                 .ConfigureAwait(false);
             skippedStageRun = await StageRunHelper
-                .SkipAsync(stageRunStore, skippedStageRun, runtimeReporter: null, "VAD_NO_REGIONS", cancellationToken)
+                .SkipAsync(stageRunStore, skippedStageRun, runtimeReporter: null, StageSkipReasonCodes.VadNoRegions, cancellationToken)
                 .ConfigureAwait(false);
 
             if (degradationWriter is not null)
@@ -97,7 +97,7 @@ public sealed class AsrGenerationStage(
                     await degradationWriter.WriteAsync(
                         new PipelineDegradationRecord(
                             StageNames.Asr,
-                            "VAD_NO_REGIONS",
+                            StageSkipReasonCodes.VadNoRegions,
                             "VAD detected no speech regions; transcript will be empty.",
                             Detail: null,
                             SelectedFallback: null,
