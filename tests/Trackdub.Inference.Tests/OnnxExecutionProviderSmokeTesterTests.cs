@@ -1,4 +1,5 @@
 using Trackdub.Domain;
+using Trackdub.Inference.Onnx.Pool;
 using Trackdub.Inference.Onnx.Runtime;
 using Trackdub.Inference.Onnx.Runtime.Planning;
 using Trackdub.Inference.Runtime.Planning;
@@ -598,6 +599,64 @@ public sealed class OnnxExecutionProviderSmokeTesterTests
 
         Assert.False(result.Passed);
         Assert.Contains("cpu-int4", result.Detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SmokeTestAsync_opus_translation_failure_evicts_pooled_family()
+    {
+        using TempDirectoryFixture fixture = new();
+        // Decoder must exist for path resolution; both files are invalid ONNX so the
+        // pooled session create fails — the failure path under test.
+        string encoderPath = Path.Join(fixture.RootPath, "encoder_model.onnx");
+        File.WriteAllText(encoderPath, "not-a-real-onnx-graph");
+        File.WriteAllText(Path.Join(fixture.RootPath, "decoder_model.onnx"), "not-a-real-onnx-graph");
+
+        // Unique family so the shared pool is isolated from parallel tests; seed it
+        // with an idle entry the failed smoke must evict rather than leave leasable.
+        string family = "opus-evict-" + Guid.NewGuid().ToString("N");
+        var seedKey = new SessionPoolKey(
+            family, "seed-model", null, ExecutionProviderKind.Cpu, "seed-hash", 0, "default");
+        int factoryCalls = 0;
+        try
+        {
+            using (await InferenceSessionPool.Shared.GetLeaseAsync(
+                seedKey,
+                _ => { factoryCalls++; return Task.FromResult(InferenceSessionPoolTests.CreateMinimalSession()); },
+                CancellationToken.None))
+            {
+            }
+
+            Assert.Equal(1, factoryCalls);
+
+            ExecutionProviderSmokeTestResult result = await new OnnxExecutionProviderSmokeTester()
+                .SmokeTestAsync(
+                    new ExecutionProviderSmokeTestRequest(
+                        RuntimeStage.Translation,
+                        "opus-evict-seed",
+                        "opus-evict-seed",
+                        family,
+                        "default",
+                        ExecutionProviderKind.Cpu,
+                        fixture.RootPath,
+                        encoderPath),
+                    CancellationToken.None);
+
+            Assert.False(result.Passed);
+
+            // Seeded entry evicted: re-leasing the same key must call the factory again.
+            using (await InferenceSessionPool.Shared.GetLeaseAsync(
+                seedKey,
+                _ => { factoryCalls++; return Task.FromResult(InferenceSessionPoolTests.CreateMinimalSession()); },
+                CancellationToken.None))
+            {
+            }
+
+            Assert.Equal(2, factoryCalls);
+        }
+        finally
+        {
+            await InferenceSessionPool.Shared.EvictModelAsync(family);
+        }
     }
 
     private sealed class TempDirectoryFixture : IDisposable

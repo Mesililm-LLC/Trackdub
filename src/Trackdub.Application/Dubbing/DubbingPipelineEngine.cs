@@ -515,7 +515,7 @@ public sealed class DubbingPipelineEngine(
                 recordOutcome: outcome =>
                 {
                     stageOutcomes.Add(outcome);
-                    if (outcome.Status == StageStatus.Failed && DubbingPipelineStages.PrerequisiteStages.Contains(outcome.StageName))
+                    if (IsBlockingPrerequisiteOutcome(outcome))
                     {
                         failedPrerequisiteStage = outcome.StageName;
                     }
@@ -533,16 +533,31 @@ public sealed class DubbingPipelineEngine(
     }
 
     /// <summary>
+    /// A prerequisite outcome blocks downstream stages (and any deliverable) when it
+    /// failed outright or was skipped for a non-benign reason — e.g. a stage skipped
+    /// because its proving warmup failed (<see cref="StageSkipReasonCodes.WarmupFailed"/>)
+    /// produced nothing just like a failed stage. Benign skips (valid existing
+    /// artifacts, declined optional model, …) never block.
+    /// </summary>
+    internal static bool IsBlockingPrerequisiteOutcome(StageOutcome outcome) =>
+        DubbingPipelineStages.PrerequisiteStages.Contains(outcome.StageName)
+        && (outcome.Status == StageStatus.Failed
+            || (outcome.Status == StageStatus.Skipped
+                && !IsBenignSkipReasonCode(outcome.ReasonCode)));
+
+    /// <summary>
     /// Stage sequence with next-stage warmup lookahead: the warmup for the next warmable
     /// stage is started (not awaited) immediately before the current stage executes, so
     /// its proving session create overlaps the current stage's work instead of sitting
-    /// serially in the gap between stages. The pending warmup is joined before its
-    /// target stage's gate/execution; a failed warmup skips that stage with
+    /// serially in the gap between stages. Each stage's gate runs before its pending
+    /// warmup is joined, and a failed warmup verdict is applied only when the gate
+    /// would let the stage execute: it skips that stage with
     /// <see cref="StageSkipReasonCodes.WarmupFailed"/> and the failure detail (the
     /// coordinator records no verdict for a failed smoke), while a passed or
-    /// not-attempted-but-successful warmup leaves execution untouched. Gate-skipped
-    /// stages (cancelled, prerequisite-failed, declined, resume-valid) start no new
-    /// warmup, matching the previous post-stage scheduling for those paths.
+    /// not-attempted warmup leaves execution untouched. Gate-skipped
+    /// stages (cancelled, prerequisite-failed, declined, resume-valid) keep their
+    /// gate outcome and start no new warmup, matching the previous post-stage
+    /// scheduling for those paths.
     /// </summary>
     internal static async Task RunScheduledStagesAsync(
         string[] stagesToRun,
@@ -564,6 +579,25 @@ public sealed class DubbingPipelineEngine(
             {
                 string stageName = stagesToRun[i];
 
+                // Gate first: a gate-skipped stage (cancelled, prerequisite-failed,
+                // declined, resume-valid) keeps its gate outcome even when its
+                // lookahead warmup failed — the warmup verdict applies only to a
+                // stage that would actually execute.
+                StageOutcome? gateOutcome = await gateStageAsync(stageName, cancellationToken).ConfigureAwait(false);
+                if (gateOutcome is not null)
+                {
+                    if (pendingWarmup is not null
+                        && string.Equals(pendingWarmup.StageName, stageName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Join and discard the verdict so no warmup task is left unobserved.
+                        await ObserveWarmupAsync(pendingWarmup.Task, cancellationToken).ConfigureAwait(false);
+                        pendingWarmup = null;
+                    }
+
+                    recordOutcome(gateOutcome);
+                    continue;
+                }
+
                 if (pendingWarmup is not null
                     && string.Equals(pendingWarmup.StageName, stageName, StringComparison.OrdinalIgnoreCase))
                 {
@@ -580,13 +614,6 @@ public sealed class DubbingPipelineEngine(
                         recordOutcome(warmupSkip);
                         continue;
                     }
-                }
-
-                StageOutcome? gateOutcome = await gateStageAsync(stageName, cancellationToken).ConfigureAwait(false);
-                if (gateOutcome is not null)
-                {
-                    recordOutcome(gateOutcome);
-                    continue;
                 }
 
                 // Start the next stage's proving warmup now so it overlaps this
@@ -713,8 +740,10 @@ public sealed class DubbingPipelineEngine(
 
     /// <summary>
     /// Builds the skip outcome for a stage whose proving warmup failed, or null when the
-    /// warmup passed (or produced no result, e.g. a swallowed coordinator exception —
-    /// those stay optimization-only and the stage attempts its own execution). The
+    /// warmup passed, was never attempted (no runnable plan — including cloud selections
+    /// the local planner cannot resolve; the stage must execute and surface its own
+    /// outcome), or produced no result (e.g. a swallowed coordinator exception — those
+    /// stay optimization-only and the stage attempts its own execution). The
     /// failure detail is preserved on the outcome; the coordinator has recorded no
     /// verdict for it, so nothing is reported ready on the strength of a failed smoke.
     /// </summary>
@@ -722,7 +751,7 @@ public sealed class DubbingPipelineEngine(
         string stageName,
         StageWarmupResult? warmupResult)
     {
-        if (warmupResult is null || warmupResult.Succeeded)
+        if (warmupResult is null || !warmupResult.Attempted || warmupResult.Succeeded)
         {
             return null;
         }
@@ -3296,11 +3325,11 @@ public sealed class DubbingPipelineEngine(
             return DubbingRunStatus.Succeeded;
         }
 
-        // A failed prerequisite stage blocks every subsequent stage in the runner, so no
+        // A failed (or non-benignly skipped, e.g. warmup-failed) prerequisite stage
+        // blocks every subsequent stage in the runner, so no
         // deliverable can exist. Report Failed even when earlier stages succeeded:
         // PartialSuccess would let callers count a deliverable-free run as success (#327).
-        bool prerequisiteFailed = outcomes.Any(o =>
-            o.Status == StageStatus.Failed && DubbingPipelineStages.PrerequisiteStages.Contains(o.StageName));
+        bool prerequisiteFailed = outcomes.Any(static o => IsBlockingPrerequisiteOutcome(o));
         if (prerequisiteFailed)
         {
             return DubbingRunStatus.Failed;

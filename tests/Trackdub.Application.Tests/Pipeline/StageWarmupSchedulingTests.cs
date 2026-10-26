@@ -250,6 +250,100 @@ public class StageWarmupSchedulingTests
         Assert.All(outcomes, o => Assert.Equal(StageStatus.Succeeded, o.Status));
     }
 
+    [Fact]
+    public void BuildWarmupSkipOutcomeIfFailed_NonAttemptedWarmup_ReturnsNull()
+    {
+        // Attempted:false means no runnable plan (incl. cloud selections the local
+        // planner cannot resolve) — the stage must run and surface its own outcome.
+        Assert.Null(DubbingPipelineEngine.BuildWarmupSkipOutcomeIfFailed(
+            StageNames.Asr, new StageWarmupResult(Attempted: false, Succeeded: false)));
+
+        StageOutcome? attempted = DubbingPipelineEngine.BuildWarmupSkipOutcomeIfFailed(
+            StageNames.Asr, new StageWarmupResult(Attempted: true, Succeeded: false, Detail: "boom"));
+        Assert.NotNull(attempted);
+        Assert.Equal(StageSkipReasonCodes.WarmupFailed, attempted!.ReasonCode);
+    }
+
+    [Fact]
+    public async Task RunScheduledStagesAsync_NonAttemptedWarmup_ExecutesTargetStage()
+    {
+        var coordinator = new DelegateWarmupCoordinator(_ =>
+            Task.FromResult(new StageWarmupResult(Attempted: false, Succeeded: false)));
+        string[] stages = [StageNames.Vad, StageNames.Asr];
+        var outcomes = new List<StageOutcome>();
+        var executed = new List<string>();
+
+        await DubbingPipelineEngine.RunScheduledStagesAsync(
+            stages, coordinator, Selections(), Options(), new HashSet<string>(),
+            gateStageAsync: (_, _) => Task.FromResult<StageOutcome?>(null),
+            executeStageAsync: (stage, _) =>
+            {
+                executed.Add(stage);
+                return Task.FromResult(Succeeded(stage));
+            },
+            recordOutcome: outcomes.Add,
+            progress: null,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(stages, executed);
+        Assert.All(outcomes, o => Assert.Equal(StageStatus.Succeeded, o.Status));
+    }
+
+    [Fact]
+    public async Task RunScheduledStagesAsync_GateSkipWinsOverFailedWarmup()
+    {
+        var coordinator = new DelegateWarmupCoordinator(_ =>
+            Task.FromResult(new StageWarmupResult(
+                Attempted: true, Succeeded: false, Detail: "provider failed")));
+        string[] stages = [StageNames.Vad, StageNames.Asr];
+        var outcomes = new List<StageOutcome>();
+        var executed = new List<string>();
+
+        await DubbingPipelineEngine.RunScheduledStagesAsync(
+            stages, coordinator, Selections(), Options(), new HashSet<string>(),
+            gateStageAsync: (stage, _) => Task.FromResult<StageOutcome?>(
+                stage == StageNames.Asr
+                    ? Succeeded(stage) with
+                    {
+                        Status = StageStatus.Skipped,
+                        ReasonCode = StageSkipReasonCodes.ExistingArtifactsValid,
+                    }
+                    : null),
+            executeStageAsync: (stage, _) =>
+            {
+                executed.Add(stage);
+                return Task.FromResult(Succeeded(stage));
+            },
+            recordOutcome: outcomes.Add,
+            progress: null,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal([StageNames.Vad], executed);
+        Assert.Equal(StageSkipReasonCodes.ExistingArtifactsValid, outcomes[1].ReasonCode);
+    }
+
+    [Fact]
+    public void DetermineOverallStatus_PrerequisiteWarmupFailedSkip_ReturnsFailed()
+    {
+        var outcomes = new List<StageOutcome>
+        {
+            Succeeded(StageNames.Vad),
+            Succeeded(StageNames.Asr) with
+            {
+                Status = StageStatus.Skipped,
+                ReasonCode = StageSkipReasonCodes.WarmupFailed,
+            },
+            Succeeded(StageNames.Export),
+        };
+
+        Assert.Equal(
+            DubbingRunStatus.Failed,
+            DubbingPipelineEngine.DetermineOverallStatus(outcomes));
+        Assert.True(DubbingPipelineEngine.IsBlockingPrerequisiteOutcome(outcomes[1]));
+        Assert.False(DubbingPipelineEngine.IsBlockingPrerequisiteOutcome(
+            outcomes[1] with { ReasonCode = StageSkipReasonCodes.ExistingArtifactsValid }));
+    }
+
     private sealed class ControlledWarmupCoordinator(Action onStarted) : IStageWarmupCoordinator
     {
         public TaskCompletionSource Started { get; } =

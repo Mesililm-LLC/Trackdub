@@ -1556,28 +1556,47 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
         // sessions this smoke proves are the ones the translation stage leases next.
         // The non-pooled CreateOpusAsync pair would be disposed here and rebuilt by
         // the stage (a second, serial session create inside the stage itself).
-        using OnnxExecutionSessionFactory.OpusSessionLease sessionLease = await OnnxExecutionSessionFactory
-            .CreatePooledOpusAsync(
-                string.IsNullOrWhiteSpace(request.EngineFamily)
-                    ? OpusMtTranslationEngine.EngineFamilyName
-                    : request.EngineFamily,
-                encoderModelPath, decoderModelPath, request.ExecutionProvider, cancellationToken)
-            .ConfigureAwait(false);
-        EnsureSelectedProviderMatchesRequested(request.ExecutionProvider, sessionLease.SelectedProvider);
+        string engineFamily = string.IsNullOrWhiteSpace(request.EngineFamily)
+            ? OpusMtTranslationEngine.EngineFamilyName
+            : request.EngineFamily;
+        try
+        {
+            using OnnxExecutionSessionFactory.OpusSessionLease sessionLease = await OnnxExecutionSessionFactory
+                .CreatePooledOpusAsync(
+                    engineFamily,
+                    encoderModelPath, decoderModelPath, request.ExecutionProvider, cancellationToken)
+                .ConfigureAwait(false);
+            EnsureSelectedProviderMatchesRequested(request.ExecutionProvider, sessionLease.SelectedProvider);
 
-        using var encoderInputs = new InputSet([
-            NamedOnnxValue.CreateFromTensor("input_ids", new DenseTensor<long>(new long[] { 0L }, [1, 1])),
-            NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<long>(new long[] { 1L }, [1, 1]))
-        ]);
-        using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> encoderResults = sessionLease.EncoderSession.RunWithRetry(encoderInputs.Values, maxAttempts: 1, cancellationToken: cancellationToken, provider: request.ExecutionProvider);
-        Tensor<float> encoderHiddenStates = encoderResults
-            .Single(static r => r.Name == "last_hidden_state")
-            .AsTensor<float>();
+            using var encoderInputs = new InputSet([
+                NamedOnnxValue.CreateFromTensor("input_ids", new DenseTensor<long>(new long[] { 0L }, [1, 1])),
+                NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<long>(new long[] { 1L }, [1, 1]))
+            ]);
+            using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> encoderResults = sessionLease.EncoderSession.RunWithRetry(encoderInputs.Values, maxAttempts: 1, cancellationToken: cancellationToken, provider: request.ExecutionProvider);
+            Tensor<float> encoderHiddenStates = encoderResults
+                .Single(static r => r.Name == "last_hidden_state")
+                .AsTensor<float>();
 
-        using var decoderInputs = CreateTranslationDecoderInputs(
-            sessionLease.DecoderSession.InputMetadata,
-            encoderHiddenStates);
-        using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> _ = sessionLease.DecoderSession.RunWithRetry(decoderInputs.Values, maxAttempts: 1, cancellationToken: cancellationToken, provider: request.ExecutionProvider);
+            using var decoderInputs = CreateTranslationDecoderInputs(
+                sessionLease.DecoderSession.InputMetadata,
+                encoderHiddenStates);
+            using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> _ = sessionLease.DecoderSession.RunWithRetry(decoderInputs.Values, maxAttempts: 1, cancellationToken: cancellationToken, provider: request.ExecutionProvider);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            try
+            {
+                // Do not leave an unverified encoder/decoder pair in the shared pool
+                // for a later stage to lease (mirrors the VAD/Whisper smoke paths).
+                await InferenceSessionPool.Shared.EvictModelAsync(engineFamily).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Cleanup only: an eviction failure must not replace the smoke-test failure rethrown below.
+            }
+
+            throw;
+        }
     }
 
     private static void EnsureSelectedProviderMatchesRequested(
