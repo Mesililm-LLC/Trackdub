@@ -93,9 +93,9 @@ gh run view <run-id>
 gh workflow run <workflow>.yml      # manual triggers
 ```
 
-Workflows: `ci.yml` (format gate, repository-boundary scan, audit-mirror check, controlled-matrix CPU budget, build+test on Windows/Linux/macOS), `codeql.yml`, `model-audit.yml`, `benchmark-report-validation.yml`, `benchmark-dotnet.yml`, `code-coverage.yml`, `trt-rtx-smoke.yml`, `release-shipping-guard.yml`, `opencode-review.yml`, `opencode.yml`.
+Workflows: `ci.yml` (format gate, repository-boundary scan, audit-mirror check, controlled-matrix CPU budget, build+test on Windows/Linux/macOS), `model-audit.yml`, `benchmark-report-validation.yml`, `benchmark-dotnet.yml`, `code-coverage.yml`, `trt-rtx-smoke.yml`, `release-shipping-guard.yml`, `opencode-review.yml`, `opencode.yml`.
 
-`ci.yml`'s `pull_request` trigger deliberately carries **no `branches:` filter** — a filter silently drops every stacked PR from the run. `tests/Trackdub.Architecture.Tests/WorkflowTriggerTests` guards this in all four of those workflows; a `paths:` filter is fine and is not a base-branch filter.
+`ci.yml`'s `pull_request` trigger deliberately carries **no `branches:` filter** — a filter silently drops every stacked PR from the run. `tests/Trackdub.Architecture.Tests/WorkflowTriggerTests` guards this in all three of those workflows; a `paths:` filter is fine and is not a base-branch filter.
 
 A green CI badge is not evidence for a claim you are making locally — but it is evidence the commit passed CI. Say which.
 

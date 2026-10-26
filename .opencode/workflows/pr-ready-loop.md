@@ -76,7 +76,7 @@ Do NOT use for:
      dotnet build Trackdub.slnx --configuration Release --no-restore -m:1 -warnaserror
      dotnet test Trackdub.slnx --configuration Release --no-build -m:1
      ```
-  2. Confirm Architecture tests passed inside that run. They enforce Domain-has-no-references, Contracts-references-only-Domain, the AGENTS.md diagram match, `StageNames` consistency, and the no-base-branch-filter guard on `ci.yml`, `codeql.yml`, `model-audit.yml`, `benchmark-report-validation.yml`.
+  2. Confirm Architecture tests passed inside that run. They enforce Domain-has-no-references, Contracts-references-only-Domain, the AGENTS.md diagram match, `StageNames` consistency, and the no-base-branch-filter guard on `ci.yml`, `model-audit.yml`, `benchmark-report-validation.yml`.
   3. Treat any warning under `-warnaserror` as a hard failure. Do not suppress to make it pass.
 - **Exit criteria**: Release build with warnings-as-errors green; full Release test suite green.
 - **Failure handling**: FAIL → `core-diagnostics`, fix, re-run this stage. **Stop condition: do not push a red PR to save time.** Only an explicit human instruction overrides this.
@@ -154,7 +154,7 @@ Do NOT use for:
 - **Context to load**: `.opencode/context/processes/pr-lifecycle.md`
 - **Actions**:
   1. Watch with `gh pr checks <pr-number>` until all checks reach a terminal state.
-  2. Relevant workflows: `ci.yml`, `codeql.yml`, `code-coverage.yml`, `model-audit.yml`, `release-shipping-guard.yml`, `opencode-review.yml`, `trt-rtx-smoke.yml`.
+  2. Relevant workflows: `ci.yml`, `code-coverage.yml`, `model-audit.yml`, `release-shipping-guard.yml`, `opencode-review.yml`, `trt-rtx-smoke.yml`.
   3. Benchmarks are **not** part of this gate. BenchmarkDotNet does not run on pull-request CI by policy; real-model and saved-commit comparisons are opt-in via `benchmark-dotnet.yml`. Never wait on a benchmark check here.
   4. If `model-audit.yml` fails, the change touched model inventory or manifest integrity — route to `benchmark-regression-triage.md` scope or `core-diagnostics`.
 - **Exit criteria**: All required checks terminal and green.

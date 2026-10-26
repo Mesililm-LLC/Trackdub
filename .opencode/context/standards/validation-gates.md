@@ -74,7 +74,7 @@ dotnet test tests/Trackdub.Architecture.Tests --no-restore -m:1
 | `DependencyGraphTests.cs` | `AGENTS.md` diagram ↔ csproj parity (both directions), `DomainHasNoProjectReferences`, `ContractsReferencesOnlyDomain`, acyclicity, WinML-not-DirectML package/target invariants, DNNL native RID dirs + checksum provenance template, `TrackdubOrtRuntimeFlavor` asset-copy conditions in both directions, `Inference.Onnx` using `Trackdub.Contracts.ApplicationContracts` (not the root Contracts namespace), portable RID graphs in four `packages.lock.json` files |
 | `LicensingIsolationTests.cs` | zero `ProjectReference`; no third-party crypto packages (BouncyCastle, jose-jwt, IdentityModel, NSec, libsodium, …); single-target `net10.0`, no multi-targeting |
 | `StageNameConsistencyTests.cs` | no inline stage-name literal at any `StageRunRecord.Start` call site; `KnownStageNameValues` covers every constant in `StageNames.cs` |
-| `WorkflowTriggerTests.cs` | `pull_request` triggers in `ci.yml`, `codeql.yml`, `model-audit.yml`, `benchmark-report-validation.yml` carry no `branches:` filter (stacked-PR CI); `paths:` filters stay allowed |
+| `WorkflowTriggerTests.cs` | `pull_request` triggers in `ci.yml`, `model-audit.yml`, `benchmark-report-validation.yml` carry no `branches:` filter (stacked-PR CI); `paths:` filters stay allowed |
 
 ### 4c — `BannedSymbols.txt`
 
