@@ -43,13 +43,13 @@ public sealed class FfmpegVideoFrameExtractor : IVideoFrameExtractor, IVideoFram
 
         // Extract raw RGBA frames using image2 muxer + rawvideo codec.
         // image2 writes one file per frame; rawvideo emits raw pixel data with no container.
-        // -vsync 0 = keep all frames without duplication/dropping
+        // -fps_mode passthrough keeps every frame without duplication or dropping (FFmpeg 9 removed -vsync)
         var args = new List<string>
         {
             "-ss", startSeconds.ToString("F6", CultureInfo.InvariantCulture),
             "-to", endSeconds.ToString("F6", CultureInfo.InvariantCulture),
             "-i", videoPath,
-            "-vsync", "0",
+            "-fps_mode", "passthrough",
             "-f", "image2",
             "-c:v", "rawvideo",
             "-pix_fmt", "rgba",

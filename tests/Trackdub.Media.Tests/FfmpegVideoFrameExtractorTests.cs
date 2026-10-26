@@ -27,6 +27,20 @@ public sealed class FfmpegVideoFrameExtractorTests
     }
 
     [Fact]
+    public async Task ExtractTurnFramesAsync_uses_fps_mode_because_ffmpeg_9_removed_vsync()
+    {
+        var runner = new RecordingProcessRunner();
+        string outputDirectory = Path.Join(Path.GetTempPath(), "Trackdub.Media.Tests", Guid.NewGuid().ToString("N"));
+        var extractor = new FfmpegVideoFrameExtractor(runner, Environment.ProcessPath, Environment.ProcessPath);
+
+        await extractor.ExtractTurnFramesAsync("video.mp4", 0, 1, outputDirectory, CancellationToken.None);
+
+        IReadOnlyList<string> extractionArgs = runner.Calls[1].Arguments;
+        AssertOptionValue(extractionArgs, "-fps_mode", "passthrough");
+        Assert.DoesNotContain("-vsync", extractionArgs);
+    }
+
+    [Fact]
     public async Task AssembleFramesAsync_reads_rgba_frame_sequence_with_image2_demuxer()
     {
         var runner = new RecordingProcessRunner();

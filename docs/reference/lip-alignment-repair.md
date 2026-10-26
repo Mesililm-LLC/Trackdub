@@ -19,6 +19,69 @@ repair model. `run stage --stage lip-synthesis --model latentsync-1.6` takes a
 bare alias. A successful standalone repair refreshes the final Export and
 reports its outcome and artifact paths.
 
+## NVIDIA Maxine LipSync engine
+
+Video repair can run through NVIDIA Maxine AR SDK LipSync on a local install.
+When it is configured, the stage prefers it and falls back to LatentSync
+otherwise. Pass `--model nvidia-maxine-lipsync` to pick it explicitly, or
+`--model latentsync-1.6` to pick LatentSync.
+
+Nothing NVIDIA ships is bundled with Trackdub. Configure it in the desktop
+Settings, in `settings.json`, or with environment variables. Each settings value
+wins over its variable, and settings changes apply on the next run without a
+restart.
+
+| Setting | Variable | Value |
+| --- | --- | --- |
+| `MaxineLipSyncArSdkRoot` | `TRACKDUB_MAXINE_ARSDK_ROOT` | AR SDK root containing `bin/nvARPose.dll`, `bin/models/` and `features/` |
+| `MaxineLipSyncHostPath` | `TRACKDUB_MAXINE_LIPSYNC_HOST` | LipSync host executable: Trackdub's persistent host built from `tools/native/maxine-lipsync-host` (recommended), or the `LipSyncApp` sample from [NVIDIA-Maxine/AR-SDK-Samples](https://github.com/NVIDIA-Maxine/AR-SDK-Samples) |
+| `MaxineLipSyncLanguage` | `TRACKDUB_MAXINE_LIPSYNC_LANGUAGE` | Optional: `es`, `de`, `fr` or `generic` (default) |
+
+The AR SDK needs the `nvarlipsync`, `nvarfaceboxdetection`,
+`nvarlandmarkdetection` and `nvarfaceexpressions` features and their models.
+On Windows, GeForce RTX 50 cards (compute capability 120) use the sm100 model
+packages, as NVIDIA's `install_feature.ps1` does. A model alias with a language
+suffix, such as `nvidia-maxine-lipsync-es`, overrides the default language.
+
+Every engine is driven by the dubbed speech alone: before running, the stage
+renders the saved mix plan with the original-audio bed, extra timeline media and
+timbre polish turned off, to `artifacts/lip-synthesis/driver/dubbed-speech.wav`.
+If there is no mix plan, it falls back to the exported dubbed mix.
+
+The engine runs the host out of process, because the AR SDK loads its own CUDA
+and TensorRT DLLs. For each speaker turn it snaps the turn to whole video frames,
+cuts the matching dubbed audio (16 kHz mono PCM), and returns a full-frame clip
+of exactly the turn's frame count for the video recomposer to overlay.
+
+The engine asks the host for its protocol handshake (`--protocol`) once per
+executable. The persistent host stays running for the whole stage: FFmpeg
+decodes each turn to raw frames, the host streams them through LipSync, and
+FFmpeg encodes its output straight to the patched clip, with no intermediate
+video files. The protocol is described in
+`tools/native/maxine-lipsync-host/README.md`. If the host crashes or a turn
+exceeds its timeout, that turn fails and the next turn starts a new host. Any
+other executable, such as `LipSyncApp`, is started once per turn with file
+arguments.
+
+On the EN→ES test clip (RTX 5070, 704×1280 at 30 fps), the persistent host ran
+the 81- and 147-frame turns in 48.7 s for the whole stage, against 55–107 s
+per turn with `LipSyncApp`.
+
+Known limits:
+
+- Turns shorter than 15 frames are skipped: LipSync buffers 14 frames before
+  it outputs an animated one.
+- `NvAR_ResetState` is not implemented for LipSync in AR SDK 1.2.0.0, so the
+  persistent host still reloads the feature for every turn (about 5 s on an
+  RTX 5070) to keep turns from bleeding into each other. `LipSyncApp` starts a
+  process and loads its models for every turn (about 12 s). Steady-state speed
+  is roughly 7–10 fps, and peak GPU use is about 2.6 GB above idle.
+- The Spanish model buffers 40 frames at 30 fps (its `NumInitialFrames`)
+  before its first output frame; the host flushes those at the end of each turn.
+- The mouth returns to the original footage at each turn end, which can show a
+  visible snap, and a turn can end on one repeated frame when the host returns a
+  frame short.
+
 ## Current model boundary
 
 The published `latentsync` alias still resolves to 1.6. The shipped ONNX

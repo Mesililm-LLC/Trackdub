@@ -17,15 +17,34 @@ internal static class CliLoggingBootstrap
             Directory.CreateDirectory(logDirectory);
         }
 
-        // Do not open the log here. The injected logger already owns the file: it rotates on
-        // startup and appends through its own writer. Probing the path with File.Exists and then
-        // opening a ReadWrite handle races that writer two ways:
-        //   1. Startup rotation renames the file away, so File.Exists observes a window where the
-        //      path is absent and this code takes the open branch.
-        //   2. The logger appends with FileShare.Read, which a ReadWrite handle cannot share, so
-        //      the open throws IOException and fails CLI startup.
-        // Creating the file is the logger's job; the first LogInformation below proves the sink
-        // works without touching the path ourselves.
+        EnsureLogFileExists(logPath);
+
         logger.LogInformation("Trackdub CLI started.");
+    }
+
+    /// <summary>
+    /// Creates the log file if it is missing. Another process, or another session in this one, can hold or
+    /// rotate the file while this runs; a sharing violation on a file that exists means the log is already
+    /// there and in use, which is all this step needs.
+    /// </summary>
+    internal static void EnsureLogFileExists(string logPath)
+    {
+        if (File.Exists(logPath))
+        {
+            return;
+        }
+
+        try
+        {
+            using FileStream _ = File.Open(
+                logPath,
+                FileMode.OpenOrCreate,
+                FileAccess.ReadWrite,
+                FileShare.ReadWrite);
+        }
+        catch (IOException) when (File.Exists(logPath))
+        {
+            // Created or locked by a concurrent session between the check and the open.
+        }
     }
 }

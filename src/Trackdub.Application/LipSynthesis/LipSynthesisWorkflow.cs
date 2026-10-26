@@ -1,4 +1,5 @@
 using Trackdub.Application.Artifacts;
+using Trackdub.Application.Mixing;
 using Trackdub.Application.Transcripts;
 using Trackdub.Domain.Artifacts;
 
@@ -18,7 +19,9 @@ public sealed record LipSynthesisRunRequest(
 public sealed class LipSynthesisWorkflow(
     TranscriptProjectStateService stateService,
     LipSynthesisStageHandler lipSynthesisStageHandler,
-    IArtifactStore artifactStore)
+    IArtifactStore artifactStore,
+    MixPlanStore? mixPlanStore = null,
+    IPreviewRangeRenderer? speechRenderer = null)
     : IDisposable
 {
     private const string ConcurrentOperationMessage = "A lip-synthesis operation is already running for this project.";
@@ -27,6 +30,10 @@ public sealed class LipSynthesisWorkflow(
     private readonly LipSynthesisStageHandler lipSynthesisStageHandler = lipSynthesisStageHandler ?? throw new ArgumentNullException(nameof(lipSynthesisStageHandler));
     private readonly IArtifactStore artifactStore = artifactStore ?? throw new ArgumentNullException(nameof(artifactStore));
     private readonly SemaphoreSlim operationGate = new(1, 1);
+    private readonly DubbedSpeechDriverRenderer? speechDriverRenderer =
+        mixPlanStore is not null && speechRenderer is not null
+            ? new DubbedSpeechDriverRenderer(mixPlanStore, speechRenderer, artifactStore)
+            : null;
 
     public void Dispose() => operationGate.Dispose();
 
@@ -78,6 +85,15 @@ public sealed class LipSynthesisWorkflow(
             string dubbedAudioPath = dubbedDriver is not null
                 ? artifactStore.GetPath(dubbedDriver.RelativePath)
                 : string.Empty;
+            if (dubbedDriver is not null)
+            {
+                // Mouth-driving models track the speaker's voice, so drive them with the dubbed
+                // speech alone; the exported mix also carries ambiance and music.
+                string? speechOnly = speechDriverRenderer is null
+                    ? null
+                    : await speechDriverRenderer.TryRenderAsync(mediaAsset.DurationSeconds, cancellationToken).ConfigureAwait(false);
+                dubbedAudioPath = speechOnly ?? dubbedAudioPath;
+            }
 
             // Process by diarization speaker turn (not the whole file at once).
             var turns = currentState.SpeakerTurns
