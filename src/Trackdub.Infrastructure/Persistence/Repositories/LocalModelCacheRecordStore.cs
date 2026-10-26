@@ -14,6 +14,25 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
     internal int Revision => Volatile.Read(ref revision);
 
     /// <summary>
+    /// Cross-process identity of the persisted index file (mtime + length), or null when the
+    /// file is absent or unreadable. The lookup keys its in-memory cache on this in addition to
+    /// <see cref="Revision"/> so writes from another process (CLI installs, a second instance)
+    /// invalidate this process's snapshot; <see cref="Revision"/> alone is process-local.
+    /// </summary>
+    internal (long LastWriteTicks, long Length)? GetIndexIdentity()
+    {
+        try
+        {
+            var info = new FileInfo(storagePaths.ModelCacheIndexPath);
+            return info.Exists ? (info.LastWriteTimeUtc.Ticks, info.Length) : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Atomically reads the current cache index, applies <paramref name="mutator"/>, and persists the result.
     /// This is the only thread-safe way to update the index: concurrent calls are serialized through an
     /// internal lock so read-modify-write sequences cannot lose updates. All production mutations must go

@@ -9,6 +9,7 @@ public sealed class LocalModelCacheRecordLookup(LocalModelCacheRecordStore recor
     private readonly object cacheGate = new();
     private IReadOnlyList<LocalModelCacheRecord>? cachedRecords;
     private int cachedRevision = -1;
+    private (long LastWriteTicks, long Length)? cachedIdentity;
 
     public LocalModelCacheRecord? Find(string modelId, string rootPath)
     {
@@ -20,10 +21,12 @@ public sealed class LocalModelCacheRecordLookup(LocalModelCacheRecordStore recor
         lock (cacheGate)
         {
             int currentRevision = recordStore.Revision;
-            if (cachedRecords is null || cachedRevision != currentRevision)
+            var currentIdentity = recordStore.GetIndexIdentity();
+            if (cachedRecords is null || cachedRevision != currentRevision || cachedIdentity != currentIdentity)
             {
                 cachedRecords = recordStore.Load();
                 cachedRevision = currentRevision;
+                cachedIdentity = currentIdentity;
             }
 
             records = cachedRecords;

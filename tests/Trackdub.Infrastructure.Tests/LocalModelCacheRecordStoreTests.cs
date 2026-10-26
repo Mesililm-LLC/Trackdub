@@ -490,6 +490,34 @@ public sealed class LocalModelCacheRecordStoreTests : IDisposable
         Assert.NotSame(first, updated);
     }
 
+    [Fact]
+    public async Task Lookup_sees_index_rewrites_from_another_process()
+    {
+        LocalModelCacheRecordStore store = CreateStore();
+        TrackdubStoragePaths storagePaths = CreateStoragePaths();
+        string modelRoot = Path.Join(tempRoot, "models", "example-model");
+        var record = new LocalModelCacheRecord(
+            "example/model",
+            modelRoot,
+            "rev-a",
+            new string('a', 64),
+            DateTimeOffset.UnixEpoch);
+        await store.MutateAsync(_ => [record], CancellationToken.None);
+        var lookup = new LocalModelCacheRecordLookup(store);
+
+        Assert.Equal("rev-a", Assert.IsType<LocalModelCacheRecord>(lookup.Find(record.ModelId, modelRoot)).Revision);
+
+        // Another process (CLI install, second instance) rewrites the index file directly:
+        // this store instance's Revision never moves, so only the file identity can invalidate.
+        LocalModelCacheRecord external = record with { Revision = "rev-external-extra-content" };
+        await File.WriteAllTextAsync(
+            storagePaths.ModelCacheIndexPath,
+            JsonSerializer.Serialize(new[] { external }),
+            CancellationToken.None);
+
+        Assert.Equal("rev-external-extra-content", Assert.IsType<LocalModelCacheRecord>(lookup.Find(record.ModelId, modelRoot)).Revision);
+    }
+
     private LocalModelCacheRecordStore CreateStore() => new(CreateStoragePaths());
 
     private TrackdubStoragePaths CreateStoragePaths()
