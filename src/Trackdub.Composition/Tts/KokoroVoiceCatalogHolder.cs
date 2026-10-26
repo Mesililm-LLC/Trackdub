@@ -44,14 +44,15 @@ public sealed class KokoroVoiceCatalogHolder(
                     modelRootPath = KokoroVoiceCatalog.ResolveRootContainingVoices(modelRootPath);
                     if (!string.IsNullOrWhiteSpace(modelRootPath))
                     {
-                        catalog = await KokoroVoiceCatalog.LoadAsync(modelRootPath).ConfigureAwait(false);
+                        IVoiceCatalog loadedCatalog = await KokoroVoiceCatalog.LoadAsync(modelRootPath).ConfigureAwait(false);
+                        Volatile.Write(ref catalog, loadedCatalog);
                     }
                 }
             }
             catch (Exception ex)
             {
                 logger.LogWarning("Kokoro model path could not be resolved or catalog loaded; using known-available voices.", ex);
-                catalog = KokoroVoiceCatalog.KnownAvailable();
+                Volatile.Write(ref catalog, KokoroVoiceCatalog.KnownAvailable());
             }
 
             initialized = true;
