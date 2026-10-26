@@ -2,11 +2,11 @@
   <defs>
     <!-- Primary vibrant multi-stop gradients -->
     <linearGradient id="crimsonGrad" x1="250" y1="48" x2="620" y2="953" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#FF3868"/>
-      <stop offset="0.18" stop-color="#E61947"/>
-      <stop offset="0.50" stop-color="#B80A31"/>
-      <stop offset="0.82" stop-color="#7D041F"/>
-      <stop offset="1" stop-color="#4D0112"/>
+      <stop offset="0" stop-color="#A82507"/>
+      <stop offset="0.18" stop-color="#841B04"/>
+      <stop offset="0.50" stop-color="#601004"/>
+      <stop offset="0.82" stop-color="#420C02"/>
+      <stop offset="1" stop-color="#2A0601"/>
     </linearGradient>
 
     <linearGradient id="orangeGrad" x1="480" y1="290" x2="920" y2="953" gradientUnits="userSpaceOnUse">
@@ -19,8 +19,8 @@
 
     <!-- Soft chromatic top-lighting (prevents chalky white washout) -->
     <linearGradient id="tTopGlow" x1="0" y1="8" x2="0" y2="260" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#FFB5C8" stop-opacity="0.30"/>
-      <stop offset="1" stop-color="#FFB5C8" stop-opacity="0"/>
+      <stop offset="0" stop-color="#FF8A5C" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#FF8A5C" stop-opacity="0"/>
     </linearGradient>
 
     <linearGradient id="dTopGlow" x1="0" y1="290" x2="0" y2="520" gradientUnits="userSpaceOnUse">
