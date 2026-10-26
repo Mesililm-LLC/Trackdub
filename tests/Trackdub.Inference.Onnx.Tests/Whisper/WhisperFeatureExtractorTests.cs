@@ -77,8 +77,8 @@ public sealed class WhisperFeatureExtractorTests
         for (int index = 0; index < samples.Length; index++)
         {
             samples[index] = (float)(
-                0.5 * Math.Sin(2 * Math.PI * 440 * index / 16000)
-                + 0.25 * Math.Sin(2 * Math.PI * 1237 * index / 16000));
+                (0.5 * Math.Sin(((2 * Math.PI * 440 * index) / 16000)))
+                + (0.25 * Math.Sin(((2 * Math.PI * 1237 * index) / 16000))));
         }
 
         return samples;
