@@ -81,7 +81,7 @@ public sealed class PhiGenAiTranslationEngine(IRuntimePlanner runtimePlanner,
         using IDisposable? executionAdmission = await CpuExecutionAdmission.Shared
             .AcquireAsync(modelKey.Provider, cancellationToken).ConfigureAwait(false);
         Model model = modelLease.Model;
-        using Tokenizer tokenizer = new(model);
+        Tokenizer tokenizer = modelLease.Tokenizer;
 
         string targetLanguageName = ResolveTargetLanguageName(request.TargetLanguage);
         var translatedSegments = new List<TranslatedTextSegment>(request.Segments.Count);
@@ -159,7 +159,7 @@ public sealed class PhiGenAiTranslationEngine(IRuntimePlanner runtimePlanner,
                 .AcquireAsync(modelKey.Provider, cancellationToken).ConfigureAwait(false))
             {
                 Model model = modelLease.Model;
-                using Tokenizer tokenizer = new(model);
+                Tokenizer tokenizer = modelLease.Tokenizer;
                 string translatedText = TranslateSegment(
                     model, tokenizer, segment.Text, targetLanguageName, cancellationToken);
                 translated = new TranslatedTextSegment(

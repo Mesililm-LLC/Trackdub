@@ -220,21 +220,85 @@ internal interface IGenAiModelResource : IDisposable
 }
 
 /// <summary>
+/// Lazily-created tokenizer slot owned by one pooled GenAI model entry. The tokenizer
+/// wraps the entry's native model, so it is created at most once per entry and disposed
+/// with the entry (eviction, pool teardown) instead of per engine request.
+/// </summary>
+internal sealed class GenAiTokenizerCache : IDisposable
+{
+    private readonly object gate = new();
+    private IDisposable? cached;
+    private bool disposed;
+
+    public T GetOrCreate<T>(Func<T> factory)
+        where T : class, IDisposable
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        lock (gate)
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            if (cached is T existing)
+            {
+                return existing;
+            }
+
+            if (cached is not null)
+            {
+                throw new InvalidOperationException(
+                    $"GenAI tokenizer cache already holds {cached.GetType().Name}; cannot also hold {typeof(T).Name}.");
+            }
+
+            T created = factory();
+            cached = created;
+            return created;
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (gate)
+        {
+            if (disposed)
+            {
+                return;
+            }
+
+            disposed = true;
+            cached?.Dispose();
+            cached = null;
+        }
+    }
+}
+
+/// <summary>
 /// Exclusive lease over a resident GenAI model. <see cref="Dispose"/> returns the entry's
 /// execution gate and updates the admission LRU marker; the model itself stays resident.
 /// </summary>
 internal sealed class GenAiModelLease : IDisposable
 {
     private readonly Action release;
+    private readonly GenAiTokenizerCache tokenizerCache;
     private int disposed;
 
-    internal GenAiModelLease(IGenAiModelResource resource, Action release)
+    internal GenAiModelLease(IGenAiModelResource resource, Action release, GenAiTokenizerCache? tokenizerCache = null)
     {
         Resource = resource;
         this.release = release;
+        this.tokenizerCache = tokenizerCache ?? new GenAiTokenizerCache();
     }
 
     public Model Model => Resource.Model;
+
+    /// <summary>Tokenizer for the pooled model, created once per pool entry (not per request).</summary>
+    public Tokenizer Tokenizer => GetOrCreateCachedTokenizer(static resource => new Tokenizer(resource.Model));
+
+    internal T GetOrCreateCachedTokenizer<T>(Func<IGenAiModelResource, T> factory)
+        where T : class, IDisposable
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        return tokenizerCache.GetOrCreate(() => factory(Resource));
+    }
+
     internal IGenAiModelResource Resource { get; }
 
     public void Dispose()
@@ -320,7 +384,7 @@ internal sealed class GenAiModelPool : IDisposable
                     BenchmarkPhaseCapture.Increment("genAiModelHit");
                 }
 
-                return new GenAiModelLease(existing.Resource, () => ReleaseEntry(existing));
+                return new GenAiModelLease(existing.Resource, () => ReleaseEntry(existing), existing.TokenizerCache);
             }
 
             if (!cacheMissRecorded)
@@ -532,7 +596,7 @@ internal sealed class GenAiModelPool : IDisposable
 
             SignalChanged();
             BenchmarkPhaseCapture.Increment("genAiModelCreate");
-            return new GenAiModelLease(resource, () => ReleaseEntry(entry));
+            return new GenAiModelLease(resource, () => ReleaseEntry(entry), entry.TokenizerCache);
         }
         finally
         {
@@ -723,6 +787,7 @@ internal sealed class GenAiModelPool : IDisposable
         }
 
         public IGenAiModelResource Resource { get; }
+        public GenAiTokenizerCache TokenizerCache { get; } = new();
         public ExternalMemoryReservation Reservation { get; }
         public SemaphoreSlim Gate { get; }
         public long LastReleasedTicks { get; set; } = Environment.TickCount64;
@@ -740,6 +805,8 @@ internal sealed class GenAiModelPool : IDisposable
 
             try
             {
+                // The cached tokenizer wraps the native model, so it goes first.
+                TokenizerCache.Dispose();
                 Resource.Dispose();
             }
             finally

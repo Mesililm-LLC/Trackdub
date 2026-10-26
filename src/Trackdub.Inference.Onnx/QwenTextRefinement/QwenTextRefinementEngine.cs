@@ -76,7 +76,7 @@ public sealed class QwenTextRefinementEngine(
         using IDisposable? executionAdmission = await CpuExecutionAdmission.Shared
             .AcquireAsync(modelKey.Provider, cancellationToken).ConfigureAwait(false);
         Model model = modelLease.Model;
-        using Tokenizer tokenizer = new(model);
+        Tokenizer tokenizer = modelLease.Tokenizer;
 
         var refinedSegments = new List<RefinedTextSegment>(request.Segments.Count);
         foreach (TextRefinementInputSegment segment in request.Segments.OrderBy(static s => s.Index))

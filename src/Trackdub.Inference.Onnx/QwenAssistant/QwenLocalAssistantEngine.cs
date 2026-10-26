@@ -113,7 +113,7 @@ public sealed class QwenLocalAssistantEngine(
         using IDisposable? executionAdmission = await CpuExecutionAdmission.Shared
             .AcquireAsync(modelKey.Provider, cancellationToken).ConfigureAwait(false);
         Model model = modelLease.Model;
-        using Tokenizer tokenizer = new(model);
+        Tokenizer tokenizer = modelLease.Tokenizer;
 
         string rawOutput = GenerateText(model, tokenizer, prompt, cancellationToken);
         string cleaned = CleanDecodedOutput(rawOutput);
