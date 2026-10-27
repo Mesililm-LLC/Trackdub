@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Trackdub.Domain;
+using Trackdub.Inference.Onnx.EpContext;
 using Trackdub.Inference.Onnx.Pool;
 using Trackdub.Inference.Onnx.Runtime;
 using Trackdub.Inference.Runtime.Planning;
@@ -147,7 +148,8 @@ public sealed class MachineHardwareProfileProvider : IHardwareProfileProvider
             TotalRamMb: totalRamMb,
             DedicatedVramMb: dedicatedVramMb,
             NvidiaGpuArchitecture: ResolveNvidiaGpuArchitecture(gpuDescription),
-            GpuDriverVersion: gpuDriverVersion));
+            GpuDriverVersion: gpuDriverVersion,
+            OrtRuntimeVersion: EpContextArtifact.HostOrtRuntimeVersion));
     }
 
     private static NvidiaGpuArchitectureBucket ResolveNvidiaGpuArchitecture(string? gpuDescription)
