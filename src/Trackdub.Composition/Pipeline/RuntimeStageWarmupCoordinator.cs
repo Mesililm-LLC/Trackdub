@@ -294,5 +294,4 @@ public sealed class RuntimeStageWarmupCoordinator(
         OnnxExecutionProviderDiscovery.WorkerCudaEngineFamilies.Contains(
             plan.EngineFamily, StringComparer.OrdinalIgnoreCase) &&
         !(hostCudaProviderListed?.Invoke() ?? CudaOrtProbe.IsCudaProviderListed());
-
 }
