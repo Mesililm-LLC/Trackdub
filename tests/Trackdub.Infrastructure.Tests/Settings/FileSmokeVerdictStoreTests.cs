@@ -10,7 +10,29 @@ public sealed class FileSmokeVerdictStoreTests
     private const string ModelSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     [Fact]
-    public void RecordVerified_persists_across_store_instances()
+    public void SmokeVerdictKey_DifferentOrtVersion_DoesNotMatch()
+    {
+        string path = NewStorePath();
+        try
+        {
+            var store = new FileSmokeVerdictStore(path);
+            var key = new SmokeVerdictKey("abc", ExecutionProviderKind.DirectMl, NvidiaGpuArchitectureBucket.Ada, "555.1", "1.2", "1.24.0");
+
+            store.RecordVerified(key);
+
+            Assert.True(store.IsVerified(key));
+            Assert.False(store.IsVerified(key with { OrtRuntimeVersion = "1.25.0" }));
+            // A v1-era key (no ORT version) must not match a versioned verdict either.
+            Assert.False(store.IsVerified(key with { OrtRuntimeVersion = null }));
+        }
+        finally
+        {
+            DeleteStore(path);
+        }
+    }
+
+    [Fact]
+    public void RecordVerified_PersistsAcrossStoreInstances()
     {
         string path = NewStorePath();
         try

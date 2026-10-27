@@ -82,7 +82,8 @@ public sealed record HardwareProfile(
     long TotalRamMb = 0,
     long DedicatedVramMb = 0,
     NvidiaGpuArchitectureBucket NvidiaGpuArchitecture = NvidiaGpuArchitectureBucket.Unknown,
-    string? GpuDriverVersion = null);
+    string? GpuDriverVersion = null,
+    string? OrtRuntimeVersion = null);
 
 /// <param name="EngineFamilies">
 /// When set, only these engine families may run on the provider: it is reachable only through a

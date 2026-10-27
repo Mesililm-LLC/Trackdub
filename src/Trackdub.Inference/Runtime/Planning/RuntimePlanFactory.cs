@@ -9,14 +9,15 @@ namespace Trackdub.Inference.Runtime.Planning;
 
 internal sealed class RuntimePlanFactory
 {
-    private readonly IExecutionProviderSmokeTester executionProviderSmokeTester;
     private readonly ISmokeVerdictStore smokeVerdictStore;
 
+    // The smoke tester parameter is retained for constructor compatibility with existing
+    // hosts/tests; planning no longer smokes (see TryCreateReadyPlanAsync), so it is unused.
     public RuntimePlanFactory(
         IExecutionProviderSmokeTester executionProviderSmokeTester,
         ISmokeVerdictStore? smokeVerdictStore = null)
     {
-        this.executionProviderSmokeTester = executionProviderSmokeTester ?? throw new ArgumentNullException(nameof(executionProviderSmokeTester));
+        ArgumentNullException.ThrowIfNull(executionProviderSmokeTester);
         this.smokeVerdictStore = smokeVerdictStore ?? NullSmokeVerdictStore.Instance;
     }
 
@@ -52,6 +53,7 @@ internal sealed class RuntimePlanFactory
             preferredExecutionProvider);
 
         RuntimePlanFallback? providerFallback = null;
+        cancellationToken.ThrowIfCancellationRequested();
         foreach (ExecutionProviderKind provider in orderedProviders)
         {
             StageRuntimePlan? guardResult = EvaluateProviderGuard(provider, candidate, providerAvailabilities,
@@ -114,8 +116,7 @@ internal sealed class RuntimePlanFactory
                 }
 
                 // A local optimized variant is a different graph file from its source model;
-                // a source-sha verdict cannot prove it. Always smoke variants and record
-                // verdicts only for the graph file smoke actually loaded.
+                // a source-sha verdict cannot prove it, so it never consults the verdict store.
                 SmokeVerdictKey? verdictKey = variant.IsLocalOptimizedVariant
                     ? null
                     : TryBuildVerdictKey(modelSha256, provider, hardwareProfile);
@@ -143,74 +144,30 @@ internal sealed class RuntimePlanFactory
                         modelRevisionHash: modelSha256);
                 }
 
-                ExecutionProviderSmokeTestResult smokeResult;
-                try
-                {
-                    smokeResult = await executionProviderSmokeTester.SmokeTestAsync(
-                        new ExecutionProviderSmokeTestRequest(
-                            stage,
-                            candidate.Entry.ModelId,
-                            ResolvePrimaryAlias(candidate.Entry),
-                            candidate.Entry.EngineFamily,
-                            variant.Alias,
-                            provider,
-                            rootPath,
-                            entryPath,
-                            modelSha256),
-                        cancellationToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    smokeResult = new ExecutionProviderSmokeTestResult(false, ex.Message);
-                }
-
-                if (smokeResult.Passed)
-                {
-                    if (verdictKey is not null)
-                    {
-                        smokeVerdictStore.RecordVerified(verdictKey);
-                    }
-
-                    // Non-CPU providers that pass smoke test report Verified — strictly stronger
-                    // than Ready, which is reserved for CPU's file-only check above.
-                    return CreatePlan(
-                        stage,
-                        StageRuntimePlanStatus.Verified,
-                        candidate,
-                        provider,
-                        variant.Alias,
-                        entryPath,
-                        modelIntegrityStatus,
-                        fallback: null,
-                        includeCpuFallbackWarning: false,
-                        isLocalOptimizedVariant: variant.IsLocalOptimizedVariant,
-                        modelRootPath: rootPath,
-                        modelEntryRelativePath: variant.RelativeEntryPath,
-                        requiredModelRelativePaths: variant.RequiredRelativePaths,
-                        preferredExecutionProviderSkippedForEngine: preferredForbiddenForEngine
-                            ? preferredExecutionProvider
-                            : null,
-                        modelRevisionHash: modelSha256);
-                }
-
-                if (requirePreferredExecutionProvider && !preferredForbiddenForEngine)
-                {
-                    return CreateBlockedPlan(
-                        stage,
-                        new RuntimePlanFallback(
-                            RuntimePlanFallbackCode.ProviderSmokeTestFailed,
-                            smokeResult.Detail ?? $"{provider} smoke test failed for variant '{variant.Alias}'."));
-                }
-
-                providerFallback = MergeProviderFallback(
+                // No persisted verdict: planning must not create throwaway smoke sessions per
+                // provider candidate (C4). Return the honest file-only Ready status already
+                // used for unproven plans (CPU / smoke-skipped listing) — never Verified. The
+                // single proving create is deferred to RuntimeStageWarmupCoordinator, whose
+                // smoke leases the same pooled session the stage later reuses, or to the
+                // stage's own pooled session creation at execution time.
+                return CreatePlan(
+                    stage,
+                    StageRuntimePlanStatus.Ready,
+                    candidate,
+                    provider,
+                    variant.Alias,
+                    entryPath,
+                    modelIntegrityStatus,
                     providerFallback,
-                    new RuntimePlanFallback(
-                        RuntimePlanFallbackCode.ProviderSmokeTestFailed,
-                        smokeResult.Detail ?? $"{provider} smoke test failed for variant '{variant.Alias}'."));
+                    includeCpuFallbackWarning: false,
+                    isLocalOptimizedVariant: variant.IsLocalOptimizedVariant,
+                    modelRootPath: rootPath,
+                    modelEntryRelativePath: variant.RelativeEntryPath,
+                    requiredModelRelativePaths: variant.RequiredRelativePaths,
+                    preferredExecutionProviderSkippedForEngine: preferredForbiddenForEngine
+                        ? preferredExecutionProvider
+                        : null,
+                    modelRevisionHash: modelSha256);
             }
         }
 
@@ -988,7 +945,8 @@ internal sealed class RuntimePlanFactory
                 provider,
                 hardwareProfile.NvidiaGpuArchitecture,
                 hardwareProfile.GpuDriverVersion,
-                TensorRtRtxProviderConstants.BundledFingerprintVersion);
+                TensorRtRtxProviderConstants.BundledFingerprintVersion,
+                hardwareProfile.OrtRuntimeVersion);
 
     private static bool HasManifestHashMismatch(
         BundledModelManifestEntry entry,
