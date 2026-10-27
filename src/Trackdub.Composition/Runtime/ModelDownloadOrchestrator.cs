@@ -35,6 +35,9 @@ public sealed class ModelDownloadOrchestrator(
 
     public IObservable<ModelStateChange> StateChanges => stateChanges;
 
+    /// <summary>Production wiring probe: the holder passed at construction, if any.</summary>
+    internal KokoroVoiceCatalogHolder? VoiceCatalogHolder => voiceCatalogHolder;
+
     public Task<ModelDownloadResult> DownloadAsync(
         string modelId,
         IProgress<ModelDownloadProgress>? progress = null,

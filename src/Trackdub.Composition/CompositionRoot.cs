@@ -264,7 +264,8 @@ public static class CompositionRoot
             sp.GetService<IModelHashVerifier>(),
             sp.GetService<IApplicationLogger>(),
             sp.GetService<IStudioSettingsService>(),
-            sp.GetService<IEngineAutoWarmQueue>()));
+            sp.GetService<IEngineAutoWarmQueue>(),
+            sp.GetService<KokoroVoiceCatalogHolder>()));
         services.TryAddSingleton<IModelDownloadOrchestrator>(sp => sp.GetRequiredService<ModelDownloadOrchestrator>());
         services.TryAddSingleton<IModelCacheVerifier>(sp => sp.GetRequiredService<ModelDownloadOrchestrator>());
         services.TryAddSingleton<IFileFingerprintService>(sp =>

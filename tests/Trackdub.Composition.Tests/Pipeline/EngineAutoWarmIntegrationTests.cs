@@ -3,6 +3,7 @@ using Microsoft.Extensions.Hosting;
 using Trackdub.Application.Pipeline;
 using Trackdub.Composition.Pipeline;
 using Trackdub.Composition.Runtime;
+using Trackdub.Composition.Tts;
 using Trackdub.Contracts;
 using Trackdub.Contracts.Licensing;
 using Trackdub.Domain;
@@ -34,6 +35,22 @@ public class EngineAutoWarmIntegrationTests
         var orchestrator = provider.GetRequiredService<ModelDownloadOrchestrator>();
         Assert.NotNull(orchestrator);
         Assert.Same(provider.GetRequiredService<IEngineAutoWarmQueue>(), provider.GetRequiredService<IEngineAutoWarmQueue>());
+    }
+
+    [Fact]
+    public void Production_orchestrator_receives_the_voice_catalog_holder()
+    {
+        // The refresh-on-install wiring dies silently if the holder is never passed: the
+        // orchestrator's refresh returns at its null guard and no test resolving the
+        // orchestrator directly would notice. Resolve through AddTrackdub so the
+        // production construction site itself is under test.
+        var services = new ServiceCollection();
+        services.AddTrackdub();
+        using ServiceProvider provider = services.BuildServiceProvider(
+            new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true });
+
+        var orchestrator = provider.GetRequiredService<ModelDownloadOrchestrator>();
+        Assert.Same(provider.GetRequiredService<KokoroVoiceCatalogHolder>(), orchestrator.VoiceCatalogHolder);
     }
 
     [Fact]
