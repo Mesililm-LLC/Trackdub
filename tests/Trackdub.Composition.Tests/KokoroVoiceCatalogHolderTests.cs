@@ -47,6 +47,22 @@ public sealed class KokoroVoiceCatalogHolderTests
         Assert.Same(published, holder.Current);
     }
 
+    [Fact]
+    public async Task InitializeAsync_with_absent_model_publishes_empty_catalog()
+    {
+        // No Kokoro model is discoverable in this test host: the honest published
+        // state is no voices, not the known-available list (which would advertise
+        // voices that cannot be synthesized). The pre-initialization Current stays
+        // the known-available listing.
+        var holder = new KokoroVoiceCatalogHolder(
+            new BenchmarkModelPathResolver(manifestRegistry: null, modelCacheDirectory: null),
+            new NoopLogger());
+
+        await holder.InitializeAsync(TestContext.Current.CancellationToken);
+
+        Assert.Empty(holder.Current.GetVoices());
+    }
+
     private sealed class NoopLogger : IApplicationLogger
     {
         public void LogDebug(string message) { }

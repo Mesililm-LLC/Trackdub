@@ -9,7 +9,7 @@ public sealed class LocalModelCacheRecordLookup(LocalModelCacheRecordStore recor
     private readonly object cacheGate = new();
     private IReadOnlyList<LocalModelCacheRecord>? cachedRecords;
     private int cachedRevision = -1;
-    private (long LastWriteTicks, long Length)? cachedIdentity;
+    private (long LastWriteTicks, long Length, string ContentHash)? cachedIdentity;
 
     public LocalModelCacheRecord? Find(string modelId, string rootPath)
     {

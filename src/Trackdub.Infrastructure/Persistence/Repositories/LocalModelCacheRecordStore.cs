@@ -14,17 +14,26 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
     internal int Revision => Volatile.Read(ref revision);
 
     /// <summary>
-    /// Cross-process identity of the persisted index file (mtime + length), or null when the
-    /// file is absent or unreadable. The lookup keys its in-memory cache on this in addition to
-    /// <see cref="Revision"/> so writes from another process (CLI installs, a second instance)
-    /// invalidate this process's snapshot; <see cref="Revision"/> alone is process-local.
+    /// Cross-process identity of the persisted index file (mtime + length + content hash),
+    /// or null when the file is absent or unreadable. The lookup keys its in-memory cache on
+    /// this in addition to <see cref="Revision"/> so writes from another process (CLI installs,
+    /// a second instance) invalidate this process's snapshot; <see cref="Revision"/> alone is
+    /// process-local. The content hash also catches same-length replacements that preserve
+    /// the modification time, which mtime + length cannot distinguish.
     /// </summary>
-    internal (long LastWriteTicks, long Length)? GetIndexIdentity()
+    internal (long LastWriteTicks, long Length, string ContentHash)? GetIndexIdentity()
     {
         try
         {
             var info = new FileInfo(storagePaths.ModelCacheIndexPath);
-            return info.Exists ? (info.LastWriteTimeUtc.Ticks, info.Length) : null;
+            if (!info.Exists)
+            {
+                return null;
+            }
+
+            using FileStream stream = info.OpenRead();
+            string contentHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream));
+            return (info.LastWriteTimeUtc.Ticks, info.Length, contentHash);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

@@ -89,6 +89,14 @@ public sealed class KokoroVoiceCatalogHolder(
                 }
             }
         }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            // The model root is absent (not installed, or removed by an uninstall):
+            // publish the honest empty catalog instead of the known-available list,
+            // which would advertise voices that cannot be synthesized.
+            logger.LogWarning("Kokoro model root is absent; publishing an empty voice catalog.", ex);
+            Volatile.Write(ref catalog, KokoroVoiceCatalog.Empty());
+        }
         catch (Exception ex)
         {
             logger.LogWarning("Kokoro model path could not be resolved or catalog loaded; using known-available voices.", ex);

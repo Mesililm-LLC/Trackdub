@@ -518,6 +518,43 @@ public sealed class LocalModelCacheRecordStoreTests : IDisposable
         Assert.Equal("rev-external-extra-content", Assert.IsType<LocalModelCacheRecord>(lookup.Find(record.ModelId, modelRoot)).Revision);
     }
 
+    [Fact]
+    public async Task Lookup_sees_same_length_rewrite_with_preserved_mtime()
+    {
+        LocalModelCacheRecordStore store = CreateStore();
+        TrackdubStoragePaths storagePaths = CreateStoragePaths();
+        string modelRoot = Path.Join(tempRoot, "models", "example-model");
+        var record = new LocalModelCacheRecord(
+            "example/model",
+            modelRoot,
+            "rev-aaaaa",
+            new string('a', 64),
+            DateTimeOffset.UnixEpoch);
+        await store.MutateAsync(_ => [record], CancellationToken.None);
+        var lookup = new LocalModelCacheRecordLookup(store);
+
+        Assert.Equal("rev-aaaaa", Assert.IsType<LocalModelCacheRecord>(lookup.Find(record.ModelId, modelRoot)).Revision);
+
+        // A same-length replacement (same revision width, different SHA) that also
+        // preserves the modification time: mtime + length alone cannot distinguish
+        // it, so only the content hash in the identity can invalidate the snapshot.
+        DateTime originalWriteTime = File.GetLastWriteTimeUtc(storagePaths.ModelCacheIndexPath);
+        LocalModelCacheRecord external = record with
+        {
+            Revision = "rev-bbbbb",
+            Sha256 = new string('b', 64),
+        };
+        await File.WriteAllTextAsync(
+            storagePaths.ModelCacheIndexPath,
+            JsonSerializer.Serialize(new[] { external }),
+            CancellationToken.None);
+        File.SetLastWriteTimeUtc(storagePaths.ModelCacheIndexPath, originalWriteTime);
+
+        LocalModelCacheRecord found = Assert.IsType<LocalModelCacheRecord>(lookup.Find(record.ModelId, modelRoot));
+        Assert.Equal("rev-bbbbb", found.Revision);
+        Assert.Equal(new string('b', 64), found.Sha256);
+    }
+
     private LocalModelCacheRecordStore CreateStore() => new(CreateStoragePaths());
 
     private TrackdubStoragePaths CreateStoragePaths()

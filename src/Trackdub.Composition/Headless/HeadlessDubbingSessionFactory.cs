@@ -1,4 +1,5 @@
 using Trackdub.Application.Dubbing;
+using Trackdub.Composition.Pipeline;
 using Trackdub.Contracts;
 using Trackdub.Licensing;
 using Microsoft.Extensions.DependencyInjection;
@@ -26,6 +27,16 @@ public sealed class HeadlessDubbingSessionFactory : IDubbingSessionFactory
         // storage environment values before any session or static consumer can run. The
         // resolved singleton remains owned and disposed by this provider.
         serviceProvider.GetService<HeadlessStorageEnvironmentScope>();
+
+        // Same centralization for the engine auto-warm installer: hosts that run a
+        // generic host get it as an IHostedService, and TrackdubBuilder starts it
+        // explicitly, but an advanced host constructing this factory directly would
+        // otherwise skip license initialization, voice-catalog loading, and the
+        // EP-context hardware identity. StartAsync is idempotent (the holder and
+        // license initializer guard re-entry), so hosts that already started it
+        // observe no second effect.
+        serviceProvider.GetService<EngineAutoWarmInstaller>()
+            ?.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
 
         _scopeFactory = serviceProvider.GetRequiredService<IServiceScopeFactory>();
         _processGpuReader = HeadlessCompositionRoot.BindSharedPoolProcessGpuAdmission(serviceProvider);

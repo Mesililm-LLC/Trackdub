@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Trackdub.Application.Pipeline;
+using Trackdub.Composition.Headless;
 using Trackdub.Composition.Pipeline;
 using Trackdub.Composition.Runtime;
 using Trackdub.Composition.Tts;
@@ -51,6 +52,26 @@ public class EngineAutoWarmIntegrationTests
 
         var orchestrator = provider.GetRequiredService<ModelDownloadOrchestrator>();
         Assert.Same(provider.GetRequiredService<KokoroVoiceCatalogHolder>(), orchestrator.VoiceCatalogHolder);
+    }
+
+    [Fact]
+    public void Headless_session_factory_ctor_starts_engine_auto_warm_installer()
+    {
+        // Advanced hosts build a provider from AddTrackdub and construct the session
+        // factory directly, without a generic host to start IHostedServices. The
+        // factory constructor is the central activation point, so license init,
+        // voice-catalog loading, and host-started observability must happen there.
+        var services = new ServiceCollection();
+        services.AddTrackdub();
+        ServiceProvider provider = services.BuildServiceProvider(
+            new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true });
+
+        var queue = (EngineAutoWarmCoordinator)provider.GetRequiredService<IEngineAutoWarmQueue>();
+        Assert.False(queue.IsHostStarted);
+
+        using var factory = new HeadlessDubbingSessionFactory(provider);
+
+        Assert.True(queue.IsHostStarted);
     }
 
     [Fact]
