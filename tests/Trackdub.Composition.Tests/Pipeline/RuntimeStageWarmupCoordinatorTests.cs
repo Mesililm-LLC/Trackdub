@@ -183,6 +183,77 @@ public class RuntimeStageWarmupCoordinatorTests
     }
 
     [Fact]
+    public async Task WarmAsync_SmokeFailure_NonGenAiRoute_ReplansWithAuthoritativeSmokeAndWarmsFallback()
+    {
+        var requests = new List<StageRuntimePlanningRequest>();
+        var planner = new FakeRuntimePlanner
+        {
+            PlanHandler = req =>
+            {
+                requests.Add(req);
+                StageRuntimePlan plan = RunnablePlan(req);
+                return req.SkipProviderSmokeTest
+                    ? plan
+                    : plan with { ExecutionProvider = ExecutionProviderKind.Cpu };
+            },
+        };
+        var smokedProviders = new List<ExecutionProviderKind>();
+        var smoke = new FakeExecutionProviderSmokeTester(req =>
+        {
+            smokedProviders.Add(req.ExecutionProvider);
+            return new ExecutionProviderSmokeTestResult(req.ExecutionProvider != ExecutionProviderKind.DirectMl, "directml broken");
+        });
+        var coordinator = new RuntimeStageWarmupCoordinator(planner, smoke);
+
+        StageWarmupResult result = await coordinator.WarmAsync(
+            new StageWarmupRequest(RuntimeStage.Asr, Selections()),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(2, requests.Count);
+        Assert.True(requests[0].SkipProviderSmokeTest);
+        Assert.False(requests[1].SkipProviderSmokeTest);
+        Assert.Equal([ExecutionProviderKind.DirectMl, ExecutionProviderKind.Cpu], smokedProviders);
+    }
+
+    [Fact]
+    public async Task WarmAsync_WorkerWarmOnWrongProvider_ReportsFailureAndSkipsSmoke()
+    {
+        var planner = new FakeRuntimePlanner
+        {
+            PlanHandler = _ => new StageRuntimePlan
+            {
+                Stage = RuntimeStage.Tts,
+                Status = StageRuntimePlanStatus.Verified,
+                ModelId = "kokoro-model",
+                ModelAlias = "kokoro-onnx",
+                EngineFamily = "kokoro",
+                Variant = "fp16",
+                ExecutionProvider = ExecutionProviderKind.Cuda,
+                ModelRootPath = "/models/kokoro",
+                ModelEntryPath = "/models/kokoro/model.onnx",
+            },
+        };
+        int smokeCalls = 0;
+        var smoke = new FakeExecutionProviderSmokeTester(_ =>
+        {
+            smokeCalls++;
+            return new ExecutionProviderSmokeTestResult(true);
+        });
+        var worker = new FakeWorkerClient([]) { WarmProvider = "cpu" };
+        var coordinator = new RuntimeStageWarmupCoordinator(
+            planner, smoke, inferenceWorkerClient: worker, hostCudaProviderListed: () => false);
+
+        StageWarmupResult result = await coordinator.WarmAsync(
+            new StageWarmupRequest(RuntimeStage.Tts, Selections()), CancellationToken.None);
+
+        Assert.True(result.Attempted);
+        Assert.False(result.Succeeded);
+        Assert.Contains("instead of cuda", result.Detail);
+        Assert.Equal(0, smokeCalls);
+    }
+
+    [Fact]
     public async Task WarmAsync_PlannerException_IsConvertedToFailedResult()
     {
         var planner = new FakeRuntimePlanner
@@ -340,6 +411,7 @@ public class RuntimeStageWarmupCoordinatorTests
         public bool IsInstalled => true;
         public int WarmCalls { get; private set; }
         public Exception? WarmFailure { get; set; }
+        public string WarmProvider { get; set; } = "cuda";
 
         public Task<WorkerHelloResult?> TryGetHelloAsync(CancellationToken cancellationToken) =>
             Task.FromResult<WorkerHelloResult?>(null);
@@ -354,7 +426,7 @@ public class RuntimeStageWarmupCoordinatorTests
             order.Add("warm");
             return WarmFailure is not null
                 ? Task.FromException<WorkerWarmResult>(WarmFailure)
-                : Task.FromResult(new WorkerWarmResult(plan.ModelId, "cuda"));
+                : Task.FromResult(new WorkerWarmResult(plan.ModelId, WarmProvider));
         }
     }
 

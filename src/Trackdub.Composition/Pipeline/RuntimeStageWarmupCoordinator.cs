@@ -113,8 +113,18 @@ public sealed class RuntimeStageWarmupCoordinator(
                         WorkerWarmResult warm = await inferenceWorkerClient!
                             .WarmTtsAsync(plan, cancellationToken)
                             .ConfigureAwait(false);
+
+                        if (!string.Equals(warm.Provider, "cuda", StringComparison.OrdinalIgnoreCase))
+                        {
+                            BenchmarkPhaseCapture.Increment("workerTtsWarmFailure");
+                            BenchmarkPhaseCapture.Increment("stageWarmupFailure");
+                            return new StageWarmupResult(
+                                Attempted: true,
+                                Succeeded: false,
+                                Detail: $"Inference worker warmed on '{warm.Provider}' instead of cuda.");
+                        }
+
                         BenchmarkPhaseCapture.Increment("workerTtsWarmSuccess");
-                        _ = warm;
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
@@ -134,23 +144,29 @@ public sealed class RuntimeStageWarmupCoordinator(
                 // this warmup can start before the current stage leases its resident
                 // GenAI model, and evicting that idle-but-imminent model to warm the
                 // next stage would force a multi-GB reload and lose the overlap.
-                ExecutionProviderSmokeTestResult smoke = await executionProviderSmokeTester
-                    .SmokeTestAsync(
-                        new ExecutionProviderSmokeTestRequest(
-                            plan.Stage,
-                            plan.ModelId,
-                            plan.ModelAlias,
-                            plan.EngineFamily,
-                            plan.Variant,
-                            provider,
-                            plan.ModelRootPath,
-                            plan.ModelEntryPath,
-                            plan.ModelRevisionHash)
-                        {
-                            NonEvictingWarmup = true,
-                        },
-                        cancellationToken)
+                ExecutionProviderSmokeTestResult smoke = await SmokeAsync(plan, provider, cancellationToken)
                     .ConfigureAwait(false);
+
+                if (!smoke.Passed && !smoke.NotAttempted && !IsGenAiRouted(plan))
+                {
+                    // The file-only plan above never ran the planner's authoritative
+                    // smoke, so its provider fallback (e.g. DirectML -> CPU) never had
+                    // a chance to run either. For non-GenAI routes, re-plan once with
+                    // the authoritative smoke enabled and warm whatever it selects;
+                    // GenAI routes keep the non-evicting behaviour this warmup exists
+                    // for, and a would-evict skip (NotAttempted) never re-plans.
+                    StageRuntimePlan replanned = await runtimePlanner
+                        .PlanAsync(planningRequest with { SkipProviderSmokeTest = false }, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (replanned.IsRunnable()
+                        && replanned.ExecutionProvider is { } fallbackProvider
+                        && (fallbackProvider != provider
+                            || !string.Equals(replanned.ModelEntryPath, plan.ModelEntryPath, StringComparison.Ordinal)))
+                    {
+                        smoke = await SmokeAsync(replanned, fallbackProvider, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                }
 
                 if (smoke.NotAttempted)
                 {
@@ -182,6 +198,35 @@ public sealed class RuntimeStageWarmupCoordinator(
             return new StageWarmupResult(Attempted: true, Succeeded: false, Detail: ex.Message);
         }
     }
+
+    private Task<ExecutionProviderSmokeTestResult> SmokeAsync(
+        StageRuntimePlan plan,
+        ExecutionProviderKind provider,
+        CancellationToken cancellationToken) =>
+        executionProviderSmokeTester.SmokeTestAsync(
+            new ExecutionProviderSmokeTestRequest(
+                plan.Stage,
+                plan.ModelId!,
+                plan.ModelAlias!,
+                plan.EngineFamily,
+                plan.Variant!,
+                provider,
+                plan.ModelRootPath!,
+                plan.ModelEntryPath!,
+                plan.ModelRevisionHash)
+            {
+                NonEvictingWarmup = true,
+            },
+            cancellationToken);
+
+    /// <summary>
+    /// Routes whose smoke goes through the GenAI model pool; re-planning them with the
+    /// authoritative smoke would take the evicting lease this warmup exists to avoid.
+    /// </summary>
+    private static bool IsGenAiRouted(StageRuntimePlan plan) =>
+        plan.Stage is RuntimeStage.TextRefinement
+        || OnnxExecutionProviderSmokeTester.UsesOrtGenAiModelLoad(plan.EngineFamily)
+        || OnnxExecutionProviderSmokeTester.UsesOrtGenAiTranslationSmoke(plan.EngineFamily);
 
     /// <summary>
     /// Mirrors <see cref="Trackdub.Inference.Onnx.Kokoro.KokoroTtsEngine"/>'s worker routing:
