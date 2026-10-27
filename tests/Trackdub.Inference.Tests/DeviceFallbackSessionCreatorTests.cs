@@ -162,4 +162,23 @@ public sealed class DeviceFallbackSessionCreatorTests
         Assert.Equal(0, replanCount);
         Assert.False(exclusions.IsExcluded(0));
     }
+
+    [Fact]
+    public async Task CreateWithDeviceFallbackAsync_repeatedMemoryExhaustionOnSameDevice_stopsRetrying()
+    {
+        StageRuntimePlan plan = MakePlan(0, "device-0");
+        int createCount = 0;
+        await Assert.ThrowsAsync<Exception>(() => DeviceFallbackSessionCreator.CreateWithDeviceFallbackAsync(
+            plan,
+            (_, _) =>
+            {
+                createCount++;
+                return Task.FromException<string>(new Exception("[ErrorCode:RuntimeException] CUDA error: out of memory"));
+            },
+            _ => Task.FromResult(plan),
+            exclusionProvider: null,
+            maxAttempts: 8));
+
+        Assert.Equal(2, createCount);
+    }
 }

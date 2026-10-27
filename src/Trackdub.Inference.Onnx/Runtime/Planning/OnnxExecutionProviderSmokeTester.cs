@@ -5,10 +5,12 @@ using Trackdub.Inference.Onnx.Runtime;
 using Trackdub.Inference.Onnx.ExecutionProviders;
 using Trackdub.Inference.Onnx.Qwen3Asr;
 using Trackdub.Inference.Onnx.NemotronAsr;
+using Trackdub.Inference.Onnx.OpusMt;
 using Trackdub.Inference.Onnx.ParakeetTdt;
 using Trackdub.Inference.Onnx.CosyVoice;
 using Trackdub.Inference.Onnx.Pool;
 using Trackdub.Inference.Onnx.SortFormer;
+using Trackdub.Inference.Onnx.Spleeter;
 using Trackdub.Inference.Onnx.Whisper;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
@@ -172,6 +174,7 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
                         request.Variant,
                         request.ModelRevisionHash,
                         request.ExecutionProvider,
+                        request.NonEvictingWarmup,
                         cancellationToken).ConfigureAwait(false);
                     break;
                 case RuntimeStage.SpeechEnhancement:
@@ -193,10 +196,43 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
         {
             throw;
         }
+        catch (GenAiWarmupSkippedException ex)
+        {
+            // Honest non-attempt: warmup declined to evict a resident model. No provider
+            // verdict was produced, so this must not read as a smoke failure.
+            return new ExecutionProviderSmokeTestResult(false, ex.Message) { NotAttempted = true };
+        }
         catch (Exception ex)
         {
             return new ExecutionProviderSmokeTestResult(false, ex.Message);
         }
+    }
+
+    /// <summary>Signals a non-evicting GenAI warmup that declined to load its model.</summary>
+    private sealed class GenAiWarmupSkippedException(string message) : Exception(message);
+
+    /// <summary>
+    /// Leases a GenAI model for a smoke. Authoritative smokes use the regular
+    /// (evicting) lease; non-evicting warmup smokes lease only an already-resident
+    /// model or a free slot and throw <see cref="GenAiWarmupSkippedException"/> when
+    /// loading would evict a resident model.
+    /// </summary>
+    private async Task<GenAiModelLease> GetGenAiLeaseForSmokeAsync(
+        GenAiModelKey key,
+        bool nonEvictingWarmup,
+        CancellationToken cancellationToken)
+    {
+        if (!nonEvictingWarmup)
+        {
+            return await genAiModelPool.GetLeaseAsync(key, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        GenAiModelLease? lease = await genAiModelPool
+            .TryGetWarmupLeaseAsync(key, cancellationToken).ConfigureAwait(false);
+        return lease ?? throw new GenAiWarmupSkippedException(
+            $"GenAI warmup skipped for '{key}': loading it would evict a resident model " +
+            "(GenAI pool at capacity or admission budget full). The stage will load it inline.");
     }
 
     private async Task SmokeTestTextRefinementGenAiAsync(
@@ -206,6 +242,7 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
         string? variant,
         string? modelRevisionHash,
         ExecutionProviderKind provider,
+        bool nonEvictingWarmup,
         CancellationToken cancellationToken)
     {
         ThrowIfGenAiTensorRtProvider(provider);
@@ -220,8 +257,8 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
         GenAiModelKey key = await GenAiModelKey.CreateAsync(
             genAiRoot, provider, modelId, variant, deviceId: null,
             modelRevisionHash: modelRevisionHash, cancellationToken: cancellationToken).ConfigureAwait(false);
-        using GenAiModelLease lease = await genAiModelPool.GetLeaseAsync(key, cancellationToken)
-            .ConfigureAwait(false);
+        using GenAiModelLease lease = await GetGenAiLeaseForSmokeAsync(
+            key, nonEvictingWarmup, cancellationToken).ConfigureAwait(false);
         using IDisposable? executionAdmission = await CpuExecutionAdmission.Shared
             .AcquireAsync(provider, cancellationToken).ConfigureAwait(false);
         Model model = lease.Model;
@@ -400,6 +437,7 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
                     request.Variant,
                     request.ModelRevisionHash,
                     request.ExecutionProvider,
+                    request.NonEvictingWarmup,
                     cancellationToken)
                 .ConfigureAwait(false);
             return;
@@ -425,6 +463,7 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
         string? variant,
         string? modelRevisionHash,
         ExecutionProviderKind provider,
+        bool nonEvictingWarmup,
         CancellationToken cancellationToken)
     {
         ThrowIfGenAiTensorRtProvider(provider);
@@ -439,8 +478,8 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
         GenAiModelKey key = await GenAiModelKey.CreateAsync(
             genAiRoot, provider, modelId, variant, deviceId: null,
             modelRevisionHash: modelRevisionHash, cancellationToken: cancellationToken).ConfigureAwait(false);
-        using GenAiModelLease lease = await genAiModelPool.GetLeaseAsync(key, cancellationToken)
-            .ConfigureAwait(false);
+        using GenAiModelLease lease = await GetGenAiLeaseForSmokeAsync(
+            key, nonEvictingWarmup, cancellationToken).ConfigureAwait(false);
         using IDisposable? executionAdmission = await CpuExecutionAdmission.Shared
             .AcquireAsync(provider, cancellationToken).ConfigureAwait(false);
         await WhisperGenAiAudioTranscriptionEngine
@@ -1118,7 +1157,16 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
 
     private static int[] ResolveSeparationSmokeInputDimensions(IReadOnlyList<int> modelDimensions)
     {
-        if (modelDimensions.Count == 4) return [2, 1, 512, 1024];
+        // 4-D separation graphs are Spleeter STFT blocks. Their channel/split axis
+        // order depends on the export (older: [2, num_splits, 512, 1024]; pinned
+        // 3e5a4dd: [num_splits, 2, 512, 1024]), so reuse the production separator's
+        // layout resolution instead of guessing one order: feeding [2, 1, 512, 1024]
+        // to the splits-first export fails with "index: 1 Got: 1 Expected: 2".
+        // Unmappable layouts throw there and surface as an honest smoke failure.
+        if (modelDimensions.Count == 4)
+        {
+            return SpleeterOnnxSeparator.ResolveBlockDimensions(modelDimensions);
+        }
 
         int[] dimensions = modelDimensions.Count switch
         {
@@ -1528,6 +1576,7 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
                 request.Variant,
                 request.ModelRevisionHash,
                 request.ExecutionProvider,
+                request.NonEvictingWarmup,
                 cancellationToken).ConfigureAwait(false);
             return;
         }
@@ -1541,24 +1590,51 @@ public sealed class OnnxExecutionProviderSmokeTester : IExecutionProviderSmokeTe
             return;
         }
 
-        using OnnxExecutionSessionFactory.OpusSessionLease sessionLease = await OnnxExecutionSessionFactory
-            .CreateOpusAsync(encoderModelPath, decoderModelPath, request.ExecutionProvider, cancellationToken)
-            .ConfigureAwait(false);
-        EnsureSelectedProviderMatchesRequested(request.ExecutionProvider, sessionLease.SelectedProvider);
+        // Pooled with the same family/options OpusMtTranslationEngine uses, so the
+        // sessions this smoke proves are the ones the translation stage leases next.
+        // The non-pooled CreateOpusAsync pair would be disposed here and rebuilt by
+        // the stage (a second, serial session create inside the stage itself).
+        string engineFamily = string.IsNullOrWhiteSpace(request.EngineFamily)
+            ? OpusMtTranslationEngine.EngineFamilyName
+            : request.EngineFamily;
+        try
+        {
+            using OnnxExecutionSessionFactory.OpusSessionLease sessionLease = await OnnxExecutionSessionFactory
+                .CreatePooledOpusAsync(
+                    engineFamily,
+                    encoderModelPath, decoderModelPath, request.ExecutionProvider, cancellationToken)
+                .ConfigureAwait(false);
+            EnsureSelectedProviderMatchesRequested(request.ExecutionProvider, sessionLease.SelectedProvider);
 
-        using var encoderInputs = new InputSet([
-            NamedOnnxValue.CreateFromTensor("input_ids", new DenseTensor<long>(new long[] { 0L }, [1, 1])),
-            NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<long>(new long[] { 1L }, [1, 1]))
-        ]);
-        using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> encoderResults = sessionLease.EncoderSession.RunWithRetry(encoderInputs.Values, maxAttempts: 1, cancellationToken: cancellationToken, provider: request.ExecutionProvider);
-        Tensor<float> encoderHiddenStates = encoderResults
-            .Single(static r => r.Name == "last_hidden_state")
-            .AsTensor<float>();
+            using var encoderInputs = new InputSet([
+                NamedOnnxValue.CreateFromTensor("input_ids", new DenseTensor<long>(new long[] { 0L }, [1, 1])),
+                NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<long>(new long[] { 1L }, [1, 1]))
+            ]);
+            using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> encoderResults = sessionLease.EncoderSession.RunWithRetry(encoderInputs.Values, maxAttempts: 1, cancellationToken: cancellationToken, provider: request.ExecutionProvider);
+            Tensor<float> encoderHiddenStates = encoderResults
+                .Single(static r => r.Name == "last_hidden_state")
+                .AsTensor<float>();
 
-        using var decoderInputs = CreateTranslationDecoderInputs(
-            sessionLease.DecoderSession.InputMetadata,
-            encoderHiddenStates);
-        using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> _ = sessionLease.DecoderSession.RunWithRetry(decoderInputs.Values, maxAttempts: 1, cancellationToken: cancellationToken, provider: request.ExecutionProvider);
+            using var decoderInputs = CreateTranslationDecoderInputs(
+                sessionLease.DecoderSession.InputMetadata,
+                encoderHiddenStates);
+            using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> _ = sessionLease.DecoderSession.RunWithRetry(decoderInputs.Values, maxAttempts: 1, cancellationToken: cancellationToken, provider: request.ExecutionProvider);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            try
+            {
+                // Do not leave an unverified encoder/decoder pair in the shared pool
+                // for a later stage to lease (mirrors the VAD/Whisper smoke paths).
+                await InferenceSessionPool.Shared.EvictModelAsync(engineFamily).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Cleanup only: an eviction failure must not replace the smoke-test failure rethrown below.
+            }
+
+            throw;
+        }
     }
 
     private static void EnsureSelectedProviderMatchesRequested(

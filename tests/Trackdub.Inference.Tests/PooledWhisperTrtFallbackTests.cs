@@ -149,7 +149,10 @@ public sealed class PooledWhisperTrtFallbackTests : IDisposable
             },
             allowTrtInitFallback: false));
 
-        Assert.Equal(1, creations);
+        // Bundle graphs are created in parallel, so both may get their one TRT attempt
+        // before the first failure is observed; a fallback retry would exceed 2.
+        Assert.True(creations is >= 1 and <= 2,
+            $"TRT requests with fallback disabled must not retry (saw {creations} creations).");
         Assert.True(TensorRtRtxTeardownGuard.IsPoisoned);
     }
 

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using Trackdub.Application.Pipeline;
+using Trackdub.Composition.Tts;
 using Trackdub.Contracts;
 using Trackdub.Contracts.Licensing;
 using Trackdub.Domain;
@@ -18,7 +19,8 @@ public sealed class ModelDownloadOrchestrator(
     IModelHashVerifier? hashVerifier = null,
     IApplicationLogger? logger = null,
     IStudioSettingsService? settingsService = null,
-    IEngineAutoWarmQueue? engineAutoWarmQueue = null)
+    IEngineAutoWarmQueue? engineAutoWarmQueue = null,
+    KokoroVoiceCatalogHolder? voiceCatalogHolder = null)
     : IModelDownloadOrchestrator, IModelCacheVerifier, IDisposable
 {
     private readonly BundledModelManifestRegistry manifestRegistry = manifestRegistry ?? throw new ArgumentNullException(nameof(manifestRegistry));
@@ -32,6 +34,9 @@ public sealed class ModelDownloadOrchestrator(
     private bool disposed;
 
     public IObservable<ModelStateChange> StateChanges => stateChanges;
+
+    /// <summary>Production wiring probe: the holder passed at construction, if any.</summary>
+    internal KokoroVoiceCatalogHolder? VoiceCatalogHolder => voiceCatalogHolder;
 
     public Task<ModelDownloadResult> DownloadAsync(
         string modelId,
@@ -227,6 +232,7 @@ public sealed class ModelDownloadOrchestrator(
                 // synchronously and may start inference, and before warming, so every read sees the
                 // installed files, not stale state.
                 InvalidateSidecarCaches(modelRootDirectory);
+                await RefreshVoiceCatalogIfKokoroAsync(entry, cancellationToken).ConfigureAwait(false);
                 EmitStateChange(modelId, ModelCacheState.Downloading, ModelCacheState.Installed);
                 // Trigger engine warming here, on the install path itself, rather than from a
                 // subscriber type the DI graph may never construct: this method only runs because
@@ -322,6 +328,7 @@ public sealed class ModelDownloadOrchestrator(
         ModelCacheState previousState = await GetCurrentStateAsync(modelId, cancellationToken).ConfigureAwait(false);
         await DeleteModelFilesAsync(modelId, entry, cancellationToken).ConfigureAwait(false);
         await RemoveCacheRecordAsync(modelId, cancellationToken).ConfigureAwait(false);
+        await RefreshVoiceCatalogIfKokoroAsync(entry, cancellationToken).ConfigureAwait(false);
 
         if (previousState != ModelCacheState.Missing)
         {
@@ -442,14 +449,11 @@ public sealed class ModelDownloadOrchestrator(
     {
         string benchmarkRelativePath = NormalizeRelativePath(
             Path.GetRelativePath(entry.RootDirectory, entry.DefaultBenchmarkEntryPath));
-        HashVerificationResult? benchmarkResult = null;
-        HashVerificationResult lastResult = new(true, false, null, null, "No hash verification was required.");
-
+        var candidates = new List<RequiredModelFileHashVerifier.Candidate>();
         string verificationAllowedRoot = ModelDownloadPathGuard.IsModelRootUnderConfiguredCache(
             modelRootDirectory, storagePaths.ModelCacheDirectory, out _)
             ? storagePaths.ModelCacheDirectory
             : modelRootDirectory;
-
         foreach (string relativePath in requiredFiles)
         {
             string normalizedRelativePath = NormalizeRelativePath(relativePath);
@@ -472,28 +476,30 @@ public sealed class ModelDownloadOrchestrator(
                 entry,
                 normalizedRelativePath,
                 benchmarkRelativePath);
-            if (string.IsNullOrWhiteSpace(expectedHash))
+            if (!string.IsNullOrWhiteSpace(expectedHash))
             {
-                continue;
-            }
-
-            HashVerificationResult hashResult = await hashVerifier
-                .VerifyAsync(expectedHash, destinationPath, cancellationToken)
-                .ConfigureAwait(false);
-            lastResult = hashResult;
-
-            if (!hashResult.IsValid)
-            {
-                return (normalizedRelativePath, hashResult);
-            }
-
-            if (normalizedRelativePath.Equals(benchmarkRelativePath, StringComparison.OrdinalIgnoreCase))
-            {
-                benchmarkResult = hashResult;
+                candidates.Add(new(normalizedRelativePath, destinationPath, expectedHash));
             }
         }
 
-        return (benchmarkRelativePath, benchmarkResult ?? lastResult);
+        IReadOnlyList<(RequiredModelFileHashVerifier.Candidate Candidate, HashVerificationResult Result)> results =
+            await RequiredModelFileHashVerifier.VerifyAsync(candidates, hashVerifier, cancellationToken).ConfigureAwait(false);
+        (RequiredModelFileHashVerifier.Candidate Candidate, HashVerificationResult Result)? firstFailure =
+            results.Where(item => !item.Result.IsValid)
+                .Select(item => ((RequiredModelFileHashVerifier.Candidate Candidate, HashVerificationResult Result)?)item)
+                .FirstOrDefault();
+        if (firstFailure is { } failed)
+        {
+            return (failed.Candidate.RelativePath, failed.Result);
+        }
+
+        HashVerificationResult benchmarkResult = results
+            .Where(item => item.Candidate.RelativePath.Equals(benchmarkRelativePath, StringComparison.OrdinalIgnoreCase))
+            .Select(item => item.Result)
+            .FirstOrDefault() ?? (results.Count == 0
+                ? new(true, false, null, null, "No hash verification was required.")
+                : results[^1].Result);
+        return (benchmarkRelativePath, benchmarkResult);
     }
 
     /// <summary>
@@ -508,6 +514,39 @@ public sealed class ModelDownloadOrchestrator(
         Trackdub.Inference.Onnx.Whisper.WhisperSidecarCaches.Remove(modelRootDirectory);
         Trackdub.Inference.Onnx.Qwen3Asr.Qwen3AsrSidecarCaches.RemoveForModelRoot(modelRootDirectory);
     }
+
+    /// <summary>
+    /// Re-reads the process-wide Kokoro voice snapshot after a Kokoro install/uninstall/repair.
+    /// Voice packs ship as manifest files (<c>voices/*.bin</c>) and delta installs add them to an
+    /// already-installed model, so without this the singleton keeps serving pre-install state
+    /// until the next process restart and the new/removed voices are rejected or omitted.
+    /// A refresh failure never fails the install itself: the holder keeps its last snapshot.
+    /// </summary>
+    private async Task RefreshVoiceCatalogIfKokoroAsync(
+        BundledModelManifestEntry entry,
+        CancellationToken cancellationToken)
+    {
+        if (voiceCatalogHolder is null || !IsKokoroModel(entry))
+        {
+            return;
+        }
+
+        try
+        {
+            await voiceCatalogHolder.RefreshAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger?.LogWarning(
+                $"Kokoro voice catalog refresh failed after model '{entry.ModelId}' changed; voices may be stale until restart.",
+                ex);
+        }
+    }
+
+    private static bool IsKokoroModel(BundledModelManifestEntry entry) =>
+        string.Equals(entry.EngineFamily, "kokoro", StringComparison.OrdinalIgnoreCase) ||
+        entry.ModelId.Contains("kokoro", StringComparison.OrdinalIgnoreCase) ||
+        entry.Aliases.Any(alias => alias.Contains("kokoro", StringComparison.OrdinalIgnoreCase));
 
     private static string NormalizeRelativePath(string relativePath) =>
         relativePath.Replace('\\', '/').Trim('/');

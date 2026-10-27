@@ -13,11 +13,24 @@ public static class StageSkipReasonCodes
 
     public const string NoSpeechRegions = "NO_SPEECH_REGIONS";
 
+    /// <summary>
+    /// ASR skipped because VAD detected zero speech regions (empty/silent audio).
+    /// Benign: a legitimate empty-audio outcome, not a failed attempt.
+    /// </summary>
+    public const string VadNoRegions = "VAD_NO_REGIONS";
+
     /// <summary>Stage was explicitly disabled by a run option or host flag.</summary>
     public const string DisabledByOption = "DISABLED_BY_OPTION";
 
     /// <summary>User declined the stage's optional model during pre-flight provisioning.</summary>
     public const string OptionalModelDeclined = "OPTIONAL_MODEL_DECLINED";
+
+    /// <summary>
+    /// The stage's proving warmup (the single first-run smoke create) failed, so the
+    /// stage was skipped before inference instead of attempting a doomed execution.
+    /// Not benign: no verdict was recorded and the stage produced nothing.
+    /// </summary>
+    public const string WarmupFailed = "WARMUP_FAILED";
 
     private static readonly HashSet<string> BenignSkipReasonCodes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -25,6 +38,7 @@ public static class StageSkipReasonCodes
         PrerequisiteFailed,
         NoTranscriptSegments,
         NoSpeechRegions,
+        VadNoRegions,
         DisabledByOption,
         OptionalModelDeclined,
     };

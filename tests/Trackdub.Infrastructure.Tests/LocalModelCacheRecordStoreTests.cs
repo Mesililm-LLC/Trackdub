@@ -466,6 +466,95 @@ public sealed class LocalModelCacheRecordStoreTests : IDisposable
             ModelOptimizationFallbackPolicy.None,
             ScriptIdentifiers: ["script-a"]));
 
+    [Fact]
+    public async Task Lookup_caches_records_until_store_write_invalidates_them()
+    {
+        LocalModelCacheRecordStore store = CreateStore();
+        string modelRoot = Path.Join(tempRoot, "models", "example-model");
+        var record = new LocalModelCacheRecord(
+            "example/model",
+            modelRoot,
+            "rev-a",
+            new string('a', 64),
+            DateTimeOffset.UnixEpoch);
+        await store.MutateAsync(_ => [record], CancellationToken.None);
+        var lookup = new LocalModelCacheRecordLookup(store);
+
+        LocalModelCacheRecord first = Assert.IsType<LocalModelCacheRecord>(lookup.Find(record.ModelId, modelRoot));
+        LocalModelCacheRecord second = Assert.IsType<LocalModelCacheRecord>(lookup.Find(record.ModelId, modelRoot));
+        Assert.Same(first, second);
+
+        await store.MutateAsync(_ => [record with { Revision = "rev-b" }], CancellationToken.None);
+        LocalModelCacheRecord updated = Assert.IsType<LocalModelCacheRecord>(lookup.Find(record.ModelId, modelRoot));
+        Assert.Equal("rev-b", updated.Revision);
+        Assert.NotSame(first, updated);
+    }
+
+    [Fact]
+    public async Task Lookup_sees_index_rewrites_from_another_process()
+    {
+        LocalModelCacheRecordStore store = CreateStore();
+        TrackdubStoragePaths storagePaths = CreateStoragePaths();
+        string modelRoot = Path.Join(tempRoot, "models", "example-model");
+        var record = new LocalModelCacheRecord(
+            "example/model",
+            modelRoot,
+            "rev-a",
+            new string('a', 64),
+            DateTimeOffset.UnixEpoch);
+        await store.MutateAsync(_ => [record], CancellationToken.None);
+        var lookup = new LocalModelCacheRecordLookup(store);
+
+        Assert.Equal("rev-a", Assert.IsType<LocalModelCacheRecord>(lookup.Find(record.ModelId, modelRoot)).Revision);
+
+        // Another process (CLI install, second instance) rewrites the index file directly:
+        // this store instance's Revision never moves, so only the file identity can invalidate.
+        LocalModelCacheRecord external = record with { Revision = "rev-external-extra-content" };
+        await File.WriteAllTextAsync(
+            storagePaths.ModelCacheIndexPath,
+            JsonSerializer.Serialize(new[] { external }),
+            CancellationToken.None);
+
+        Assert.Equal("rev-external-extra-content", Assert.IsType<LocalModelCacheRecord>(lookup.Find(record.ModelId, modelRoot)).Revision);
+    }
+
+    [Fact]
+    public async Task Lookup_sees_same_length_rewrite_with_preserved_mtime()
+    {
+        LocalModelCacheRecordStore store = CreateStore();
+        TrackdubStoragePaths storagePaths = CreateStoragePaths();
+        string modelRoot = Path.Join(tempRoot, "models", "example-model");
+        var record = new LocalModelCacheRecord(
+            "example/model",
+            modelRoot,
+            "rev-aaaaa",
+            new string('a', 64),
+            DateTimeOffset.UnixEpoch);
+        await store.MutateAsync(_ => [record], CancellationToken.None);
+        var lookup = new LocalModelCacheRecordLookup(store);
+
+        Assert.Equal("rev-aaaaa", Assert.IsType<LocalModelCacheRecord>(lookup.Find(record.ModelId, modelRoot)).Revision);
+
+        // A same-length replacement (same revision width, different SHA) that also
+        // preserves the modification time: mtime + length alone cannot distinguish
+        // it, so only the content hash in the identity can invalidate the snapshot.
+        // Rewrite the store's own bytes in place so the length is identical by
+        // construction (serializing here would use a different writer and change it).
+        DateTime originalWriteTime = File.GetLastWriteTimeUtc(storagePaths.ModelCacheIndexPath);
+        string originalJson = await File.ReadAllTextAsync(storagePaths.ModelCacheIndexPath, CancellationToken.None);
+        string replacedJson = originalJson
+            .Replace("rev-aaaaa", "rev-bbbbb", StringComparison.Ordinal)
+            .Replace(new string('a', 64), new string('b', 64), StringComparison.Ordinal);
+        Assert.Equal(originalJson.Length, replacedJson.Length);
+        Assert.NotEqual(originalJson, replacedJson);
+        await File.WriteAllTextAsync(storagePaths.ModelCacheIndexPath, replacedJson, CancellationToken.None);
+        File.SetLastWriteTimeUtc(storagePaths.ModelCacheIndexPath, originalWriteTime);
+
+        LocalModelCacheRecord found = Assert.IsType<LocalModelCacheRecord>(lookup.Find(record.ModelId, modelRoot));
+        Assert.Equal("rev-bbbbb", found.Revision);
+        Assert.Equal(new string('b', 64), found.Sha256);
+    }
+
     private LocalModelCacheRecordStore CreateStore() => new(CreateStoragePaths());
 
     private TrackdubStoragePaths CreateStoragePaths()

@@ -9,14 +9,15 @@ namespace Trackdub.Inference.Runtime.Planning;
 
 internal sealed class RuntimePlanFactory
 {
-    private readonly IExecutionProviderSmokeTester executionProviderSmokeTester;
     private readonly ISmokeVerdictStore smokeVerdictStore;
 
+    // The smoke tester parameter is retained for constructor compatibility with existing
+    // hosts/tests; planning no longer smokes (see TryCreateReadyPlanAsync), so it is unused.
     public RuntimePlanFactory(
         IExecutionProviderSmokeTester executionProviderSmokeTester,
         ISmokeVerdictStore? smokeVerdictStore = null)
     {
-        this.executionProviderSmokeTester = executionProviderSmokeTester ?? throw new ArgumentNullException(nameof(executionProviderSmokeTester));
+        ArgumentNullException.ThrowIfNull(executionProviderSmokeTester);
         this.smokeVerdictStore = smokeVerdictStore ?? NullSmokeVerdictStore.Instance;
     }
 
@@ -33,7 +34,9 @@ internal sealed class RuntimePlanFactory
         bool preferMigraphxOnAmdGpu,
         string? preferredModelVariantAlias,
         bool skipProviderSmokeTest,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<DeviceEntry>? devices = null,
+        DeviceExclusionSet? exclusions = null)
     {
         cacheIndex.TryGetValue(candidate.Entry.ModelId, out IReadOnlyList<LocalModelCacheRecord>? cacheRecords);
 
@@ -52,6 +55,7 @@ internal sealed class RuntimePlanFactory
             preferredExecutionProvider);
 
         RuntimePlanFallback? providerFallback = null;
+        cancellationToken.ThrowIfCancellationRequested();
         foreach (ExecutionProviderKind provider in orderedProviders)
         {
             StageRuntimePlan? guardResult = EvaluateProviderGuard(provider, candidate, providerAvailabilities,
@@ -110,12 +114,13 @@ internal sealed class RuntimePlanFactory
                         preferredExecutionProviderSkippedForEngine: preferredForbiddenForEngine
                             ? preferredExecutionProvider
                             : null,
-                        modelRevisionHash: modelSha256);
+                        modelRevisionHash: modelSha256,
+                        devices: devices,
+                        exclusions: exclusions);
                 }
 
                 // A local optimized variant is a different graph file from its source model;
-                // a source-sha verdict cannot prove it. Always smoke variants and record
-                // verdicts only for the graph file smoke actually loaded.
+                // a source-sha verdict cannot prove it, so it never consults the verdict store.
                 SmokeVerdictKey? verdictKey = variant.IsLocalOptimizedVariant
                     ? null
                     : TryBuildVerdictKey(modelSha256, provider, hardwareProfile);
@@ -140,77 +145,37 @@ internal sealed class RuntimePlanFactory
                         preferredExecutionProviderSkippedForEngine: preferredForbiddenForEngine
                             ? preferredExecutionProvider
                             : null,
-                        modelRevisionHash: modelSha256);
+                        modelRevisionHash: modelSha256,
+                        devices: devices,
+                        exclusions: exclusions);
                 }
 
-                ExecutionProviderSmokeTestResult smokeResult;
-                try
-                {
-                    smokeResult = await executionProviderSmokeTester.SmokeTestAsync(
-                        new ExecutionProviderSmokeTestRequest(
-                            stage,
-                            candidate.Entry.ModelId,
-                            ResolvePrimaryAlias(candidate.Entry),
-                            candidate.Entry.EngineFamily,
-                            variant.Alias,
-                            provider,
-                            rootPath,
-                            entryPath,
-                            modelSha256),
-                        cancellationToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    smokeResult = new ExecutionProviderSmokeTestResult(false, ex.Message);
-                }
-
-                if (smokeResult.Passed)
-                {
-                    if (verdictKey is not null)
-                    {
-                        smokeVerdictStore.RecordVerified(verdictKey);
-                    }
-
-                    // Non-CPU providers that pass smoke test report Verified — strictly stronger
-                    // than Ready, which is reserved for CPU's file-only check above.
-                    return CreatePlan(
-                        stage,
-                        StageRuntimePlanStatus.Verified,
-                        candidate,
-                        provider,
-                        variant.Alias,
-                        entryPath,
-                        modelIntegrityStatus,
-                        fallback: null,
-                        includeCpuFallbackWarning: false,
-                        isLocalOptimizedVariant: variant.IsLocalOptimizedVariant,
-                        modelRootPath: rootPath,
-                        modelEntryRelativePath: variant.RelativeEntryPath,
-                        requiredModelRelativePaths: variant.RequiredRelativePaths,
-                        preferredExecutionProviderSkippedForEngine: preferredForbiddenForEngine
-                            ? preferredExecutionProvider
-                            : null,
-                        modelRevisionHash: modelSha256);
-                }
-
-                if (requirePreferredExecutionProvider && !preferredForbiddenForEngine)
-                {
-                    return CreateBlockedPlan(
-                        stage,
-                        new RuntimePlanFallback(
-                            RuntimePlanFallbackCode.ProviderSmokeTestFailed,
-                            smokeResult.Detail ?? $"{provider} smoke test failed for variant '{variant.Alias}'."));
-                }
-
-                providerFallback = MergeProviderFallback(
+                // No persisted verdict: planning must not create throwaway smoke sessions per
+                // provider candidate (C4). Return the honest file-only Ready status already
+                // used for unproven plans (CPU / smoke-skipped listing) — never Verified. The
+                // single proving create is deferred to RuntimeStageWarmupCoordinator, whose
+                // smoke leases the same pooled session the stage later reuses, or to the
+                // stage's own pooled session creation at execution time.
+                return CreatePlan(
+                    stage,
+                    StageRuntimePlanStatus.Ready,
+                    candidate,
+                    provider,
+                    variant.Alias,
+                    entryPath,
+                    modelIntegrityStatus,
                     providerFallback,
-                    new RuntimePlanFallback(
-                        RuntimePlanFallbackCode.ProviderSmokeTestFailed,
-                        smokeResult.Detail ?? $"{provider} smoke test failed for variant '{variant.Alias}'."));
+                    includeCpuFallbackWarning: false,
+                    isLocalOptimizedVariant: variant.IsLocalOptimizedVariant,
+                    modelRootPath: rootPath,
+                    modelEntryRelativePath: variant.RelativeEntryPath,
+                    requiredModelRelativePaths: variant.RequiredRelativePaths,
+                    preferredExecutionProviderSkippedForEngine: preferredForbiddenForEngine
+                        ? preferredExecutionProvider
+                        : null,
+                    modelRevisionHash: modelSha256,
+                    devices: devices,
+                    exclusions: exclusions);
             }
         }
 
@@ -228,7 +193,9 @@ internal sealed class RuntimePlanFactory
         ExecutionProviderKind? preferredExecutionProvider,
         bool requirePreferredExecutionProvider,
         bool preferMigraphxOnAmdGpu,
-        string? preferredModelVariantAlias)
+        string? preferredModelVariantAlias,
+        IReadOnlyList<DeviceEntry>? devices = null,
+        DeviceExclusionSet? exclusions = null)
     {
         cacheIndex.TryGetValue(candidate.Entry.ModelId, out IReadOnlyList<LocalModelCacheRecord>? cacheRecords);
 
@@ -294,7 +261,9 @@ internal sealed class RuntimePlanFactory
                     requiredModelRelativePaths: variant.RequiredRelativePaths,
                     preferredExecutionProviderSkippedForEngine: preferredForbiddenForEngine
                         ? preferredExecutionProvider
-                        : null);
+                        : null,
+                    devices: devices,
+                    exclusions: exclusions);
             }
         }
 
@@ -426,8 +395,11 @@ internal sealed class RuntimePlanFactory
         string? modelEntryRelativePath = null,
         IReadOnlyList<string>? requiredModelRelativePaths = null,
         ExecutionProviderKind? preferredExecutionProviderSkippedForEngine = null,
-        string? modelRevisionHash = null)
+        string? modelRevisionHash = null,
+        IReadOnlyList<DeviceEntry>? devices = null,
+        DeviceExclusionSet? exclusions = null)
     {
+        (int? deviceIndex, string? deviceAdapterDescription) = ResolvePlanDevice(provider, devices, exclusions);
         return new StageRuntimePlan
         {
             Stage = stage,
@@ -445,6 +417,8 @@ internal sealed class RuntimePlanFactory
             RequiredModelRelativePaths = requiredModelRelativePaths ?? [],
             IsLocalOptimizedVariant = isLocalOptimizedVariant,
             ModelRevisionHash = modelRevisionHash,
+            DeviceIndex = deviceIndex,
+            DeviceAdapterDescription = deviceAdapterDescription,
             Fallback = fallback,
             Warnings = BuildWarnings(
                 candidate.Entry,
@@ -453,6 +427,64 @@ internal sealed class RuntimePlanFactory
                 modelIntegrityStatus,
                 preferredExecutionProviderSkippedForEngine)
         };
+    }
+
+    /// <summary>
+    /// Selects the device the planned execution provider will run on: the lowest-index
+    /// device advertising the provider that is not in the run's exclusion set.
+    /// CPU-only providers (<see cref="ExecutionProviderKind.Cpu"/> and
+    /// <see cref="ExecutionProviderKind.Dnnl"/>) additionally require
+    /// <see cref="DeviceKind.Cpu"/>: on Linux an AMD GPU advertises
+    /// <see cref="ExecutionProviderKind.Cpu"/> at index 0 while the CPU entry is appended
+    /// last, and stamping the GPU index would misattribute a CPU OOM to the GPU on fallback.
+    /// Returns no device when the device list is unavailable (planning outside a run)
+    /// or no eligible device remains; the device-fallback catch filter then lets the
+    /// failure propagate instead of recording a bogus exclusion.
+    /// </summary>
+    /// <remarks>
+    /// The stamp is the planner-ranked device used for exclusion routing, not a session
+    /// binding: pooled session creation keys on <c>deviceId: null</c> and appends the
+    /// provider with device id 0 (CUDA/DirectML), so on multi-GPU hosts a replan that
+    /// excludes the stamped index can still bind the same physical device. Wiring the
+    /// planned index into session creation (per-provider device-id mapping, pool-key
+    /// sharding) is intentionally out of scope here; see
+    /// <see cref="StageRuntimePlan.DeviceIndex"/>.
+    /// </remarks>
+    private static (int? DeviceIndex, string? AdapterDescription) ResolvePlanDevice(
+        ExecutionProviderKind provider,
+        IReadOnlyList<DeviceEntry>? devices,
+        DeviceExclusionSet? exclusions)
+    {
+        if (devices is null)
+        {
+            return (null, null);
+        }
+
+        foreach (DeviceEntry device in devices.OrderBy(static candidate => candidate.DeviceIndex))
+        {
+            if (!device.SupportedProviders.Contains(provider))
+            {
+                continue;
+            }
+
+            // CPU-only providers must land on the CPU entry: accelerators may also
+            // advertise Cpu (Linux AMD GPUs do at index 0), and stamping one would
+            // misattribute a CPU failure to the accelerator on device fallback.
+            if (provider is ExecutionProviderKind.Cpu or ExecutionProviderKind.Dnnl
+                && device.Kind != DeviceKind.Cpu)
+            {
+                continue;
+            }
+
+            if (exclusions is not null && exclusions.IsExcluded(device.DeviceIndex))
+            {
+                continue;
+            }
+
+            return (device.DeviceIndex, device.AdapterDescription);
+        }
+
+        return (null, null);
     }
 
     private static IReadOnlyList<RuntimePlanWarning> BuildWarnings(
@@ -988,7 +1020,8 @@ internal sealed class RuntimePlanFactory
                 provider,
                 hardwareProfile.NvidiaGpuArchitecture,
                 hardwareProfile.GpuDriverVersion,
-                TensorRtRtxProviderConstants.BundledFingerprintVersion);
+                TensorRtRtxProviderConstants.BundledFingerprintVersion,
+                hardwareProfile.OrtRuntimeVersion);
 
     private static bool HasManifestHashMismatch(
         BundledModelManifestEntry entry,
