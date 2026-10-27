@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Trackdub.Application.Transcripts;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Pipeline;
 using Trackdub.Domain;
 using Trackdub.Inference.Runtime.ModelManifest;
 using Trackdub.Inference.Runtime.Planning;
@@ -262,8 +263,10 @@ public sealed class RuntimePlannerTests
     }
 
     [Fact]
-    public async Task PlanAsync_DoesNotEnumerateDevices_WhenExclusionsAreNull()
+    public async Task PlanAsync_EnumeratesDevicesAndStampsPlan_WhenExclusionsAreNull()
     {
+        // Preflight plans before BeginRun, when CurrentExclusions is still null; the plan
+        // must still carry the device so the run's same-key cache hit can engage fallback.
         using var workspace = new RuntimePlannerTestWorkspace();
         BundledModelManifestRegistry registry = workspace.WriteManifest(
             CreateVadSpec("silero-vad", commercialAllowed: true, license: "MIT"));
@@ -272,8 +275,8 @@ public sealed class RuntimePlannerTests
         workspace.WriteCacheFile(cacheRoot, "onnx/model_fp16.onnx");
         var enumerator = new RecordingDeviceEnumerator(
             [
-                new DeviceEntry(DeviceKind.DiscreteGpu, 1, "dGPU", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
-                new DeviceEntry(DeviceKind.Cpu, 0, "CPU", "Microsoft", 0, 0, [ExecutionProviderKind.Cpu])
+                new DeviceEntry(DeviceKind.DiscreteGpu, 0, "dGPU", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.Cpu, 1, "CPU", "Microsoft", 0, 0, [ExecutionProviderKind.Cpu])
             ]);
 
         RuntimePlanner planner = CreatePlanner(
@@ -287,7 +290,46 @@ public sealed class RuntimePlannerTests
 
         Assert.True(plan.IsRunnable(), $"Expected runnable plan but got {plan.Status}");
         Assert.Equal(ExecutionProviderKind.DirectMl, plan.ExecutionProvider);
-        Assert.Equal(0, enumerator.GetDevicesCallCount);
+        Assert.Equal(0, plan.DeviceIndex);
+        Assert.Equal("dGPU", plan.DeviceAdapterDescription);
+        Assert.Equal(1, enumerator.GetDevicesCallCount);
+    }
+
+    [Fact]
+    public async Task PlanAsync_PreflightPlanBeforeBeginRun_CarriesDeviceIntoRunCacheHit()
+    {
+        // Preflight (no run yet, CurrentExclusions null) and the run's empty-exclusion
+        // lookup share a cache key; the cached preflight plan must already carry the
+        // device or DeviceFallbackSessionCreator can never engage.
+        using var workspace = new RuntimePlannerTestWorkspace();
+        BundledModelManifestRegistry registry = workspace.WriteManifest(
+            CreateVadSpec("silero-vad", commercialAllowed: true, license: "MIT"));
+
+        string cacheRoot = workspace.CreateCacheRoot("onnx-community/silero-vad");
+        workspace.WriteCacheFile(cacheRoot, "onnx/model_fp16.onnx");
+        var exclusionProvider = new PipelineDeviceExclusionProvider();
+        var enumerator = new RecordingDeviceEnumerator(
+            [
+                new DeviceEntry(DeviceKind.DiscreteGpu, 0, "dGPU", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.Cpu, 1, "CPU", "Microsoft", 0, 0, [ExecutionProviderKind.Cpu])
+            ]);
+
+        RuntimePlanner planner = CreatePlanner(
+            registry,
+            [new("onnx-community/silero-vad", cacheRoot, "main", ValidSha256, DateTimeOffset.UtcNow)],
+            [new(ExecutionProviderKind.DirectMl, true), new(ExecutionProviderKind.Cpu, true)],
+            _ => new ExecutionProviderSmokeTestResult(true),
+            deviceExclusionProvider: exclusionProvider,
+            deviceEnumerator: enumerator);
+
+        StageRuntimePlan preflightPlan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad));
+        Assert.Equal(0, preflightPlan.DeviceIndex);
+
+        exclusionProvider.BeginRun();
+        StageRuntimePlan runPlan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad));
+
+        Assert.Equal(0, runPlan.DeviceIndex);
+        Assert.Equal("dGPU", runPlan.DeviceAdapterDescription);
     }
 
     [Fact]
@@ -327,12 +369,12 @@ public sealed class RuntimePlannerTests
         workspace.WriteCacheFile(cacheRoot, "onnx/model_fp16.onnx");
 
         var exclusions = new DeviceExclusionSet();
-        exclusions.MarkMemoryExhausted(1);
+        exclusions.MarkMemoryExhausted(0);
         var exclusionProvider = new FixedExclusionProvider(exclusions);
         var enumerator = new RecordingDeviceEnumerator(
             [
-                new DeviceEntry(DeviceKind.DiscreteGpu, 1, "dGPU", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
-                new DeviceEntry(DeviceKind.Cpu, 0, "CPU", "Microsoft", 0, 0, [ExecutionProviderKind.Cpu])
+                new DeviceEntry(DeviceKind.DiscreteGpu, 0, "dGPU", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.Cpu, 1, "CPU", "Microsoft", 0, 0, [ExecutionProviderKind.Cpu])
             ]);
 
         RuntimePlanner planner = CreatePlanner(
@@ -352,6 +394,231 @@ public sealed class RuntimePlannerTests
         Assert.NotNull(plan.Fallback);
         Assert.Equal(RuntimePlanFallbackCode.ProviderUnavailable, plan.Fallback!.Code);
         Assert.Equal(1, enumerator.GetDevicesCallCount);
+    }
+
+    [Fact]
+    public async Task PlanAsync_StampsSelectedDeviceIndexAndAdapter_WhenDevicesAvailable()
+    {
+        // C10 reachability: planner-produced plans must carry DeviceIndex/DeviceAdapterDescription
+        // so the DeviceFallbackSessionCreator catch filter can engage in production.
+        using var workspace = new RuntimePlannerTestWorkspace();
+        BundledModelManifestRegistry registry = workspace.WriteManifest(
+            CreateVadSpec("silero-vad", commercialAllowed: true, license: "MIT"));
+
+        string cacheRoot = workspace.CreateCacheRoot("onnx-community/silero-vad");
+        workspace.WriteCacheFile(cacheRoot, "onnx/model_fp16.onnx");
+        var exclusionProvider = new PipelineDeviceExclusionProvider();
+        exclusionProvider.BeginRun();
+        var enumerator = new RecordingDeviceEnumerator(
+            [
+                new DeviceEntry(DeviceKind.DiscreteGpu, 0, "dGPU", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.Cpu, 1, "CPU", "Microsoft", 0, 0, [ExecutionProviderKind.Cpu])
+            ]);
+
+        RuntimePlanner planner = CreatePlanner(
+            registry,
+            [new("onnx-community/silero-vad", cacheRoot, "main", ValidSha256, DateTimeOffset.UtcNow)],
+            [new(ExecutionProviderKind.DirectMl, true), new(ExecutionProviderKind.Cpu, true)],
+            _ => new ExecutionProviderSmokeTestResult(true),
+            deviceExclusionProvider: exclusionProvider,
+            deviceEnumerator: enumerator);
+
+        StageRuntimePlan plan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad));
+
+        Assert.True(plan.IsRunnable(), $"Expected runnable plan but got {plan.Status}");
+        Assert.Equal(ExecutionProviderKind.DirectMl, plan.ExecutionProvider);
+        Assert.Equal(0, plan.DeviceIndex);
+        Assert.Equal("dGPU", plan.DeviceAdapterDescription);
+        Assert.Equal(1, enumerator.GetDevicesCallCount);
+    }
+
+    [Fact]
+    public async Task PlanAsync_SkipsExcludedDevice_WhenStampingPlanDevice()
+    {
+        using var workspace = new RuntimePlannerTestWorkspace();
+        BundledModelManifestRegistry registry = workspace.WriteManifest(
+            CreateVadSpec("silero-vad", commercialAllowed: true, license: "MIT"));
+
+        string cacheRoot = workspace.CreateCacheRoot("onnx-community/silero-vad");
+        workspace.WriteCacheFile(cacheRoot, "onnx/model_fp16.onnx");
+        var exclusions = new DeviceExclusionSet();
+        exclusions.MarkMemoryExhausted(0);
+        var enumerator = new RecordingDeviceEnumerator(
+            [
+                new DeviceEntry(DeviceKind.DiscreteGpu, 0, "dGPU-1", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.DiscreteGpu, 1, "dGPU-2", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.Cpu, 2, "CPU", "Microsoft", 0, 0, [ExecutionProviderKind.Cpu])
+            ]);
+
+        RuntimePlanner planner = CreatePlanner(
+            registry,
+            [new("onnx-community/silero-vad", cacheRoot, "main", ValidSha256, DateTimeOffset.UtcNow)],
+            [new(ExecutionProviderKind.DirectMl, true), new(ExecutionProviderKind.Cpu, true)],
+            _ => new ExecutionProviderSmokeTestResult(true),
+            deviceExclusionProvider: new FixedExclusionProvider(exclusions),
+            deviceEnumerator: enumerator);
+
+        StageRuntimePlan plan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad));
+
+        Assert.True(plan.IsRunnable(), $"Expected runnable plan but got {plan.Status}");
+        Assert.Equal(ExecutionProviderKind.DirectMl, plan.ExecutionProvider);
+        Assert.Equal(1, plan.DeviceIndex);
+        Assert.Equal("dGPU-2", plan.DeviceAdapterDescription);
+    }
+
+    [Fact]
+    public async Task PlanAsync_CpuPlan_StampsCpuDeviceEntry()
+    {
+        // Production order is GPUs-first with CPU last, and on Linux an AMD GPU
+        // advertises Cpu at index 0 — a Cpu plan must still stamp the CPU entry.
+        using var workspace = new RuntimePlannerTestWorkspace();
+        BundledModelManifestRegistry registry = workspace.WriteManifest(
+            CreateVadSpec("silero-vad", commercialAllowed: true, license: "MIT"));
+
+        string cacheRoot = workspace.CreateCacheRoot("onnx-community/silero-vad");
+        workspace.WriteCacheFile(cacheRoot, "onnx/model_fp16.onnx");
+        var exclusionProvider = new PipelineDeviceExclusionProvider();
+        exclusionProvider.BeginRun();
+        var enumerator = new RecordingDeviceEnumerator(
+            [
+                new DeviceEntry(DeviceKind.DiscreteGpu, 0, "AMD GPU", "AMD", 8192, 0, [ExecutionProviderKind.Migraphx, ExecutionProviderKind.Cpu]),
+                new DeviceEntry(DeviceKind.Cpu, 1, "CPU", "Generic", 0, 0, [ExecutionProviderKind.Cpu])
+            ]);
+
+        RuntimePlanner planner = CreatePlanner(
+            registry,
+            [new("onnx-community/silero-vad", cacheRoot, "main", ValidSha256, DateTimeOffset.UtcNow)],
+            [new(ExecutionProviderKind.Cpu, true)],
+            _ => new ExecutionProviderSmokeTestResult(true),
+            deviceExclusionProvider: exclusionProvider,
+            deviceEnumerator: enumerator);
+
+        StageRuntimePlan plan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad));
+
+        Assert.True(plan.IsRunnable(), $"Expected runnable plan but got {plan.Status}");
+        Assert.Equal(ExecutionProviderKind.Cpu, plan.ExecutionProvider);
+        Assert.Equal(1, plan.DeviceIndex);
+        Assert.Equal("CPU", plan.DeviceAdapterDescription);
+    }
+
+    [Fact]
+    public async Task DeviceFallback_EndToEnd_OomOnPlannedDevice_MigratesAndReportsDegradation()
+    {
+        // Proves the C10 guards are reachable with production plans: the initial plan carries
+        // the stamped device, the OOM engages the catch filter, and the replan migrates.
+        using var workspace = new RuntimePlannerTestWorkspace();
+        BundledModelManifestRegistry registry = workspace.WriteManifest(
+            CreateVadSpec("silero-vad", commercialAllowed: true, license: "MIT"));
+
+        string cacheRoot = workspace.CreateCacheRoot("onnx-community/silero-vad");
+        workspace.WriteCacheFile(cacheRoot, "onnx/model_fp16.onnx");
+        var exclusionProvider = new PipelineDeviceExclusionProvider();
+        exclusionProvider.BeginRun();
+        var enumerator = new RecordingDeviceEnumerator(
+            [
+                new DeviceEntry(DeviceKind.DiscreteGpu, 0, "dGPU", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.Cpu, 1, "CPU", "Microsoft", 0, 0, [ExecutionProviderKind.Cpu])
+            ]);
+
+        RuntimePlanner planner = CreatePlanner(
+            registry,
+            [new("onnx-community/silero-vad", cacheRoot, "main", ValidSha256, DateTimeOffset.UtcNow)],
+            [new(ExecutionProviderKind.DirectMl, true), new(ExecutionProviderKind.Cpu, true)],
+            _ => new ExecutionProviderSmokeTestResult(true),
+            deviceExclusionProvider: exclusionProvider,
+            deviceEnumerator: enumerator);
+
+        StageRuntimePlan initialPlan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad));
+        Assert.Equal(0, initialPlan.DeviceIndex);
+
+        var oom = new Exception("[ErrorCode:RuntimeException] CUDA error: out of memory");
+        int createCount = 0;
+        Task<string> CreateSessionAsync(StageRuntimePlan plan, CancellationToken ct)
+        {
+            createCount++;
+            if (plan.DeviceIndex == 0)
+            {
+                throw oom;
+            }
+
+            return Task.FromResult("session-on-fallback-device");
+        }
+
+        Task<StageRuntimePlan> ReplanAsync(CancellationToken ct) =>
+            planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad), ct);
+
+        DeviceFallbackSessionCreator.Result<string> result = await DeviceFallbackSessionCreator
+            .CreateWithDeviceFallbackAsync(
+                initialPlan,
+                CreateSessionAsync,
+                ReplanAsync,
+                exclusionProvider,
+                cancellationToken: CancellationToken.None);
+
+        Assert.Equal("session-on-fallback-device", result.Lease);
+        Assert.NotNull(result.Degradation);
+        Assert.Equal(DeviceDegradationKind.MemoryExhausted, result.Degradation.Kind);
+        Assert.Equal(0, result.Degradation.FailedDeviceIndex);
+        Assert.Equal(1, result.Degradation.FallbackDeviceIndex);
+        Assert.Equal(2, createCount);
+        Assert.True(exclusionProvider.CurrentExclusions!.IsExcluded(0));
+    }
+
+    [Fact]
+    public async Task DeviceFallback_EndToEnd_PersistentOom_IsBoundedByAttemptCap()
+    {
+        // Worst case through production replans: every device OOMs, the 4-attempt cap stops
+        // the loop instead of cycling onto the terminal Blocked plan forever.
+        using var workspace = new RuntimePlannerTestWorkspace();
+        BundledModelManifestRegistry registry = workspace.WriteManifest(
+            CreateVadSpec("silero-vad", commercialAllowed: true, license: "MIT"));
+
+        string cacheRoot = workspace.CreateCacheRoot("onnx-community/silero-vad");
+        workspace.WriteCacheFile(cacheRoot, "onnx/model_fp16.onnx");
+        var exclusionProvider = new PipelineDeviceExclusionProvider();
+        exclusionProvider.BeginRun();
+        var enumerator = new RecordingDeviceEnumerator(
+            [
+                new DeviceEntry(DeviceKind.DiscreteGpu, 0, "dGPU-1", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.DiscreteGpu, 1, "dGPU-2", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.DiscreteGpu, 2, "dGPU-3", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.Cpu, 3, "CPU", "Microsoft", 0, 0, [ExecutionProviderKind.Cpu])
+            ]);
+
+        RuntimePlanner planner = CreatePlanner(
+            registry,
+            [new("onnx-community/silero-vad", cacheRoot, "main", ValidSha256, DateTimeOffset.UtcNow)],
+            [new(ExecutionProviderKind.DirectMl, true), new(ExecutionProviderKind.Cpu, true)],
+            _ => new ExecutionProviderSmokeTestResult(true),
+            deviceExclusionProvider: exclusionProvider,
+            deviceEnumerator: enumerator);
+
+        StageRuntimePlan initialPlan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad));
+        Assert.Equal(0, initialPlan.DeviceIndex);
+
+        var oom = new Exception("[ErrorCode:RuntimeException] CUDA error: out of memory");
+        int createCount = 0;
+        Task<string> CreateSessionAsync(StageRuntimePlan plan, CancellationToken ct)
+        {
+            createCount++;
+            throw oom;
+        }
+
+        Task<StageRuntimePlan> ReplanAsync(CancellationToken ct) =>
+            planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad), ct);
+
+        Exception thrown = await Assert.ThrowsAsync<Exception>(() => DeviceFallbackSessionCreator
+            .CreateWithDeviceFallbackAsync(
+                initialPlan,
+                CreateSessionAsync,
+                ReplanAsync,
+                exclusionProvider,
+                cancellationToken: CancellationToken.None));
+
+        Assert.Same(oom, thrown);
+        Assert.Equal(4, createCount);
+        Assert.True(exclusionProvider.CurrentExclusions!.IsExcluded(0));
+        Assert.True(exclusionProvider.CurrentExclusions.IsExcluded(3));
     }
 
     [Fact]

@@ -55,8 +55,19 @@ public sealed record StageRuntimePlan
     [JsonIgnore]
     public string? ModelRevisionHash { get; init; }
 
+    /// <summary>
+    /// Planner-ranked device for this plan's execution provider: the lowest-index
+    /// non-excluded device advertising the provider (CPU plans always name the CPU
+    /// entry). Drives device-fallback exclusion routing, not session placement —
+    /// pooled session creation keys on <c>deviceId: null</c> and binds provider device 0
+    /// (CUDA/DirectML), so on same-provider multi-GPU hosts a fallback replan can still
+    /// bind the failed physical device. Null when planning ran without a device list.
+    /// </summary>
     public int? DeviceIndex { get; init; }
 
+    /// <summary>
+    /// Human-readable adapter for <see cref="DeviceIndex"/>; used in degradation reports.
+    /// </summary>
     public string? DeviceAdapterDescription { get; init; }
 
     public RuntimePlanFallback? Fallback { get; init; }

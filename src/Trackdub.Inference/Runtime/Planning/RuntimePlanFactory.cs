@@ -34,7 +34,9 @@ internal sealed class RuntimePlanFactory
         bool preferMigraphxOnAmdGpu,
         string? preferredModelVariantAlias,
         bool skipProviderSmokeTest,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<DeviceEntry>? devices = null,
+        DeviceExclusionSet? exclusions = null)
     {
         cacheIndex.TryGetValue(candidate.Entry.ModelId, out IReadOnlyList<LocalModelCacheRecord>? cacheRecords);
 
@@ -112,7 +114,9 @@ internal sealed class RuntimePlanFactory
                         preferredExecutionProviderSkippedForEngine: preferredForbiddenForEngine
                             ? preferredExecutionProvider
                             : null,
-                        modelRevisionHash: modelSha256);
+                        modelRevisionHash: modelSha256,
+                        devices: devices,
+                        exclusions: exclusions);
                 }
 
                 // A local optimized variant is a different graph file from its source model;
@@ -141,7 +145,9 @@ internal sealed class RuntimePlanFactory
                         preferredExecutionProviderSkippedForEngine: preferredForbiddenForEngine
                             ? preferredExecutionProvider
                             : null,
-                        modelRevisionHash: modelSha256);
+                        modelRevisionHash: modelSha256,
+                        devices: devices,
+                        exclusions: exclusions);
                 }
 
                 // No persisted verdict: planning must not create throwaway smoke sessions per
@@ -185,7 +191,9 @@ internal sealed class RuntimePlanFactory
         ExecutionProviderKind? preferredExecutionProvider,
         bool requirePreferredExecutionProvider,
         bool preferMigraphxOnAmdGpu,
-        string? preferredModelVariantAlias)
+        string? preferredModelVariantAlias,
+        IReadOnlyList<DeviceEntry>? devices = null,
+        DeviceExclusionSet? exclusions = null)
     {
         cacheIndex.TryGetValue(candidate.Entry.ModelId, out IReadOnlyList<LocalModelCacheRecord>? cacheRecords);
 
@@ -251,7 +259,9 @@ internal sealed class RuntimePlanFactory
                     requiredModelRelativePaths: variant.RequiredRelativePaths,
                     preferredExecutionProviderSkippedForEngine: preferredForbiddenForEngine
                         ? preferredExecutionProvider
-                        : null);
+                        : null,
+                    devices: devices,
+                    exclusions: exclusions);
             }
         }
 
@@ -383,8 +393,11 @@ internal sealed class RuntimePlanFactory
         string? modelEntryRelativePath = null,
         IReadOnlyList<string>? requiredModelRelativePaths = null,
         ExecutionProviderKind? preferredExecutionProviderSkippedForEngine = null,
-        string? modelRevisionHash = null)
+        string? modelRevisionHash = null,
+        IReadOnlyList<DeviceEntry>? devices = null,
+        DeviceExclusionSet? exclusions = null)
     {
+        (int? deviceIndex, string? deviceAdapterDescription) = ResolvePlanDevice(provider, devices, exclusions);
         return new StageRuntimePlan
         {
             Stage = stage,
@@ -402,6 +415,8 @@ internal sealed class RuntimePlanFactory
             RequiredModelRelativePaths = requiredModelRelativePaths ?? [],
             IsLocalOptimizedVariant = isLocalOptimizedVariant,
             ModelRevisionHash = modelRevisionHash,
+            DeviceIndex = deviceIndex,
+            DeviceAdapterDescription = deviceAdapterDescription,
             Fallback = fallback,
             Warnings = BuildWarnings(
                 candidate.Entry,
@@ -410,6 +425,64 @@ internal sealed class RuntimePlanFactory
                 modelIntegrityStatus,
                 preferredExecutionProviderSkippedForEngine)
         };
+    }
+
+    /// <summary>
+    /// Selects the device the planned execution provider will run on: the lowest-index
+    /// device advertising the provider that is not in the run's exclusion set.
+    /// CPU-only providers (<see cref="ExecutionProviderKind.Cpu"/> and
+    /// <see cref="ExecutionProviderKind.Dnnl"/>) additionally require
+    /// <see cref="DeviceKind.Cpu"/>: on Linux an AMD GPU advertises
+    /// <see cref="ExecutionProviderKind.Cpu"/> at index 0 while the CPU entry is appended
+    /// last, and stamping the GPU index would misattribute a CPU OOM to the GPU on fallback.
+    /// Returns no device when the device list is unavailable (planning outside a run)
+    /// or no eligible device remains; the device-fallback catch filter then lets the
+    /// failure propagate instead of recording a bogus exclusion.
+    /// </summary>
+    /// <remarks>
+    /// The stamp is the planner-ranked device used for exclusion routing, not a session
+    /// binding: pooled session creation keys on <c>deviceId: null</c> and appends the
+    /// provider with device id 0 (CUDA/DirectML), so on multi-GPU hosts a replan that
+    /// excludes the stamped index can still bind the same physical device. Wiring the
+    /// planned index into session creation (per-provider device-id mapping, pool-key
+    /// sharding) is intentionally out of scope here; see
+    /// <see cref="StageRuntimePlan.DeviceIndex"/>.
+    /// </remarks>
+    private static (int? DeviceIndex, string? AdapterDescription) ResolvePlanDevice(
+        ExecutionProviderKind provider,
+        IReadOnlyList<DeviceEntry>? devices,
+        DeviceExclusionSet? exclusions)
+    {
+        if (devices is null)
+        {
+            return (null, null);
+        }
+
+        foreach (DeviceEntry device in devices.OrderBy(static candidate => candidate.DeviceIndex))
+        {
+            if (!device.SupportedProviders.Contains(provider))
+            {
+                continue;
+            }
+
+            // CPU-only providers must land on the CPU entry: accelerators may also
+            // advertise Cpu (Linux AMD GPUs do at index 0), and stamping one would
+            // misattribute a CPU failure to the accelerator on device fallback.
+            if (provider is ExecutionProviderKind.Cpu or ExecutionProviderKind.Dnnl
+                && device.Kind != DeviceKind.Cpu)
+            {
+                continue;
+            }
+
+            if (exclusions is not null && exclusions.IsExcluded(device.DeviceIndex))
+            {
+                continue;
+            }
+
+            return (device.DeviceIndex, device.AdapterDescription);
+        }
+
+        return (null, null);
     }
 
     private static IReadOnlyList<RuntimePlanWarning> BuildWarnings(
