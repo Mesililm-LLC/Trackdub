@@ -250,6 +250,42 @@ public class RuntimeStageWarmupCoordinatorTests
         Assert.Equal(1, smokeCalls);
     }
 
+    [Theory]
+    [InlineData(RuntimeStage.Asr, "whisper-genai")]
+    [InlineData(RuntimeStage.Translation, "phi-genai")]
+    public async Task WarmAsync_SmokeFailure_GenAiEngineFamily_NeverReplansWithAuthoritativeSmoke(
+        RuntimeStage stage, string engineFamily)
+    {
+        // Same no-replan guard, exercised through the engine-family disjuncts of
+        // IsGenAiRouted rather than the TextRefinement stage disjunct: deleting
+        // either family clause must turn this red.
+        int planCalls = 0;
+        var planner = new FakeRuntimePlanner
+        {
+            PlanHandler = req =>
+            {
+                planCalls++;
+                return RunnablePlan(req) with { EngineFamily = engineFamily };
+            },
+        };
+        int smokeCalls = 0;
+        var smoke = new FakeExecutionProviderSmokeTester(_ =>
+        {
+            smokeCalls++;
+            return new ExecutionProviderSmokeTestResult(false, "genai load failed");
+        });
+        var coordinator = new RuntimeStageWarmupCoordinator(planner, smoke);
+
+        StageWarmupResult result = await coordinator.WarmAsync(
+            new StageWarmupRequest(stage, Selections()),
+            CancellationToken.None);
+
+        Assert.True(result.Attempted);
+        Assert.False(result.Succeeded);
+        Assert.Equal(1, planCalls);
+        Assert.Equal(1, smokeCalls);
+    }
+
     [Fact]
     public async Task WarmAsync_WorkerWarmOnWrongProvider_ReportsFailureAndSkipsSmoke()
     {
