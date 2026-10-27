@@ -26,7 +26,9 @@ public sealed record StageWarmupResult(
 /// <summary>
 /// Warms the selected model/provider for an imminent runtime stage while its preceding
 /// stage executes. Implementations must not create stage-run records, artifacts, readiness
-/// success, or progress events; failures are optimization-only.
+/// success, or progress events. A failed result is not optimization-only: the engine
+/// consumes it as the target stage's skip (reason <c>WARMUP_FAILED</c>) before inference,
+/// and implementations must record no readiness verdict for a failed smoke.
 /// </summary>
 public interface IStageWarmupCoordinator
 {

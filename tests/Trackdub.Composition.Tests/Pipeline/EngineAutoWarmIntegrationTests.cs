@@ -1,10 +1,14 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Trackdub.Application.Pipeline;
+using Trackdub.Composition.Headless;
 using Trackdub.Composition.Pipeline;
 using Trackdub.Composition.Runtime;
+using Trackdub.Composition.Tts;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Licensing;
 using Trackdub.Domain;
+using Trackdub.Licensing;
 using Xunit;
 
 namespace Trackdub.Composition.Tests.Pipeline;
@@ -32,6 +36,42 @@ public class EngineAutoWarmIntegrationTests
         var orchestrator = provider.GetRequiredService<ModelDownloadOrchestrator>();
         Assert.NotNull(orchestrator);
         Assert.Same(provider.GetRequiredService<IEngineAutoWarmQueue>(), provider.GetRequiredService<IEngineAutoWarmQueue>());
+    }
+
+    [Fact]
+    public void Production_orchestrator_receives_the_voice_catalog_holder()
+    {
+        // The refresh-on-install wiring dies silently if the holder is never passed: the
+        // orchestrator's refresh returns at its null guard and no test resolving the
+        // orchestrator directly would notice. Resolve through AddTrackdub so the
+        // production construction site itself is under test.
+        var services = new ServiceCollection();
+        services.AddTrackdub();
+        using ServiceProvider provider = services.BuildServiceProvider(
+            new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true });
+
+        var orchestrator = provider.GetRequiredService<ModelDownloadOrchestrator>();
+        Assert.Same(provider.GetRequiredService<KokoroVoiceCatalogHolder>(), orchestrator.VoiceCatalogHolder);
+    }
+
+    [Fact]
+    public void Headless_session_factory_ctor_starts_engine_auto_warm_installer()
+    {
+        // Advanced hosts build a provider from AddTrackdub and construct the session
+        // factory directly, without a generic host to start IHostedServices. The
+        // factory constructor is the central activation point, so license init,
+        // voice-catalog loading, and host-started observability must happen there.
+        var services = new ServiceCollection();
+        services.AddTrackdub();
+        ServiceProvider provider = services.BuildServiceProvider(
+            new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true });
+
+        var queue = (EngineAutoWarmCoordinator)provider.GetRequiredService<IEngineAutoWarmQueue>();
+        Assert.False(queue.IsHostStarted);
+
+        using var factory = new HeadlessDubbingSessionFactory(provider);
+
+        Assert.True(queue.IsHostStarted);
     }
 
     [Fact]
@@ -68,7 +108,94 @@ public class EngineAutoWarmIntegrationTests
         Assert.True(queue.IsActive);
     }
 
-    private sealed class RecordingQueue : IEngineAutoWarmQueue
+    [Fact]
+    public async Task Installer_awaits_license_initialization_before_host_activation()
+    {
+        var queue = new RecordingQueue();
+        var initializer = new RecordingLicenseInitializer();
+        var installer = new EngineAutoWarmInstaller(queue, initializer);
+
+        await installer.StartAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(initializer.WasInitialized);
+        Assert.True(queue.IsHostStarted);
+    }
+
+    [Fact]
+    public async Task Installer_awaits_ep_context_hardware_identity_before_host_activation()
+    {
+        // Session creation consumes the EP-context hardware identity without probing, so
+        // host startup must load it before marking the host started (the point after which
+        // pooled sessions may be created). Order matters, not just that both happen.
+        var order = new List<string>();
+        var queue = new RecordingQueue(order);
+        var warmup = new RecordingEpContextWarmupService(order);
+        var installer = new EngineAutoWarmInstaller(queue, epContextWarmupService: warmup);
+
+        await installer.StartAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(warmup.WasInitialized);
+        Assert.Equal(["ep-context-hardware-identity", "host-started"], order);
+    }
+
+    [Fact]
+    public async Task Installer_second_start_does_not_repeat_startup_work()
+    {
+        // Hosts that already started the installer (generic host, TrackdubBuilder)
+        // must not re-probe hardware or re-validate the license when a later eager
+        // activation point (HeadlessDubbingSessionFactory) starts it again.
+        var order = new List<string>();
+        var queue = new RecordingQueue(order);
+        var warmup = new RecordingEpContextWarmupService(order);
+        var initializer = new RecordingLicenseInitializer();
+        var installer = new EngineAutoWarmInstaller(
+            queue, initializer, epContextWarmupService: warmup);
+
+        await installer.StartAsync(TestContext.Current.CancellationToken);
+        await installer.StartAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, warmup.InitializeCount);
+        Assert.Equal(1, initializer.InitializeCount);
+        Assert.Equal(["ep-context-hardware-identity", "host-started"], order);
+    }
+
+    private sealed class RecordingEpContextWarmupService(List<string> order) : IEpContextWarmupService
+    {
+        public bool WasInitialized { get; private set; }
+
+        public int InitializeCount { get; private set; }
+
+        public Task InitializeHardwareIdentityAsync(CancellationToken cancellationToken = default)
+        {
+            WasInitialized = true;
+            InitializeCount++;
+            order.Add("ep-context-hardware-identity");
+            return Task.CompletedTask;
+        }
+
+        public Task<EpContextWarmReport> WarmAsync(
+            IReadOnlyList<string>? sourceModelPaths = null,
+            IProgress<string>? progress = null,
+            ExecutionProviderKind provider = ExecutionProviderKind.TensorRTRtx,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class RecordingLicenseInitializer : ILicenseInitializer
+    {
+        public bool WasInitialized { get; private set; }
+
+        public int InitializeCount { get; private set; }
+
+        public Task<LicenseValidationResult> InitializeAsync(CancellationToken cancellationToken = default)
+        {
+            WasInitialized = true;
+            InitializeCount++;
+            return Task.FromResult(new LicenseValidationResult(LicenseTier.Free, null, 0, 0, null, null));
+        }
+    }
+
+    private sealed class RecordingQueue(List<string>? order = null) : IEngineAutoWarmQueue
     {
         public List<string> Requests { get; } = [];
 
@@ -88,6 +215,7 @@ public class EngineAutoWarmIntegrationTests
             Activate();
             bool changed = !IsHostStarted;
             IsHostStarted = true;
+            order?.Add("host-started");
             return changed;
         }
 

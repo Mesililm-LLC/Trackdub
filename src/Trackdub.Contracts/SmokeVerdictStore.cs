@@ -13,11 +13,12 @@ public sealed record SmokeVerdictKey(
     ExecutionProviderKind ExecutionProvider,
     NvidiaGpuArchitectureBucket GpuArchitecture,
     string? DriverVersion,
-    string? TrtRtxEpVersion)
+    string? TrtRtxEpVersion,
+    string? OrtRuntimeVersion = null)
 {
-    /// <summary>GPU arch + driver + TRT RTX EP version; shared by every verdict on one machine state.</summary>
+    /// <summary>GPU arch + driver + TRT RTX EP version + ORT runtime version; shared by every verdict on one machine state.</summary>
     public string EnvironmentFingerprint =>
-        $"{GpuArchitecture}|{Normalize(DriverVersion)}|{Normalize(TrtRtxEpVersion)}";
+        $"{GpuArchitecture}|{Normalize(DriverVersion)}|{Normalize(TrtRtxEpVersion)}|{Normalize(OrtRuntimeVersion)}";
 
     /// <summary>Model identity + execution provider.</summary>
     public string EntryId =>

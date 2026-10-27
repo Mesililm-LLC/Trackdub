@@ -264,7 +264,8 @@ public static class CompositionRoot
             sp.GetService<IModelHashVerifier>(),
             sp.GetService<IApplicationLogger>(),
             sp.GetService<IStudioSettingsService>(),
-            sp.GetService<IEngineAutoWarmQueue>()));
+            sp.GetService<IEngineAutoWarmQueue>(),
+            sp.GetService<KokoroVoiceCatalogHolder>()));
         services.TryAddSingleton<IModelDownloadOrchestrator>(sp => sp.GetRequiredService<ModelDownloadOrchestrator>());
         services.TryAddSingleton<IModelCacheVerifier>(sp => sp.GetRequiredService<ModelDownloadOrchestrator>());
         services.TryAddSingleton<IFileFingerprintService>(sp =>
@@ -669,7 +670,9 @@ public static class CompositionRoot
                 sp.GetRequiredService<IExecutionProviderSmokeTester>(),
                 sp.GetService<IRuntimePlanningPreferences>(),
                 sp.GetService<IInferenceWorkerClient>(),
-                allowsConcurrentWarmup: Trackdub.Inference.Onnx.Pool.GenAiModelPool.Shared.MaxEntries >= 2));
+                allowsConcurrentWarmup: Trackdub.Inference.Onnx.Pool.GenAiModelPool.Shared.MaxEntries >= 2,
+                smokeVerdictStore: sp.GetService<ISmokeVerdictStore>(),
+                hardwareProfileProvider: sp.GetService<IHardwareProfileProvider>()));
         services.TryAddSingleton<IResidentWarmupService>(sp =>
             new ResidentWarmupService(
                 sp.GetRequiredService<IServiceScopeFactory>(),
@@ -705,12 +708,10 @@ public static class CompositionRoot
                 sp.GetRequiredService<TranslationLanguageRouter>(),
                 sp.GetRequiredService<ICloudApiKeyProvider>()));
         services.TryAddSingleton<IGraphemeToPhoneme>(_ => new EspeakNgPhonemizer());
+        services.TryAddSingleton<KokoroVoiceCatalogHolder>();
         services.TryAddScoped<IVoiceCatalog>(sp =>
             new StockAndPresetVoiceCatalog(
-                CreateKokoroVoiceCatalog(
-                    sp.GetRequiredService<BenchmarkModelPathResolver>(),
-                    sp.GetRequiredService<IApplicationLogger>())
-                .GetAwaiter().GetResult(),
+                sp.GetRequiredService<KokoroVoiceCatalogHolder>().Current,
                 Qwen3TtsVoiceCatalog.KnownAvailable()));
 
         services.TryAddEnumerable(ServiceDescriptor.Scoped<ISpeechRegionDetectorAdapter, SileroVadSpeechRegionDetector>());
@@ -1122,42 +1123,5 @@ public static class CompositionRoot
         return System.Text.RegularExpressions.Regex.IsMatch(normalized, "^[A-Fa-f0-9]{64}$")
             ? normalized.ToLowerInvariant()
             : null;
-    }
-
-    private static async Task<IVoiceCatalog> CreateKokoroVoiceCatalog(
-        BenchmarkModelPathResolver modelPathResolver,
-        IApplicationLogger logger)
-    {
-        try
-        {
-            BenchmarkModelCandidate candidate = modelPathResolver.ResolveSingle("kokoro-onnx");
-            string? modelRootPath = candidate.RootDirectory ?? Path.GetDirectoryName(candidate.ModelPath);
-            if (!string.IsNullOrWhiteSpace(modelRootPath))
-            {
-                modelRootPath = KokoroVoiceCatalog.ResolveRootContainingVoices(modelRootPath);
-            }
-
-            return string.IsNullOrWhiteSpace(modelRootPath)
-                ? KokoroVoiceCatalog.KnownAvailable()
-                : await CreateKokoroVoiceCatalogSafe(modelRootPath, logger).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning("Kokoro model path could not be resolved; falling back to known-available voices.", ex);
-            return KokoroVoiceCatalog.KnownAvailable();
-        }
-    }
-
-    private static async Task<IVoiceCatalog> CreateKokoroVoiceCatalogSafe(string modelRootPath, IApplicationLogger logger)
-    {
-        try
-        {
-            return await KokoroVoiceCatalog.LoadAsync(modelRootPath).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning("Kokoro voice catalog could not be loaded; falling back to known-available voices.", ex);
-            return KokoroVoiceCatalog.KnownAvailable();
-        }
     }
 }

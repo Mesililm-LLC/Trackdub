@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Trackdub.Application.Pipeline;
 using Trackdub.Application.Transcripts;
+using Trackdub.Contracts;
 using Trackdub.Contracts.Benchmarking;
 using Trackdub.Contracts.Pipeline;
 using Trackdub.Composition;
@@ -384,6 +385,67 @@ public class RuntimeStageWarmupCoordinatorTests
         Assert.Equal(RuntimeStage.Tts, capturedPlan!.Stage);
         Assert.Equal(VoiceCloningDefaults.ChatterboxPrimaryAlias, capturedPlan.PreferredModelAlias);
         Assert.True(capturedPlan.RequirePreferredModelAlias);
+    }
+
+    [Fact]
+    public async Task WarmAsync_PassedSmoke_RecordsVerdictForNextLaunch()
+    {
+        var planner = new FakeRuntimePlanner { PlanHandler = RunnablePlan };
+        var smoke = new FakeExecutionProviderSmokeTester(
+            _ => new ExecutionProviderSmokeTestResult(true));
+        var verdictStore = new RecordingVerdictStore();
+        var coordinator = new RuntimeStageWarmupCoordinator(
+            planner, smoke, smokeVerdictStore: verdictStore,
+            hardwareProfileProvider: new FakeHardwareProfileProvider());
+
+        StageWarmupResult result = await coordinator.WarmAsync(
+            new StageWarmupRequest(RuntimeStage.Asr, Selections()),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        SmokeVerdictKey key = Assert.Single(verdictStore.Recorded);
+        Assert.Equal("deadbeef", key.ModelSha256);
+        Assert.Equal(ExecutionProviderKind.DirectMl, key.ExecutionProvider);
+        Assert.Equal("1.24.0-test", key.OrtRuntimeVersion);
+    }
+
+    [Fact]
+    public async Task WarmAsync_FailedSmoke_RecordsNoVerdictAndReturnsFailureWithReason()
+    {
+        var planner = new FakeRuntimePlanner { PlanHandler = RunnablePlan };
+        var smoke = new FakeExecutionProviderSmokeTester(
+            _ => new ExecutionProviderSmokeTestResult(false, "provider failed"));
+        var verdictStore = new RecordingVerdictStore();
+        var coordinator = new RuntimeStageWarmupCoordinator(
+            planner, smoke, smokeVerdictStore: verdictStore,
+            hardwareProfileProvider: new FakeHardwareProfileProvider());
+
+        StageWarmupResult result = await coordinator.WarmAsync(
+            new StageWarmupRequest(RuntimeStage.Asr, Selections()),
+            CancellationToken.None);
+
+        Assert.True(result.Attempted);
+        Assert.False(result.Succeeded);
+        Assert.Equal("provider failed", result.Detail);
+        Assert.Empty(verdictStore.Recorded);
+    }
+
+    private sealed class RecordingVerdictStore : ISmokeVerdictStore
+    {
+        public List<SmokeVerdictKey> Recorded { get; } = [];
+        public bool IsVerified(SmokeVerdictKey key) => Recorded.Contains(key);
+        public void RecordVerified(SmokeVerdictKey key) => Recorded.Add(key);
+        public void Clear() => Recorded.Clear();
+    }
+
+    private sealed class FakeHardwareProfileProvider : IHardwareProfileProvider
+    {
+        public Task<HardwareProfile> GetCurrentAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(new HardwareProfile(
+                "windows", "x64", HasGpu: true, GpuDescription: "Test GPU",
+                NvidiaGpuArchitecture: NvidiaGpuArchitectureBucket.Ada,
+                GpuDriverVersion: "555.1",
+                OrtRuntimeVersion: "1.24.0-test"));
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 using Trackdub.Application.Pipeline;
 using Trackdub.Application.Transcripts;
+using Trackdub.Contracts;
 using Trackdub.Contracts.ApplicationContracts;
 using Trackdub.Contracts.Benchmarking;
 using Trackdub.Contracts.Licensing;
@@ -7,14 +8,18 @@ using Trackdub.Domain;
 using Trackdub.Inference.Onnx.Runtime.Planning;
 using Trackdub.Inference.Onnx.Worker;
 using Trackdub.Inference.Runtime.Planning;
+using Trackdub.Inference.Runtime.TensorRtRtx;
 
 namespace Trackdub.Composition.Pipeline;
 
 /// <summary>
 /// Warms exactly the model the planner would select for an imminent runtime stage by running
 /// the real plan + provider smoke profile ahead of execution. The smoke path reuses pooled
-/// ONNX sessions and shared GenAI models, so the next stage's first lease is warm. Purely
-/// optimization: no stage-run records, artifacts, or readiness state are produced.
+/// ONNX sessions and shared GenAI models, so the next stage's first lease is warm. Since
+/// planning no longer smokes (C4), this is the single proving create on a first run: its
+/// failure is returned with its reason (the engine then skips/blocks the stage before
+/// inference), and a pass records the persisted smoke verdict for the next launch. It
+/// produces no stage-run records or artifacts.
 /// </summary>
 public sealed class RuntimeStageWarmupCoordinator(
     IRuntimePlanner runtimePlanner,
@@ -22,7 +27,9 @@ public sealed class RuntimeStageWarmupCoordinator(
     IRuntimePlanningPreferences? runtimePlanningPreferences = null,
     IInferenceWorkerClient? inferenceWorkerClient = null,
     Func<bool>? hostCudaProviderListed = null,
-    bool allowsConcurrentWarmup = false)
+    bool allowsConcurrentWarmup = false,
+    ISmokeVerdictStore? smokeVerdictStore = null,
+    IHardwareProfileProvider? hardwareProfileProvider = null)
     : IStageWarmupCoordinator
 {
     public bool AllowsConcurrentWarmup => allowsConcurrentWarmup;
@@ -147,6 +154,8 @@ public sealed class RuntimeStageWarmupCoordinator(
                 ExecutionProviderSmokeTestResult smoke = await SmokeAsync(plan, provider, cancellationToken)
                     .ConfigureAwait(false);
 
+                StageRuntimePlan warmedPlan = plan;
+                ExecutionProviderKind warmedProvider = provider;
                 if (!smoke.Passed && !smoke.NotAttempted && !IsGenAiRouted(plan))
                 {
                     // The file-only plan above never ran the planner's authoritative
@@ -165,6 +174,8 @@ public sealed class RuntimeStageWarmupCoordinator(
                     {
                         smoke = await SmokeAsync(replanned, fallbackProvider, cancellationToken)
                             .ConfigureAwait(false);
+                        warmedPlan = replanned;
+                        warmedProvider = fallbackProvider;
                     }
                 }
 
@@ -176,6 +187,12 @@ public sealed class RuntimeStageWarmupCoordinator(
                         Succeeded: false,
                         Detail: smoke.Detail
                             ?? "Warmup skipped: loading the model would evict a resident model.");
+                }
+
+                if (smoke.Passed)
+                {
+                    await RecordVerdictAsync(warmedPlan, warmedProvider, cancellationToken).ConfigureAwait(false);
+                }
                 }
 
                 BenchmarkPhaseCapture.Increment(
@@ -199,6 +216,44 @@ public sealed class RuntimeStageWarmupCoordinator(
         }
     }
 
+    /// <summary>
+    /// Persists the proof this warmup just produced so the next launch's planner can return
+    /// Verified without any smoke. Planning no longer smokes or records verdicts (C4), so the
+    /// coordinator — the single proving create, leasing the pooled session the stage reuses —
+    /// is now the verdict recorder. Best-effort: a recording failure must not turn a passed
+    /// warmup into a failure. Local optimized variants are excluded, mirroring the planner:
+    /// a source-sha verdict cannot prove a different graph file.
+    /// </summary>
+    private async Task RecordVerdictAsync(
+        StageRuntimePlan plan,
+        ExecutionProviderKind provider,
+        CancellationToken cancellationToken)
+    {
+        if (smokeVerdictStore is null
+            || hardwareProfileProvider is null
+            || plan.IsLocalOptimizedVariant
+            || string.IsNullOrWhiteSpace(plan.ModelRevisionHash))
+        {
+            return;
+        }
+
+        try
+        {
+            HardwareProfile hardwareProfile = await hardwareProfileProvider
+                .GetCurrentAsync(cancellationToken).ConfigureAwait(false);
+            smokeVerdictStore.RecordVerified(new SmokeVerdictKey(
+                plan.ModelRevisionHash,
+                provider,
+                hardwareProfile.NvidiaGpuArchitecture,
+                hardwareProfile.GpuDriverVersion,
+                TensorRtRtxProviderConstants.BundledFingerprintVersion,
+                hardwareProfile.OrtRuntimeVersion));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Best-effort persistence only (see summary).
+        }
+    }
     private Task<ExecutionProviderSmokeTestResult> SmokeAsync(
         StageRuntimePlan plan,
         ExecutionProviderKind provider,
@@ -240,4 +295,5 @@ public sealed class RuntimeStageWarmupCoordinator(
         OnnxExecutionProviderDiscovery.WorkerCudaEngineFamilies.Contains(
             plan.EngineFamily, StringComparer.OrdinalIgnoreCase) &&
         !(hostCudaProviderListed?.Invoke() ?? CudaOrtProbe.IsCudaProviderListed());
+
 }

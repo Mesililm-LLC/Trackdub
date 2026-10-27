@@ -57,6 +57,17 @@ public sealed class EpContextCompiler
             return new CompileResult(false, null, 0, exclusionReason);
         }
 
+        // Compiling now would stamp the artifact with the placeholder "unknown" hardware
+        // identity, producing an artifact no lookup can validate (and displacing a valid
+        // one on publish). Defer honestly until startup/warmup loads the identity.
+        if (!EpContextLoadPathResolver.HasIdentifiedHardware)
+        {
+            return new CompileResult(false, null, 0,
+                "Hardware identity is not available (GPU architecture, driver version, or " +
+                "host ORT version is unknown), so an EP-context compile would be stamped " +
+                "'unknown'. Run host startup or EP-context warmup on a machine with an identifiable GPU.");
+        }
+
         // TensorRT RTX is a standalone ORT EP ABI plugin. Unless registered before the first OrtEnv
         // touch, GetEpDevices() lists no TRT device and AppendTensorRtRtxOrFallbackProvider silently
         // compiles under DirectML/CPU — producing a reserialized graph with zero EP-context nodes

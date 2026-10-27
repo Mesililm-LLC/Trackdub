@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Trackdub.Application.Transcripts;
 using Trackdub.Contracts;
+using Trackdub.Contracts.Pipeline;
 using Trackdub.Domain;
 using Trackdub.Inference.Runtime.ModelManifest;
 using Trackdub.Inference.Runtime.Planning;
@@ -14,7 +15,7 @@ public sealed class RuntimePlannerTests
 {
     private const string ValidSha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     [Fact]
-    public async Task PlanAsync_WhenDirectMlSmokePasses_ReturnsReadyDirectMl()
+    public async Task PlanAsync_NoVerdict_ReturnsReadyDirectMlWithoutSmoke()
     {
         using var workspace = new RuntimePlannerTestWorkspace();
         BundledModelManifestRegistry registry = workspace.WriteManifest(
@@ -39,7 +40,7 @@ public sealed class RuntimePlannerTests
         Assert.Equal("silero-vad", plan.EngineFamily);
         Assert.Equal("balanced", plan.ModelTier);
         Assert.Equal("fp16", plan.Variant);
-        Assert.Null(plan.Fallback);
+        Assert.Equal(StageRuntimePlanStatus.Ready, plan.Status);
     }
 
     [Fact]
@@ -186,7 +187,7 @@ public sealed class RuntimePlannerTests
     }
 
     [Fact]
-    public async Task PlanAsync_RequiredCudaSmokeFailure_ReturnsBlockedInsteadOfCpuFallback()
+    public async Task PlanAsync_NoVerdict_RequiredCuda_ReturnsReadyWithoutSmoke()
     {
         using var workspace = new RuntimePlannerTestWorkspace();
         BundledModelManifestRegistry registry = workspace.WriteManifest(
@@ -224,15 +225,14 @@ public sealed class RuntimePlannerTests
             PreferredExecutionProvider: ExecutionProviderKind.Cuda,
             RequirePreferredExecutionProvider: true));
 
-        Assert.Equal(StageRuntimePlanStatus.Blocked, plan.Status);
-        Assert.NotNull(plan.Fallback);
-        Assert.Equal(RuntimePlanFallbackCode.ProviderSmokeTestFailed, plan.Fallback!.Code);
-        Assert.Contains("CUDA smoke failed", plan.Fallback.Detail, StringComparison.Ordinal);
-        Assert.DoesNotContain(plan.Warnings, warning => warning.Code == RuntimePlanWarningCode.CpuFallback);
+        // C4: planning never smokes, so a smoke failure cannot block or fall back here;
+        // proving (and failure surfacing) happens at warmup/stage execution.
+        Assert.Equal(StageRuntimePlanStatus.Ready, plan.Status);
+        Assert.Equal(ExecutionProviderKind.Cuda, plan.ExecutionProvider);
     }
 
     [Fact]
-    public async Task PlanAsync_WhenDirectMlSmokeFails_FallsBackToCpu()
+    public async Task PlanAsync_NoVerdict_DoesNotSmokeOrFallBack_PicksFirstProvider()
     {
         using var workspace = new RuntimePlannerTestWorkspace();
         BundledModelManifestRegistry registry = workspace.WriteManifest(
@@ -256,17 +256,17 @@ public sealed class RuntimePlannerTests
         StageRuntimePlan plan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad));
 
         Assert.True(plan.IsRunnable(), $"Expected runnable plan but got {plan.Status}");
-        Assert.Equal(ExecutionProviderKind.Cpu, plan.ExecutionProvider);
-        Assert.Equal("int8", plan.Variant);
-        Assert.NotNull(plan.Fallback);
-        Assert.Equal(RuntimePlanFallbackCode.ProviderSmokeTestFailed, plan.Fallback!.Code);
-        Assert.Contains(plan.Warnings, warning => warning.Code == RuntimePlanWarningCode.CpuFallback);
-        Assert.NotEmpty(smokeRequests);
+        Assert.Equal(StageRuntimePlanStatus.Ready, plan.Status);
+        Assert.Equal(ExecutionProviderKind.DirectMl, plan.ExecutionProvider);
+        Assert.Equal("fp16", plan.Variant);
+        Assert.Empty(smokeRequests);
     }
 
     [Fact]
-    public async Task PlanAsync_DoesNotEnumerateDevices_WhenExclusionsAreNull()
+    public async Task PlanAsync_EnumeratesDevicesAndStampsPlan_WhenExclusionsAreNull()
     {
+        // Preflight plans before BeginRun, when CurrentExclusions is still null; the plan
+        // must still carry the device so the run's same-key cache hit can engage fallback.
         using var workspace = new RuntimePlannerTestWorkspace();
         BundledModelManifestRegistry registry = workspace.WriteManifest(
             CreateVadSpec("silero-vad", commercialAllowed: true, license: "MIT"));
@@ -275,8 +275,8 @@ public sealed class RuntimePlannerTests
         workspace.WriteCacheFile(cacheRoot, "onnx/model_fp16.onnx");
         var enumerator = new RecordingDeviceEnumerator(
             [
-                new DeviceEntry(DeviceKind.DiscreteGpu, 1, "dGPU", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
-                new DeviceEntry(DeviceKind.Cpu, 0, "CPU", "Microsoft", 0, 0, [ExecutionProviderKind.Cpu])
+                new DeviceEntry(DeviceKind.DiscreteGpu, 0, "dGPU", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.Cpu, 1, "CPU", "Microsoft", 0, 0, [ExecutionProviderKind.Cpu])
             ]);
 
         RuntimePlanner planner = CreatePlanner(
@@ -290,7 +290,46 @@ public sealed class RuntimePlannerTests
 
         Assert.True(plan.IsRunnable(), $"Expected runnable plan but got {plan.Status}");
         Assert.Equal(ExecutionProviderKind.DirectMl, plan.ExecutionProvider);
-        Assert.Equal(0, enumerator.GetDevicesCallCount);
+        Assert.Equal(0, plan.DeviceIndex);
+        Assert.Equal("dGPU", plan.DeviceAdapterDescription);
+        Assert.Equal(1, enumerator.GetDevicesCallCount);
+    }
+
+    [Fact]
+    public async Task PlanAsync_PreflightPlanBeforeBeginRun_CarriesDeviceIntoRunCacheHit()
+    {
+        // Preflight (no run yet, CurrentExclusions null) and the run's empty-exclusion
+        // lookup share a cache key; the cached preflight plan must already carry the
+        // device or DeviceFallbackSessionCreator can never engage.
+        using var workspace = new RuntimePlannerTestWorkspace();
+        BundledModelManifestRegistry registry = workspace.WriteManifest(
+            CreateVadSpec("silero-vad", commercialAllowed: true, license: "MIT"));
+
+        string cacheRoot = workspace.CreateCacheRoot("onnx-community/silero-vad");
+        workspace.WriteCacheFile(cacheRoot, "onnx/model_fp16.onnx");
+        var exclusionProvider = new PipelineDeviceExclusionProvider();
+        var enumerator = new RecordingDeviceEnumerator(
+            [
+                new DeviceEntry(DeviceKind.DiscreteGpu, 0, "dGPU", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.Cpu, 1, "CPU", "Microsoft", 0, 0, [ExecutionProviderKind.Cpu])
+            ]);
+
+        RuntimePlanner planner = CreatePlanner(
+            registry,
+            [new("onnx-community/silero-vad", cacheRoot, "main", ValidSha256, DateTimeOffset.UtcNow)],
+            [new(ExecutionProviderKind.DirectMl, true), new(ExecutionProviderKind.Cpu, true)],
+            _ => new ExecutionProviderSmokeTestResult(true),
+            deviceExclusionProvider: exclusionProvider,
+            deviceEnumerator: enumerator);
+
+        StageRuntimePlan preflightPlan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad));
+        Assert.Equal(0, preflightPlan.DeviceIndex);
+
+        exclusionProvider.BeginRun();
+        StageRuntimePlan runPlan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad));
+
+        Assert.Equal(0, runPlan.DeviceIndex);
+        Assert.Equal("dGPU", runPlan.DeviceAdapterDescription);
     }
 
     [Fact]
@@ -330,12 +369,12 @@ public sealed class RuntimePlannerTests
         workspace.WriteCacheFile(cacheRoot, "onnx/model_fp16.onnx");
 
         var exclusions = new DeviceExclusionSet();
-        exclusions.MarkMemoryExhausted(1);
+        exclusions.MarkMemoryExhausted(0);
         var exclusionProvider = new FixedExclusionProvider(exclusions);
         var enumerator = new RecordingDeviceEnumerator(
             [
-                new DeviceEntry(DeviceKind.DiscreteGpu, 1, "dGPU", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
-                new DeviceEntry(DeviceKind.Cpu, 0, "CPU", "Microsoft", 0, 0, [ExecutionProviderKind.Cpu])
+                new DeviceEntry(DeviceKind.DiscreteGpu, 0, "dGPU", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.Cpu, 1, "CPU", "Microsoft", 0, 0, [ExecutionProviderKind.Cpu])
             ]);
 
         RuntimePlanner planner = CreatePlanner(
@@ -355,6 +394,231 @@ public sealed class RuntimePlannerTests
         Assert.NotNull(plan.Fallback);
         Assert.Equal(RuntimePlanFallbackCode.ProviderUnavailable, plan.Fallback!.Code);
         Assert.Equal(1, enumerator.GetDevicesCallCount);
+    }
+
+    [Fact]
+    public async Task PlanAsync_StampsSelectedDeviceIndexAndAdapter_WhenDevicesAvailable()
+    {
+        // C10 reachability: planner-produced plans must carry DeviceIndex/DeviceAdapterDescription
+        // so the DeviceFallbackSessionCreator catch filter can engage in production.
+        using var workspace = new RuntimePlannerTestWorkspace();
+        BundledModelManifestRegistry registry = workspace.WriteManifest(
+            CreateVadSpec("silero-vad", commercialAllowed: true, license: "MIT"));
+
+        string cacheRoot = workspace.CreateCacheRoot("onnx-community/silero-vad");
+        workspace.WriteCacheFile(cacheRoot, "onnx/model_fp16.onnx");
+        var exclusionProvider = new PipelineDeviceExclusionProvider();
+        exclusionProvider.BeginRun();
+        var enumerator = new RecordingDeviceEnumerator(
+            [
+                new DeviceEntry(DeviceKind.DiscreteGpu, 0, "dGPU", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.Cpu, 1, "CPU", "Microsoft", 0, 0, [ExecutionProviderKind.Cpu])
+            ]);
+
+        RuntimePlanner planner = CreatePlanner(
+            registry,
+            [new("onnx-community/silero-vad", cacheRoot, "main", ValidSha256, DateTimeOffset.UtcNow)],
+            [new(ExecutionProviderKind.DirectMl, true), new(ExecutionProviderKind.Cpu, true)],
+            _ => new ExecutionProviderSmokeTestResult(true),
+            deviceExclusionProvider: exclusionProvider,
+            deviceEnumerator: enumerator);
+
+        StageRuntimePlan plan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad));
+
+        Assert.True(plan.IsRunnable(), $"Expected runnable plan but got {plan.Status}");
+        Assert.Equal(ExecutionProviderKind.DirectMl, plan.ExecutionProvider);
+        Assert.Equal(0, plan.DeviceIndex);
+        Assert.Equal("dGPU", plan.DeviceAdapterDescription);
+        Assert.Equal(1, enumerator.GetDevicesCallCount);
+    }
+
+    [Fact]
+    public async Task PlanAsync_SkipsExcludedDevice_WhenStampingPlanDevice()
+    {
+        using var workspace = new RuntimePlannerTestWorkspace();
+        BundledModelManifestRegistry registry = workspace.WriteManifest(
+            CreateVadSpec("silero-vad", commercialAllowed: true, license: "MIT"));
+
+        string cacheRoot = workspace.CreateCacheRoot("onnx-community/silero-vad");
+        workspace.WriteCacheFile(cacheRoot, "onnx/model_fp16.onnx");
+        var exclusions = new DeviceExclusionSet();
+        exclusions.MarkMemoryExhausted(0);
+        var enumerator = new RecordingDeviceEnumerator(
+            [
+                new DeviceEntry(DeviceKind.DiscreteGpu, 0, "dGPU-1", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.DiscreteGpu, 1, "dGPU-2", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.Cpu, 2, "CPU", "Microsoft", 0, 0, [ExecutionProviderKind.Cpu])
+            ]);
+
+        RuntimePlanner planner = CreatePlanner(
+            registry,
+            [new("onnx-community/silero-vad", cacheRoot, "main", ValidSha256, DateTimeOffset.UtcNow)],
+            [new(ExecutionProviderKind.DirectMl, true), new(ExecutionProviderKind.Cpu, true)],
+            _ => new ExecutionProviderSmokeTestResult(true),
+            deviceExclusionProvider: new FixedExclusionProvider(exclusions),
+            deviceEnumerator: enumerator);
+
+        StageRuntimePlan plan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad));
+
+        Assert.True(plan.IsRunnable(), $"Expected runnable plan but got {plan.Status}");
+        Assert.Equal(ExecutionProviderKind.DirectMl, plan.ExecutionProvider);
+        Assert.Equal(1, plan.DeviceIndex);
+        Assert.Equal("dGPU-2", plan.DeviceAdapterDescription);
+    }
+
+    [Fact]
+    public async Task PlanAsync_CpuPlan_StampsCpuDeviceEntry()
+    {
+        // Production order is GPUs-first with CPU last, and on Linux an AMD GPU
+        // advertises Cpu at index 0 — a Cpu plan must still stamp the CPU entry.
+        using var workspace = new RuntimePlannerTestWorkspace();
+        BundledModelManifestRegistry registry = workspace.WriteManifest(
+            CreateVadSpec("silero-vad", commercialAllowed: true, license: "MIT"));
+
+        string cacheRoot = workspace.CreateCacheRoot("onnx-community/silero-vad");
+        workspace.WriteCacheFile(cacheRoot, "onnx/model_fp16.onnx");
+        var exclusionProvider = new PipelineDeviceExclusionProvider();
+        exclusionProvider.BeginRun();
+        var enumerator = new RecordingDeviceEnumerator(
+            [
+                new DeviceEntry(DeviceKind.DiscreteGpu, 0, "AMD GPU", "AMD", 8192, 0, [ExecutionProviderKind.Migraphx, ExecutionProviderKind.Cpu]),
+                new DeviceEntry(DeviceKind.Cpu, 1, "CPU", "Generic", 0, 0, [ExecutionProviderKind.Cpu])
+            ]);
+
+        RuntimePlanner planner = CreatePlanner(
+            registry,
+            [new("onnx-community/silero-vad", cacheRoot, "main", ValidSha256, DateTimeOffset.UtcNow)],
+            [new(ExecutionProviderKind.Cpu, true)],
+            _ => new ExecutionProviderSmokeTestResult(true),
+            deviceExclusionProvider: exclusionProvider,
+            deviceEnumerator: enumerator);
+
+        StageRuntimePlan plan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad));
+
+        Assert.True(plan.IsRunnable(), $"Expected runnable plan but got {plan.Status}");
+        Assert.Equal(ExecutionProviderKind.Cpu, plan.ExecutionProvider);
+        Assert.Equal(1, plan.DeviceIndex);
+        Assert.Equal("CPU", plan.DeviceAdapterDescription);
+    }
+
+    [Fact]
+    public async Task DeviceFallback_EndToEnd_OomOnPlannedDevice_MigratesAndReportsDegradation()
+    {
+        // Proves the C10 guards are reachable with production plans: the initial plan carries
+        // the stamped device, the OOM engages the catch filter, and the replan migrates.
+        using var workspace = new RuntimePlannerTestWorkspace();
+        BundledModelManifestRegistry registry = workspace.WriteManifest(
+            CreateVadSpec("silero-vad", commercialAllowed: true, license: "MIT"));
+
+        string cacheRoot = workspace.CreateCacheRoot("onnx-community/silero-vad");
+        workspace.WriteCacheFile(cacheRoot, "onnx/model_fp16.onnx");
+        var exclusionProvider = new PipelineDeviceExclusionProvider();
+        exclusionProvider.BeginRun();
+        var enumerator = new RecordingDeviceEnumerator(
+            [
+                new DeviceEntry(DeviceKind.DiscreteGpu, 0, "dGPU", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.Cpu, 1, "CPU", "Microsoft", 0, 0, [ExecutionProviderKind.Cpu])
+            ]);
+
+        RuntimePlanner planner = CreatePlanner(
+            registry,
+            [new("onnx-community/silero-vad", cacheRoot, "main", ValidSha256, DateTimeOffset.UtcNow)],
+            [new(ExecutionProviderKind.DirectMl, true), new(ExecutionProviderKind.Cpu, true)],
+            _ => new ExecutionProviderSmokeTestResult(true),
+            deviceExclusionProvider: exclusionProvider,
+            deviceEnumerator: enumerator);
+
+        StageRuntimePlan initialPlan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad));
+        Assert.Equal(0, initialPlan.DeviceIndex);
+
+        var oom = new Exception("[ErrorCode:RuntimeException] CUDA error: out of memory");
+        int createCount = 0;
+        Task<string> CreateSessionAsync(StageRuntimePlan plan, CancellationToken ct)
+        {
+            createCount++;
+            if (plan.DeviceIndex == 0)
+            {
+                throw oom;
+            }
+
+            return Task.FromResult("session-on-fallback-device");
+        }
+
+        Task<StageRuntimePlan> ReplanAsync(CancellationToken ct) =>
+            planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad), ct);
+
+        DeviceFallbackSessionCreator.Result<string> result = await DeviceFallbackSessionCreator
+            .CreateWithDeviceFallbackAsync(
+                initialPlan,
+                CreateSessionAsync,
+                ReplanAsync,
+                exclusionProvider,
+                cancellationToken: CancellationToken.None);
+
+        Assert.Equal("session-on-fallback-device", result.Lease);
+        Assert.NotNull(result.Degradation);
+        Assert.Equal(DeviceDegradationKind.MemoryExhausted, result.Degradation.Kind);
+        Assert.Equal(0, result.Degradation.FailedDeviceIndex);
+        Assert.Equal(1, result.Degradation.FallbackDeviceIndex);
+        Assert.Equal(2, createCount);
+        Assert.True(exclusionProvider.CurrentExclusions!.IsExcluded(0));
+    }
+
+    [Fact]
+    public async Task DeviceFallback_EndToEnd_PersistentOom_IsBoundedByAttemptCap()
+    {
+        // Worst case through production replans: every device OOMs, the 4-attempt cap stops
+        // the loop instead of cycling onto the terminal Blocked plan forever.
+        using var workspace = new RuntimePlannerTestWorkspace();
+        BundledModelManifestRegistry registry = workspace.WriteManifest(
+            CreateVadSpec("silero-vad", commercialAllowed: true, license: "MIT"));
+
+        string cacheRoot = workspace.CreateCacheRoot("onnx-community/silero-vad");
+        workspace.WriteCacheFile(cacheRoot, "onnx/model_fp16.onnx");
+        var exclusionProvider = new PipelineDeviceExclusionProvider();
+        exclusionProvider.BeginRun();
+        var enumerator = new RecordingDeviceEnumerator(
+            [
+                new DeviceEntry(DeviceKind.DiscreteGpu, 0, "dGPU-1", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.DiscreteGpu, 1, "dGPU-2", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.DiscreteGpu, 2, "dGPU-3", "NVIDIA", 4096, 0, [ExecutionProviderKind.DirectMl]),
+                new DeviceEntry(DeviceKind.Cpu, 3, "CPU", "Microsoft", 0, 0, [ExecutionProviderKind.Cpu])
+            ]);
+
+        RuntimePlanner planner = CreatePlanner(
+            registry,
+            [new("onnx-community/silero-vad", cacheRoot, "main", ValidSha256, DateTimeOffset.UtcNow)],
+            [new(ExecutionProviderKind.DirectMl, true), new(ExecutionProviderKind.Cpu, true)],
+            _ => new ExecutionProviderSmokeTestResult(true),
+            deviceExclusionProvider: exclusionProvider,
+            deviceEnumerator: enumerator);
+
+        StageRuntimePlan initialPlan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad));
+        Assert.Equal(0, initialPlan.DeviceIndex);
+
+        var oom = new Exception("[ErrorCode:RuntimeException] CUDA error: out of memory");
+        int createCount = 0;
+        Task<string> CreateSessionAsync(StageRuntimePlan plan, CancellationToken ct)
+        {
+            createCount++;
+            throw oom;
+        }
+
+        Task<StageRuntimePlan> ReplanAsync(CancellationToken ct) =>
+            planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad), ct);
+
+        Exception thrown = await Assert.ThrowsAsync<Exception>(() => DeviceFallbackSessionCreator
+            .CreateWithDeviceFallbackAsync(
+                initialPlan,
+                CreateSessionAsync,
+                ReplanAsync,
+                exclusionProvider,
+                cancellationToken: CancellationToken.None));
+
+        Assert.Same(oom, thrown);
+        Assert.Equal(4, createCount);
+        Assert.True(exclusionProvider.CurrentExclusions!.IsExcluded(0));
+        Assert.True(exclusionProvider.CurrentExclusions.IsExcluded(3));
     }
 
     [Fact]
@@ -412,7 +676,7 @@ public sealed class RuntimePlannerTests
             PreferredExecutionProvider: ExecutionProviderKind.Dnnl,
             RequirePreferredExecutionProvider: true));
 
-        Assert.Equal(StageRuntimePlanStatus.Verified, plan.Status);
+        Assert.Equal(StageRuntimePlanStatus.Ready, plan.Status);
         Assert.Equal(ExecutionProviderKind.Dnnl, plan.ExecutionProvider);
         Assert.Null(plan.Fallback);
     }
@@ -446,7 +710,7 @@ public sealed class RuntimePlannerTests
     }
 
     [Fact]
-    public async Task PlanAsync_RequiredProviderSmokeFailure_ReturnsBlockedInsteadOfCpuFallback()
+    public async Task PlanAsync_NoVerdict_RequiredProvider_ReturnsReadyWithoutSmoke()
     {
         using var workspace = new RuntimePlannerTestWorkspace();
         BundledModelManifestRegistry registry = workspace.WriteManifest(
@@ -467,11 +731,8 @@ public sealed class RuntimePlannerTests
             PreferredExecutionProvider: ExecutionProviderKind.DirectMl,
             RequirePreferredExecutionProvider: true));
 
-        Assert.Equal(StageRuntimePlanStatus.Blocked, plan.Status);
-        Assert.NotNull(plan.Fallback);
-        Assert.Equal(RuntimePlanFallbackCode.ProviderSmokeTestFailed, plan.Fallback!.Code);
-        Assert.Contains("DirectML smoke failed", plan.Fallback.Detail, StringComparison.Ordinal);
-        Assert.DoesNotContain(plan.Warnings, warning => warning.Code == RuntimePlanWarningCode.CpuFallback);
+        Assert.Equal(StageRuntimePlanStatus.Ready, plan.Status);
+        Assert.Equal(ExecutionProviderKind.DirectMl, plan.ExecutionProvider);
     }
 
     [Fact]
@@ -581,12 +842,8 @@ public sealed class RuntimePlannerTests
                 && warning.Detail.Contains("TensorRTRtx", StringComparison.Ordinal));
     }
 
-    [Theory]
-    [InlineData(true, ExecutionProviderKind.TensorRTRtx)]
-    [InlineData(false, ExecutionProviderKind.Cpu)]
-    public async Task PlanAsync_Madlad_TriesTensorRtRtxFirstThenCpuBeforeDirectMl(
-        bool tensorRtRtxSmokePasses,
-        ExecutionProviderKind expectedProvider)
+    [Fact]
+    public async Task PlanAsync_Madlad_PicksTensorRtRtxFirstWithoutSmoke()
     {
         using var workspace = new RuntimePlannerTestWorkspace();
         BundledModelManifestRegistry registry = workspace.WriteManifest(CreateMadladTranslationSpec());
@@ -604,9 +861,7 @@ public sealed class RuntimePlannerTests
             request =>
             {
                 smoked.Add(request.ExecutionProvider);
-                return request.ExecutionProvider is ExecutionProviderKind.TensorRTRtx && !tensorRtRtxSmokePasses
-                    ? new ExecutionProviderSmokeTestResult(false, "TensorRT RTX smoke failed for this test.")
-                    : new ExecutionProviderSmokeTestResult(true);
+                return new ExecutionProviderSmokeTestResult(true);
             });
 
         StageRuntimePlan plan = await planner.PlanAsync(new StageRuntimePlanningRequest(
@@ -618,9 +873,8 @@ public sealed class RuntimePlannerTests
 
         Assert.True(plan.IsRunnable(), $"Expected runnable plan but got {plan.Status}");
         Assert.Equal("madlad", plan.EngineFamily);
-        Assert.Equal(expectedProvider, plan.ExecutionProvider);
-        Assert.Equal(ExecutionProviderKind.TensorRTRtx, smoked[0]);
-        Assert.DoesNotContain(ExecutionProviderKind.DirectMl, smoked);
+        Assert.Equal(ExecutionProviderKind.TensorRTRtx, plan.ExecutionProvider);
+        Assert.Empty(smoked);
     }
 
     [Fact]
@@ -764,7 +1018,7 @@ public sealed class RuntimePlannerTests
     }
 
     [Fact]
-    public async Task PlanAsync_SkipProviderSmokeTest_DoesNotPoisonVerifiedPlanCache()
+    public async Task PlanAsync_SkipProviderSmokeTest_DoesNotPoisonPlanCache()
     {
         using var workspace = new RuntimePlannerTestWorkspace();
         BundledModelManifestRegistry registry = workspace.WriteManifest(CreateQwenAsrSpec());
@@ -798,9 +1052,11 @@ public sealed class RuntimePlannerTests
             RequirePreferredModelAlias: true));
 
         Assert.Equal(StageRuntimePlanStatus.Ready, listingPlan.Status);
-        Assert.Equal(StageRuntimePlanStatus.Verified, runtimePlan.Status);
+        // No verdict was recorded, so the runtime plan is the same honest Ready — and
+        // planning performed zero smoke creates in either call (C4).
+        Assert.Equal(StageRuntimePlanStatus.Ready, runtimePlan.Status);
         Assert.Equal(ExecutionProviderKind.DirectMl, runtimePlan.ExecutionProvider);
-        Assert.Contains(smokeRequests, request => request.ExecutionProvider is ExecutionProviderKind.DirectMl);
+        Assert.Empty(smokeRequests);
     }
 
     [Fact]
@@ -833,7 +1089,7 @@ public sealed class RuntimePlannerTests
     }
 
     [Fact]
-    public async Task PlanAsync_WhenTensorRTRtxSmokeFailsForQwenAsr_FallsBackToDirectMl()
+    public async Task PlanAsync_NoVerdict_QwenAsr_PicksTensorRtRtxWithoutSmoke()
     {
         using var workspace = new RuntimePlannerTestWorkspace();
         BundledModelManifestRegistry registry = workspace.WriteManifest(CreateQwenAsrSpec());
@@ -866,10 +1122,10 @@ public sealed class RuntimePlannerTests
             PreferredExecutionProvider: ExecutionProviderKind.TensorRTRtx));
 
         Assert.True(plan.IsRunnable(), $"Expected runnable plan but got {plan.Status}");
-        Assert.Equal(ExecutionProviderKind.DirectMl, plan.ExecutionProvider);
+        Assert.Equal(StageRuntimePlanStatus.Ready, plan.Status);
+        Assert.Equal(ExecutionProviderKind.TensorRTRtx, plan.ExecutionProvider);
         Assert.Equal("qwen3-asr", plan.EngineFamily);
-        Assert.Contains(smokeRequests, request => request.ExecutionProvider is ExecutionProviderKind.TensorRTRtx);
-        Assert.Contains(smokeRequests, request => request.ExecutionProvider is ExecutionProviderKind.DirectMl);
+        Assert.Empty(smokeRequests);
     }
 
     [Fact]
@@ -1398,7 +1654,7 @@ public sealed class RuntimePlannerTests
     }
 
     [Fact]
-    public async Task PlanAsync_CurrentBundledSeparationSpleeterCached_UsesTensorRtRtxWhenSmokePasses()
+    public async Task PlanAsync_CurrentBundledSeparationSpleeterCached_UsesTensorRtRtxWithoutSmoke()
     {
         using var workspace = new RuntimePlannerTestWorkspace();
         BundledModelManifestRegistry registry = LoadBundledRegistry();
@@ -1429,13 +1685,11 @@ public sealed class RuntimePlannerTests
         Assert.Equal("spleeter", plan.ModelAlias);
         Assert.Equal(ExecutionProviderKind.TensorRTRtx, plan.ExecutionProvider);
         Assert.Equal("default", plan.Variant);
-        Assert.Single(smokeRequests);
-        Assert.Equal(ExecutionProviderKind.TensorRTRtx, smokeRequests[0].ExecutionProvider);
-        Assert.Equal(RuntimeStage.Separation, smokeRequests[0].Stage);
+        Assert.Empty(smokeRequests);
     }
 
     [Fact]
-    public async Task PlanAsync_CurrentBundledOverlapRescueSepformerCached_UsesTensorRtRtxWhenSmokePasses()
+    public async Task PlanAsync_CurrentBundledOverlapRescueSepformerCached_UsesTensorRtRtxWithoutSmoke()
     {
         using var workspace = new RuntimePlannerTestWorkspace();
         BundledModelManifestRegistry registry = LoadBundledRegistry();
@@ -1466,9 +1720,7 @@ public sealed class RuntimePlannerTests
         Assert.Equal("sepformer", plan.ModelAlias);
         Assert.Equal(ExecutionProviderKind.TensorRTRtx, plan.ExecutionProvider);
         Assert.Equal("default", plan.Variant);
-        Assert.Single(smokeRequests);
-        Assert.Equal(ExecutionProviderKind.TensorRTRtx, smokeRequests[0].ExecutionProvider);
-        Assert.Equal(RuntimeStage.OverlapRescue, smokeRequests[0].Stage);
+        Assert.Empty(smokeRequests);
     }
 
     [Fact]
@@ -1717,7 +1969,7 @@ public sealed class RuntimePlannerTests
     }
 
     [Fact]
-    public async Task PlanAsync_CosyVoiceAllowedForTensorRtRtx_PlansTrtWhenSmokePasses()
+    public async Task PlanAsync_CosyVoiceAllowedForTensorRtRtx_PlansTrtWithoutSmoke()
     {
         using var workspace = new RuntimePlannerTestWorkspace();
         BundledModelManifestRegistry registry = LoadBundledRegistry();
@@ -1751,9 +2003,7 @@ public sealed class RuntimePlannerTests
         Assert.True(plan.IsRunnable(), $"Expected runnable plan but got {plan.Status}");
         Assert.Equal("cosyvoice", plan.EngineFamily);
         Assert.Equal(ExecutionProviderKind.TensorRTRtx, plan.ExecutionProvider);
-        Assert.Contains(
-            smokeRequests,
-            request => request.ExecutionProvider == ExecutionProviderKind.TensorRTRtx);
+        Assert.Empty(smokeRequests);
         Assert.DoesNotContain(
             plan.Warnings,
             warning => warning.Code == RuntimePlanWarningCode.PreferredExecutionProviderNotAllowedForEngine);
@@ -1812,7 +2062,7 @@ public sealed class RuntimePlannerTests
         Assert.Equal("chatterbox", plan.EngineFamily);
         Assert.Equal(ExecutionProviderKind.DirectMl, plan.ExecutionProvider);
         Assert.Equal("q4f16", plan.Variant);
-        Assert.Single(smokeRequests);
+        Assert.Empty(smokeRequests);
     }
 
     [Fact]
@@ -2156,7 +2406,7 @@ public sealed class RuntimePlannerTests
     }
 
     [Fact]
-    public async Task PlanAsync_NonCpuProviderNeverReturnsReadyWithoutPassingSmokeTestAsync()
+    public async Task PlanAsync_NoVerdict_NonCpuProviderReturnsReadyNeverVerified()
     {
         using var workspace = new RuntimePlannerTestWorkspace();
         BundledModelManifestRegistry registry = workspace.WriteManifest(
@@ -2173,11 +2423,12 @@ public sealed class RuntimePlannerTests
 
         StageRuntimePlan plan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad));
 
+        // Ready is the codebase's file-only status for unproven plans (IsRunnable covers
+        // Ready|Verified); it must never be promoted to Verified without proof.
         Assert.True(plan.IsRunnable(), $"Expected runnable plan but got {plan.Status}");
-        Assert.Equal(ExecutionProviderKind.Cpu, plan.ExecutionProvider);
-        Assert.NotEqual(ExecutionProviderKind.DirectMl, plan.ExecutionProvider);
-        Assert.NotNull(plan.Fallback);
-        Assert.Equal(RuntimePlanFallbackCode.ProviderSmokeTestFailed, plan.Fallback!.Code);
+        Assert.Equal(StageRuntimePlanStatus.Ready, plan.Status);
+        Assert.NotEqual(StageRuntimePlanStatus.Verified, plan.Status);
+        Assert.Equal(ExecutionProviderKind.DirectMl, plan.ExecutionProvider);
     }
 
     [Fact]
@@ -2246,7 +2497,7 @@ public sealed class RuntimePlannerTests
     }
 
     [Fact]
-    public async Task PlanAsync_CarriesResolvedModelRevisionHash_IntoPlanAndSmokeRequest()
+    public async Task PlanAsync_CarriesResolvedModelRevisionHash_IntoPlanWithoutSmoke()
     {
         using var workspace = new RuntimePlannerTestWorkspace();
         BundledModelManifestRegistry registry = workspace.WriteManifest(
@@ -2268,10 +2519,9 @@ public sealed class RuntimePlannerTests
 
         StageRuntimePlan plan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad));
 
-        Assert.Equal(StageRuntimePlanStatus.Verified, plan.Status);
+        Assert.Equal(StageRuntimePlanStatus.Ready, plan.Status);
         Assert.Equal(ValidSha256, plan.ModelRevisionHash);
-        ExecutionProviderSmokeTestRequest smoke = Assert.Single(smokeRequests);
-        Assert.Equal(ValidSha256, smoke.ModelRevisionHash);
+        Assert.Empty(smokeRequests);
     }
 
     private static RuntimePlanner CreatePlanner(
@@ -2281,7 +2531,8 @@ public sealed class RuntimePlannerTests
         Func<ExecutionProviderSmokeTestRequest, ExecutionProviderSmokeTestResult> smokeHandler,
         IPipelineDeviceExclusionProvider? deviceExclusionProvider = null,
         IDeviceEnumerator? deviceEnumerator = null,
-        ISmokeVerdictStore? smokeVerdictStore = null)
+        ISmokeVerdictStore? smokeVerdictStore = null,
+        IReadOnlyDictionary<RuntimeStage, StageRuntimeRequirements>? stageRequirements = null)
     {
         return new RuntimePlanner(
             registry,
@@ -2289,7 +2540,7 @@ public sealed class RuntimePlannerTests
             new FakeExecutionProviderDiscovery(availabilities),
             new FakeExecutionProviderSmokeTester(smokeHandler),
             new InMemoryModelCacheInventory(cacheRecords),
-            stageRequirements: null,
+            stageRequirements: stageRequirements,
             deviceExclusionProvider,
             deviceEnumerator,
             smokeVerdictStore);
@@ -2581,7 +2832,7 @@ public sealed class RuntimePlannerTests
     }
 
     [Fact]
-    public async Task PlanAsync_WhenPreferredModelTierTurbo_RequiredGpuSmokeFails_ReturnsBlocked()
+    public async Task PlanAsync_NoVerdict_PreferredTurboRequiredGpu_ReturnsReadyWithoutSmoke()
     {
         using var workspace = new RuntimePlannerTestWorkspace();
         BundledModelManifestRegistry registry = workspace.WriteManifest(
@@ -2603,11 +2854,8 @@ public sealed class RuntimePlannerTests
                 PreferredExecutionProvider: ExecutionProviderKind.DirectMl,
                 RequirePreferredExecutionProvider: true));
 
-        Assert.Equal(StageRuntimePlanStatus.Blocked, plan.Status);
-        Assert.NotNull(plan.Fallback);
-        Assert.Equal(RuntimePlanFallbackCode.ProviderSmokeTestFailed, plan.Fallback!.Code);
-        Assert.Contains("DirectML smoke failed", plan.Fallback.Detail, StringComparison.Ordinal);
-        Assert.DoesNotContain(plan.Warnings, warning => warning.Code == RuntimePlanWarningCode.CpuFallback);
+        Assert.Equal(StageRuntimePlanStatus.Ready, plan.Status);
+        Assert.Equal(ExecutionProviderKind.DirectMl, plan.ExecutionProvider);
     }
 
     [Fact]
@@ -2701,8 +2949,7 @@ public sealed class RuntimePlannerTests
         string cacheRoot = workspace.CreateCacheRoot("onnx-community/silero-vad");
         workspace.WriteCacheFile(cacheRoot, "onnx/model_fp16.onnx");
 
-        // Use a List to track smoke calls — same pattern as existing tests in this class.
-        // DirectML is specified so smoke IS invoked (CPU short-circuits to Ready without smoke).
+        // Track smoke calls to prove planning creates none (C4).
         var smokeRequests = new List<ExecutionProviderSmokeTestRequest>();
         RuntimePlanner planner = CreatePlanner(
             registry,
@@ -2721,8 +2968,8 @@ public sealed class RuntimePlannerTests
         // Both plans are runnable
         Assert.True(plan1.IsRunnable(), $"plan1: {plan1.Status}");
         Assert.True(plan2.IsRunnable(), $"plan2: {plan2.Status}");
-        // Smoke ran exactly once: first call resolved + cached, second call was a cache hit
-        Assert.Single(smokeRequests);
+        // Planning never smokes (C4); the second call is served from the plan cache.
+        Assert.Empty(smokeRequests);
     }
 
     [Fact]
@@ -2785,7 +3032,7 @@ public sealed class RuntimePlannerTests
         string cacheRoot = workspace.CreateCacheRoot("onnx-community/silero-vad");
         workspace.WriteCacheFile(cacheRoot, "onnx/model_fp16.onnx");
 
-        // DirectML so smoke IS called (CPU short-circuits to Ready without smoke).
+        // Track smoke calls to prove planning creates none even after cache invalidation (C4).
         var smokeRequests = new List<ExecutionProviderSmokeTestRequest>();
         RuntimePlanner planner = CreatePlanner(
             registry,
@@ -2803,8 +3050,9 @@ public sealed class RuntimePlannerTests
         planner.InvalidatePlanCache();     // wipes cache
         await planner.PlanAsync(request);  // must re-plan, not serve stale cache
 
-        // Smoke ran twice: once before cache clear, once after
-        Assert.Equal(2, smokeRequests.Count);
+        StageRuntimePlan replanned = await planner.PlanAsync(request);
+        Assert.True(replanned.IsRunnable());
+        Assert.Empty(smokeRequests);
     }
 
     [Fact]
@@ -2856,7 +3104,8 @@ public sealed class RuntimePlannerTests
         var verdictStore = new InMemorySmokeVerdictStore();
         var smokeRequests = new List<ExecutionProviderSmokeTestRequest>();
 
-        // Launch 1: no verdict yet → smoke runs and is recorded.
+        // Launch 1: no verdict yet → honest Ready, zero smoke, nothing recorded (C4:
+        // verdicts are recorded by the warmup coordinator's proving smoke, not planning).
         RuntimePlanner firstLaunch = CreatePlanner(
             registry, cacheRecords, availabilities,
             request =>
@@ -2869,8 +3118,16 @@ public sealed class RuntimePlannerTests
             RuntimeStage.Asr,
             PreferredModelAlias: "qwen3-asr-0.6b",
             RequirePreferredModelAlias: true));
+        int firstLaunchSmokeCount = smokeRequests.Count;
+        Assert.Equal(0, firstLaunchSmokeCount);
+        // Simulate the warmup coordinator proving the plan and recording its verdict.
+        verdictStore.RecordVerified(new SmokeVerdictKey(
+            ValidSha256, ExecutionProviderKind.DirectMl, NvidiaGpuArchitectureBucket.Unknown,
+            DriverVersion: null,
+            TrtRtxEpVersion: Trackdub.Inference.Runtime.TensorRtRtx.TensorRtRtxProviderConstants.BundledFingerprintVersion,
+            OrtRuntimeVersion: null));
 
-        // Launch 2: fresh planner (in-memory plan cache empty, as in a new process) → smoke skipped.
+        // Launch 2: fresh planner (in-memory plan cache empty, as in a new process).
         RuntimePlanner secondLaunch = CreatePlanner(
             registry, cacheRecords, availabilities,
             request =>
@@ -2884,13 +3141,87 @@ public sealed class RuntimePlannerTests
             PreferredModelAlias: "qwen3-asr-0.6b",
             RequirePreferredModelAlias: true));
 
-        Assert.Equal(StageRuntimePlanStatus.Verified, firstPlan.Status);
+        Assert.Equal(StageRuntimePlanStatus.Ready, firstPlan.Status);
         Assert.Equal(StageRuntimePlanStatus.Verified, secondPlan.Status);
         Assert.Equal(ExecutionProviderKind.DirectMl, firstPlan.ExecutionProvider);
         Assert.Equal(ExecutionProviderKind.DirectMl, secondPlan.ExecutionProvider);
-        Assert.Equal(ExecutionProviderKind.DirectMl, smokeRequests[0].ExecutionProvider);
-        Assert.Single(smokeRequests);
+        Assert.Equal(firstLaunchSmokeCount, smokeRequests.Count);
+        Assert.Empty(smokeRequests);
         Assert.Single(verdictStore.RecordedKeys);
+    }
+
+    [Fact]
+    public async Task PlanAsync_VerdictForDifferentOrtVersion_IsNotServedAsVerified()
+    {
+        using var workspace = new RuntimePlannerTestWorkspace();
+        BundledModelManifestRegistry registry = workspace.WriteManifest(
+            CreateVadSpec("silero-vad", commercialAllowed: true, license: "MIT"));
+        string cacheRoot = workspace.CreateCacheRoot("onnx-community/silero-vad");
+        workspace.WriteCacheFile(cacheRoot, "onnx/model_fp16.onnx");
+
+        var verdictStore = new InMemorySmokeVerdictStore();
+        // Proven under a different ORT runtime than this host reports (FakeHardwareProfileProvider
+        // reports no ORT version): the verdict must invalidate, not serve as Verified.
+        verdictStore.RecordVerified(new SmokeVerdictKey(
+            ValidSha256,
+            ExecutionProviderKind.DirectMl,
+            NvidiaGpuArchitectureBucket.Unknown,
+            DriverVersion: null,
+            TrtRtxEpVersion: Trackdub.Inference.Runtime.TensorRtRtx.TensorRtRtxProviderConstants.BundledFingerprintVersion,
+            OrtRuntimeVersion: "0.0.0-not-this-host"));
+
+        int smokeCallCount = 0;
+        RuntimePlanner planner = CreatePlanner(
+            registry,
+            [new("onnx-community/silero-vad", cacheRoot, "main", ValidSha256, DateTimeOffset.UtcNow)],
+            [new(ExecutionProviderKind.DirectMl, true)],
+            _ => { smokeCallCount++; return new ExecutionProviderSmokeTestResult(true); },
+            smokeVerdictStore: verdictStore);
+
+        StageRuntimePlan plan = await planner.PlanAsync(new StageRuntimePlanningRequest(RuntimeStage.Vad));
+
+        Assert.Equal(StageRuntimePlanStatus.Ready, plan.Status);
+        Assert.Equal(0, smokeCallCount);
+    }
+
+    [Fact]
+    public async Task PlanAsync_NoVerdict_PerformsZeroSmokeCreatesAcrossProviders()
+    {
+        using var workspace = new RuntimePlannerTestWorkspace();
+        BundledModelManifestRegistry registry = workspace.WriteManifest(CreateQwenAsrSpec());
+        string cacheRoot = workspace.CreateCacheRoot("tonythethompson/qwen3-asr-0.6b-onnx");
+        workspace.WriteCacheFile(cacheRoot, "encoder.onnx");
+
+        var startedProviders = new System.Collections.Concurrent.ConcurrentBag<ExecutionProviderKind>();
+        var planner = CreatePlanner(
+            registry,
+            [new("tonythethompson/qwen3-asr-0.6b-onnx", cacheRoot, "main", ValidSha256, DateTimeOffset.UtcNow)],
+            [new(ExecutionProviderKind.DirectMl, true), new(ExecutionProviderKind.TensorRTRtx, true)],
+            request =>
+            {
+                startedProviders.Add(request.ExecutionProvider);
+                return new ExecutionProviderSmokeTestResult(true);
+            },
+            stageRequirements: new Dictionary<RuntimeStage, StageRuntimeRequirements>
+            {
+                [RuntimeStage.Asr] = new(
+                    RuntimeStage.Asr,
+                    ModelTask.Asr,
+                    ["qwen3-asr-0.6b"],
+                    [ExecutionProviderKind.DirectMl, ExecutionProviderKind.TensorRTRtx],
+                    ["default"],
+                    ["default"]),
+            });
+
+        StageRuntimePlan plan = await planner.PlanAsync(new StageRuntimePlanningRequest(
+            RuntimeStage.Asr,
+            PreferredModelAlias: "qwen3-asr-0.6b",
+            RequirePreferredModelAlias: true));
+
+        // Regression guard for 0628bc84: planning must not smoke candidates at all.
+        Assert.Empty(startedProviders);
+        Assert.Equal(StageRuntimePlanStatus.Ready, plan.Status);
+        Assert.Equal(ExecutionProviderKind.DirectMl, plan.ExecutionProvider);
     }
 
     [Fact]
@@ -2920,7 +3251,7 @@ public sealed class RuntimePlannerTests
             RequirePreferredExecutionProvider: true));
 
         Assert.Equal(ExecutionProviderKind.TensorRTRtx, plan.ExecutionProvider);
-        Assert.Equal([ExecutionProviderKind.TensorRTRtx], smokeRequests);
+        Assert.Empty(smokeRequests);
     }
 
     [Fact]
@@ -2960,7 +3291,7 @@ public sealed class RuntimePlannerTests
     }
 
     [Fact]
-    public async Task PlanAsync_SmokeFailure_IsNotRecordedAsVerified()
+    public async Task PlanAsync_PlanningNeverRecordsVerdict()
     {
         using var workspace = new RuntimePlannerTestWorkspace();
         BundledModelManifestRegistry registry = workspace.WriteManifest(CreateQwenAsrSpec());
