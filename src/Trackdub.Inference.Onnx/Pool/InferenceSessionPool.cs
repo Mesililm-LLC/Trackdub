@@ -1001,7 +1001,7 @@ internal sealed class InferenceSessionPool : IDisposable
             // up costs the warm its all-or-nothing guarantee for this key; it
             // falls back to ordinary per-graph admission and usually lands on the
             // resident fast path once the other creator publishes.
-            bool gateAcquired = createGate.Wait(0);
+            bool gateAcquired = createGate.Wait(0, cancellationToken);
             if (!gateAcquired)
             {
                 if (bundleHold is not null
