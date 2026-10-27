@@ -1042,6 +1042,104 @@ public sealed class InferenceSessionPoolTests
     }
 
     [Fact]
+    public async Task GetLeaseBundleAsync_WarmQueuedBehindAdmissionWaitingCreator_DoesNotDeadlock()
+    {
+        // Regression for the createGate hold deadlock: a plain acquire takes K1's
+        // single-flight gate and then waits for admission (the bundle's aggregate
+        // hold plus a pinned sibling leave no room), while the bundle's warm for K1
+        // queues behind that gate still holding its K1 share of the aggregate. The
+        // share is the only thing the plain wait could ever be freed by, so both
+        // hang until cancellation unless the warm returns its share before queueing.
+        // The scripted reader parks the plain acquire (gate held) until the bundle
+        // hold exists, making the interleave deterministic.
+        var reader = new FirstReadBlockingReader();
+        using var pool = new InferenceSessionPool(
+            maxSessions: 8,
+            memoryBudgetMb: 100,
+            hostMemoryBudgetMb: 100,
+            processGpuMemoryReader: () => reader);
+        var graphK1 = new SessionPoolKey("gatehold", null, null, ExecutionProviderKind.DirectMl, "gh-1", 0, "g1") { EstimatedVramMb = 40 };
+        var graphK2 = new SessionPoolKey("gatehold", null, null, ExecutionProviderKind.DirectMl, "gh-2", 0, "g2") { EstimatedVramMb = 40 };
+        int plainCalls = 0;
+        int bundleK1Calls = 0;
+        int bundleK2Calls = 0;
+        var k2Created = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task<SessionLease> plainTask = Task.Run(() => pool.GetLeaseAsync(
+            graphK1,
+            _ =>
+            {
+                Interlocked.Increment(ref plainCalls);
+                return Task.FromResult(CreateMinimalSession());
+            },
+            CancellationToken.None));
+
+        await reader.FirstReadEntered.AwaitWithHangGuard("the plain acquire never reached its admission observation");
+
+        Task<SessionLeaseBundle> bundleTask = Task.Run(() => pool.GetLeaseBundleAsync(
+            [
+                new SessionLeaseRequest(graphK1, _ =>
+                {
+                    Interlocked.Increment(ref bundleK1Calls);
+                    return Task.FromResult(CreateMinimalSession());
+                }),
+                new SessionLeaseRequest(graphK2, _ =>
+                {
+                    Interlocked.Increment(ref bundleK2Calls);
+                    k2Created.TrySetResult();
+                    return Task.FromResult(CreateMinimalSession());
+                }),
+            ],
+            CancellationToken.None));
+
+        await k2Created.Task.AwaitWithHangGuard("the bundle's second graph never created");
+        reader.ReleaseFirstRead();
+
+        using SessionLease plainLease = await plainTask.AwaitWithHangGuard(
+            "the plain acquire deadlocked against the bundle warm queued behind its gate");
+        // Release the plain lease before awaiting the bundle: the warm's residency
+        // acquire serializes on the same entry gate the lease holds.
+        plainLease.Dispose();
+        using SessionLeaseBundle bundle = await bundleTask.AwaitWithHangGuard(
+            "the bundle warm deadlocked behind the admission-waiting plain acquire");
+
+        Assert.Equal(2, bundle.Count);
+        Assert.Equal(1, plainCalls);
+        // The bundle's K1 warm landed on the session the plain acquire published.
+        Assert.Equal(0, bundleK1Calls);
+        Assert.Equal(1, bundleK2Calls);
+    }
+
+    /// <summary>
+    /// Reader whose first read parks until released: holds a plain acquire (which
+    /// has already taken its key's single-flight gate) at the admission observation
+    /// while a bundle takes its aggregate hold. Later reads return immediately.
+    /// </summary>
+    private sealed class FirstReadBlockingReader : IProcessGpuMemoryReader
+    {
+        private int reads;
+        private readonly TaskCompletionSource firstReadEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource releaseFirstRead = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public string UnavailableReason => "Test double: first read blocks until released.";
+
+        public Task FirstReadEntered => firstReadEntered.Task;
+
+        public void ReleaseFirstRead() => releaseFirstRead.TrySetResult();
+
+        public long? ReadDedicatedGpuMemoryBytes()
+        {
+            if (Interlocked.Increment(ref reads) == 1)
+            {
+                firstReadEntered.TrySetResult();
+                releaseFirstRead.Task.Wait();
+            }
+
+            return null;
+        }
+    }
+
+    [Fact]
     public async Task GetLeaseBundleAsync_DisjointBundles_BudgetFitsOnlyOne_BothCompleteWithoutDeadlock()
     {
         // Pinning each graph as its create completes is only deadlock-safe because the

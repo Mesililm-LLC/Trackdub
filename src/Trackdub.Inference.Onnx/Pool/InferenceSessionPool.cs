@@ -988,6 +988,22 @@ internal sealed class InferenceSessionPool : IDisposable
             creationSnapshotPending = false;
 
             bool propagatedRecentFailure = false;
+            if (bundleHold is not null && createGate.CurrentCount == 0
+                && bundleHold.TryRelinquish(BucketOf(key), key, out long queuedShareMb))
+            {
+                // Another creator owns this key's single-flight gate and may itself be
+                // waiting for admission on this bucket. Queueing behind it while still
+                // holding this key's aggregate share is a reservation deadlock: the
+                // creator's wait can only be freed by room the share is occupying
+                // (a pinned sibling is not evictable, pending credit is not an entry).
+                // Return the share before the wait; the warm then falls back to
+                // ordinary per-graph admission and usually lands on the resident fast
+                // path once the other creator publishes. CurrentCount is only a hint:
+                // if the gate frees in the meantime the share is simply gone, which
+                // the same fallback already handles.
+                ReleaseReservation(BucketOf(key), queuedShareMb);
+            }
+
             using (BenchmarkPhaseCapture.Start("pool-single-flight-wait"))
                 await createGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
