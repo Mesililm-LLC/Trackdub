@@ -51,6 +51,10 @@ public sealed class KokoroVoiceCatalog : IVoiceCatalog
         this.voices = voices;
     }
 
+    /// <summary>No voices: the honest state when the Kokoro model is not installed.</summary>
+    public static KokoroVoiceCatalog Empty() =>
+        new(modelRootPath: string.Empty, []);
+
     public static KokoroVoiceCatalog KnownAvailable() =>
         new(
             modelRootPath: string.Empty,
