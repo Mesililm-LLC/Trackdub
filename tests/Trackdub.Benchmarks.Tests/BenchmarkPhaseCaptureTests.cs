@@ -49,8 +49,11 @@ public sealed class BenchmarkPhaseCaptureTests
         Assert.Equal(2, totals["session-create"].Count);
         Assert.True(totals["session-create"].TotalMs > 0);
         Assert.Equal(1, totals["provider-bootstrap"].Count);
-        // Aggregates are ordered by total elapsed descending.
-        Assert.Equal("session-create", totals.Keys.First());
+        // Aggregates are ordered by total elapsed descending. Assert the ordering
+        // invariant instead of naming a winner: wall-clock delay durations on CI
+        // runners are not stable enough to guarantee which phase totals more.
+        double[] totalsInOrder = totals.Values.Select(static total => total.TotalMs).ToArray();
+        Assert.Equal(totalsInOrder.OrderByDescending(static total => total), totalsInOrder);
     }
 
     [Fact]
