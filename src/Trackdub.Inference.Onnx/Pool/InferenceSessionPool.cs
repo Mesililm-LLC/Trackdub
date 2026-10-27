@@ -988,24 +988,31 @@ internal sealed class InferenceSessionPool : IDisposable
             creationSnapshotPending = false;
 
             bool propagatedRecentFailure = false;
-            if (bundleHold is not null && createGate.CurrentCount == 0
-                && bundleHold.TryRelinquish(BucketOf(key), key, out long queuedShareMb))
-            {
-                // Another creator owns this key's single-flight gate and may itself be
-                // waiting for admission on this bucket. Queueing behind it while still
-                // holding this key's aggregate share is a reservation deadlock: the
-                // creator's wait can only be freed by room the share is occupying
-                // (a pinned sibling is not evictable, pending credit is not an entry).
-                // Return the share before the wait; the warm then falls back to
-                // ordinary per-graph admission and usually lands on the resident fast
-                // path once the other creator publishes. CurrentCount is only a hint:
-                // if the gate frees in the meantime the share is simply gone, which
-                // the same fallback already handles.
-                ReleaseReservation(BucketOf(key), queuedShareMb);
-            }
 
-            using (BenchmarkPhaseCapture.Start("pool-single-flight-wait"))
-                await createGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            // Atomically probe the single-flight gate: Wait(0) takes it if free, so
+            // there is no check-then-act window in which another creator can take
+            // the gate between the probe and the wait. Only when the gate is
+            // genuinely held by another creator does this warm queue behind it —
+            // and only then must it first return its aggregate share: the gate
+            // holder may itself be waiting for admission on this bucket, and its
+            // wait can only be freed by room the share is occupying (a pinned
+            // sibling is not evictable, pending credit is not an entry). Without
+            // the relinquish both sides hang until cancellation. Giving the share
+            // up costs the warm its all-or-nothing guarantee for this key; it
+            // falls back to ordinary per-graph admission and usually lands on the
+            // resident fast path once the other creator publishes.
+            bool gateAcquired = createGate.Wait(0);
+            if (!gateAcquired)
+            {
+                if (bundleHold is not null
+                    && bundleHold.TryRelinquish(BucketOf(key), key, out long queuedShareMb))
+                {
+                    ReleaseReservation(BucketOf(key), queuedShareMb);
+                }
+
+                using (BenchmarkPhaseCapture.Start("pool-single-flight-wait"))
+                    await createGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
             try
             {
                 ObjectDisposedException.ThrowIf(disposed, this);
