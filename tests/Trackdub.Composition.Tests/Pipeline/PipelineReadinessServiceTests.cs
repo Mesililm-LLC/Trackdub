@@ -389,6 +389,37 @@ public sealed class PipelineReadinessServiceTests
     }
 
     [Fact]
+    public async Task EvaluateAsync_reports_unverified_for_unproven_ready_plan_even_when_runtime_validation_requested()
+    {
+        // C4: planning returns Ready (never Verified) for a non-CPU plan with no persisted
+        // verdict. Readiness must not promote that to Ready-to-run, even when the caller
+        // asked for runtime validation — proof comes from warmup/stage execution.
+        var planner = new FakeRuntimePlanner
+        {
+            PlanHandler = req => new StageRuntimePlan
+            {
+                Stage = req.Stage,
+                Status = StageRuntimePlanStatus.Ready,
+                ExecutionProvider = ExecutionProviderKind.DirectMl,
+                ModelId = "model-x",
+            }
+        };
+
+        var service = new PipelineReadinessService(planner, new NullCloudApiKeyProvider(), new FakeConsentService());
+        var selections = new RuntimeModelSelections(
+            AsrModelOverride.Auto,
+            IsDevBuild: false,
+            HardwareOverrides: new Dictionary<string, ExecutionProviderKind>(), TranslationModelAlias: "opus-mt-en-es");
+
+        PipelineReadinessReport report = await service.EvaluateAsync(
+            [RuntimeStage.Translation], selections, state: null);
+
+        StageReadiness stage = Assert.Single(report.Stages);
+        Assert.Equal(ReadinessState.Unverified, stage.Status);
+        Assert.Contains("not verified", stage.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task EvaluateAsync_reports_ready_when_smoke_test_skipped_for_cpu_plan()
     {
         var planner = new FakeRuntimePlanner
