@@ -30,6 +30,11 @@ public sealed class TtsPipeline : ITtsPipeline
     /// <param name="vocoderSessionOptionsFactory">Optional separate factory for the vocoder model. Useful when GPU EP doesn't support vocoder ops (e.g., DirectML). When null, uses sessionOptionsFactory.</param>
     /// <param name="variant">Model size variant. Used to determine feature support (e.g., instruction control).</param>
     public TtsPipeline(string modelDir, Func<SessionOptions>? sessionOptionsFactory = null, Func<SessionOptions>? vocoderSessionOptionsFactory = null, QwenModelVariant variant = QwenModelVariant.Qwen06B)
+        : this(modelDir, sessionOptionsFactory, vocoderSessionOptionsFactory, variant, pooledSessions: null)
+    {
+    }
+
+    internal TtsPipeline(string modelDir, Func<SessionOptions>? sessionOptionsFactory, Func<SessionOptions>? vocoderSessionOptionsFactory, QwenModelVariant variant, Qwen3TtsPooledSessions? pooledSessions)
     {
         var tokenizerDir = Path.Join(modelDir, "tokenizer");
         var embeddingsDir = Path.Join(modelDir, "embeddings");
@@ -38,8 +43,8 @@ public sealed class TtsPipeline : ITtsPipeline
         _variant = variant;
         _tokenizer = new TextTokenizer(tokenizerDir);
         _embeddings = new EmbeddingStore(embeddingsDir, configPath);
-        _languageModel = new LanguageModel(modelDir, _embeddings, sessionOptionsFactory);
-        _vocoder = new Vocoder(Path.Join(modelDir, "vocoder.onnx"), vocoderSessionOptionsFactory ?? sessionOptionsFactory);
+        _languageModel = new LanguageModel(modelDir, _embeddings, sessionOptionsFactory, pooledSessions);
+        _vocoder = new Vocoder(Path.Join(modelDir, "vocoder.onnx"), vocoderSessionOptionsFactory ?? sessionOptionsFactory, pooledSessions?.Vocoder);
     }
 
     /// <summary>Available speaker names from the model.</summary>
@@ -62,6 +67,29 @@ public sealed class TtsPipeline : ITtsPipeline
     public async Task SynthesizeAsync(string text, string speaker, string outputPath,
                                      string language = "auto", string? instruct = null,
                                      IProgress<string>? progress = null)
+    {
+        var waveform = SynthesizeSamples(text, speaker, language, instruct, progress);
+
+        // Write WAV file
+        progress?.Report("Writing WAV file...");
+        await WavWriter.WriteAsync(outputPath, waveform, sampleRate: 24000);
+
+        var duration = waveform.Length / 24000.0;
+        progress?.Report($"Saved {Path.GetFileName(outputPath)} ({waveform.Length} samples, {duration:F2}s)");
+    }
+
+    /// <summary>
+    /// Synthesizes speech and returns the 24 kHz PCM samples in memory, without any
+    /// temp WAV file round-trip.
+    /// </summary>
+    public Task<float[]> SynthesizeSamplesAsync(string text, string speaker,
+                                     string language = "auto", string? instruct = null,
+                                     IProgress<string>? progress = null) =>
+        Task.FromResult(SynthesizeSamples(text, speaker, language, instruct, progress));
+
+    private float[] SynthesizeSamples(string text, string speaker,
+                                     string language, string? instruct,
+                                     IProgress<string>? progress)
     {
         // Input validation
         ArgumentNullException.ThrowIfNull(text);
@@ -96,14 +124,7 @@ public sealed class TtsPipeline : ITtsPipeline
 
         // Decode to waveform via vocoder
         progress?.Report("Decoding waveform via vocoder...");
-        var waveform = _vocoder.Decode(generatedCodecCodes);
-
-        // Write WAV file
-        progress?.Report("Writing WAV file...");
-        await WavWriter.WriteAsync(outputPath, waveform, sampleRate: 24000);
-
-        var duration = waveform.Length / 24000.0;
-        progress?.Report($"Saved {Path.GetFileName(outputPath)} ({waveform.Length} samples, {duration:F2}s)");
+        return _vocoder.Decode(generatedCodecCodes);
     }
 
     /// <summary>

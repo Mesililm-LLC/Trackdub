@@ -15,6 +15,7 @@ public sealed class SpeakerEncoder : IDisposable
     private InferenceSession? _session;
     private readonly string _modelPath;
     private readonly Func<SessionOptions> _sessionOptionsFactory;
+    private readonly QwenPooledSession? _pooledSession;
 
     /// <summary>Embedding dimension (1024 for ECAPA-TDNN in Qwen3-TTS).</summary>
     public int EmbeddingDim => 1024;
@@ -23,9 +24,15 @@ public sealed class SpeakerEncoder : IDisposable
     public int MelDim => 128;
 
     public SpeakerEncoder(string modelPath, Func<SessionOptions>? sessionOptionsFactory = null)
+        : this(modelPath, sessionOptionsFactory, pooledSession: null)
+    {
+    }
+
+    internal SpeakerEncoder(string modelPath, Func<SessionOptions>? sessionOptionsFactory, QwenPooledSession? pooledSession)
     {
         _modelPath = modelPath;
         _sessionOptionsFactory = sessionOptionsFactory ?? CreateDefaultOptions;
+        _pooledSession = pooledSession;
     }
 
     private static SessionOptions CreateDefaultOptions() => new()
@@ -33,7 +40,7 @@ public sealed class SpeakerEncoder : IDisposable
         GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
     };
 
-    private InferenceSession GetSession()
+    private InferenceSession GetDirectSession()
     {
         if (_session is null)
         {
@@ -58,12 +65,17 @@ public sealed class SpeakerEncoder : IDisposable
             for (int m = 0; m < nMels; m++)
                 tensor[0, t, m] = melSpectrogram[t, m];
 
+        // Call-scoped pooled lease: the gate is held for this encode only, never for the
+        // engine lifetime; residency still comes from the pin.
+        using var pooledLease = _pooledSession?.AcquireAsync(CancellationToken.None).GetAwaiter().GetResult();
+        InferenceSession session = pooledLease?.Session ?? GetDirectSession();
+
         var inputs = new List<NamedOnnxValue>
         {
             NamedOnnxValue.CreateFromTensor("mel_spectrogram", tensor)
         };
 
-        using var results = GetSession().Run(inputs);
+        using var results = session.Run(inputs);
         ColdStartCapture.MarkInferenceCompleted("qwen3-tts:speaker-encoder");
         var outputTensor = results.First().AsTensor<float>();
 
@@ -89,5 +101,6 @@ public sealed class SpeakerEncoder : IDisposable
     public void Dispose()
     {
         _session?.Dispose();
+        _pooledSession?.Dispose();
     }
 }

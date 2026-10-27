@@ -21,6 +21,7 @@ internal sealed class LanguageModel : IDisposable
     private InferenceSession? _prefillSession;
     private InferenceSession? _decodeSession;
     private InferenceSession? _cpSession;
+    private readonly Qwen3TtsPooledSessions? _pooledSessions;
     private readonly EmbeddingStore _embeddings;
     private readonly string _modelDir;
     private readonly Func<SessionOptions> _sessionOptionsFactory;
@@ -36,11 +37,12 @@ internal sealed class LanguageModel : IDisposable
     private readonly int _cpNumKvHeads;     // code_predictor num_key_value_heads
     private readonly int _cpHeadDim;        // code_predictor head_dim
 
-    public LanguageModel(string modelDir, EmbeddingStore embeddings, Func<SessionOptions>? sessionOptionsFactory = null)
+    public LanguageModel(string modelDir, EmbeddingStore embeddings, Func<SessionOptions>? sessionOptionsFactory = null, Qwen3TtsPooledSessions? pooledSessions = null)
     {
         _embeddings = embeddings;
         _modelDir = modelDir;
         _sessionOptionsFactory = sessionOptionsFactory ?? CreateDefaultOptions;
+        _pooledSessions = pooledSessions;
 
         // Read dimensions from config.json (loaded by EmbeddingStore)
         var cfg = embeddings.Config;
@@ -65,41 +67,43 @@ internal sealed class LanguageModel : IDisposable
         EnableCpuMemArena = true
     };
 
-    private InferenceSession GetPrefillSession()
+    private static void CheckModelSize(string modelPath)
     {
         // SEC-3: File size pre-check to prevent out-of-memory attacks
-        var modelPath = Path.Join(_modelDir, "talker_prefill.onnx");
         var fileInfo = new FileInfo(modelPath);
         const long maxOnnxSize = 8_000_000_000; // 8 GB (1.7B models are ~5.4 GB)
         if (fileInfo.Length > maxOnnxSize)
             throw new InvalidOperationException($"ONNX file too large ({fileInfo.Length / 1e9:F2} GB). Maximum allowed: {maxOnnxSize / 1e9:F2} GB.");
+    }
 
+    private InferenceSession GetDirectPrefillSession()
+    {
+        var modelPath = Path.Join(_modelDir, "talker_prefill.onnx");
+        CheckModelSize(modelPath);
         return _prefillSession ??= new InferenceSession(modelPath, _sessionOptionsFactory());
     }
 
-    private InferenceSession GetDecodeSession()
+    private InferenceSession GetDirectDecodeSession()
     {
-        // SEC-3: File size pre-check to prevent out-of-memory attacks
         var modelPath = Path.Join(_modelDir, "talker_decode.onnx");
-        var fileInfo = new FileInfo(modelPath);
-        const long maxOnnxSize = 8_000_000_000; // 8 GB (1.7B models are ~5.4 GB)
-        if (fileInfo.Length > maxOnnxSize)
-            throw new InvalidOperationException($"ONNX file too large ({fileInfo.Length / 1e9:F2} GB). Maximum allowed: {maxOnnxSize / 1e9:F2} GB.");
-
+        CheckModelSize(modelPath);
         return _decodeSession ??= new InferenceSession(modelPath, _sessionOptionsFactory());
     }
 
-    private InferenceSession GetCpSession()
+    private InferenceSession GetDirectCpSession()
     {
-        // SEC-3: File size pre-check to prevent out-of-memory attacks
         var modelPath = Path.Join(_modelDir, "code_predictor.onnx");
-        var fileInfo = new FileInfo(modelPath);
-        const long maxOnnxSize = 8_000_000_000; // 8 GB (1.7B models are ~5.4 GB)
-        if (fileInfo.Length > maxOnnxSize)
-            throw new InvalidOperationException($"ONNX file too large ({fileInfo.Length / 1e9:F2} GB). Maximum allowed: {maxOnnxSize / 1e9:F2} GB.");
-
+        CheckModelSize(modelPath);
         return _cpSession ??= new InferenceSession(modelPath, _sessionOptionsFactory());
     }
+
+    /// <summary>
+    /// Acquires one synthesis-scoped lease on a pooled graph, or null when pooling is off.
+    /// The lease is released when the synthesis ends so the pool entry's gate is never
+    /// held for the engine lifetime; residency still comes from the pin.
+    /// </summary>
+    private static OnnxExecutionSessionFactory.SingleSessionLease? AcquirePooledLease(QwenPooledSession? holder) =>
+        holder?.AcquireAsync(CancellationToken.None).GetAwaiter().GetResult();
 
     public long[,,] Generate(int[] tokenIds, string speaker, string language,
                              int maxNewTokens = 2048, float temperature = 0.9f,
@@ -175,6 +179,15 @@ internal sealed class LanguageModel : IDisposable
     {
         var cfg = _embeddings.Config;
 
+        // Synthesis-scoped pooled leases: the gates are held for this synthesis only,
+        // never for the engine lifetime (see QwenPooledSession).
+        using var prefillLease = AcquirePooledLease(_pooledSessions?.Prefill);
+        using var decodeLease = AcquirePooledLease(_pooledSessions?.Decode);
+        using var cpLease = AcquirePooledLease(_pooledSessions?.CodePredictor);
+        InferenceSession prefillSession = prefillLease?.Session ?? GetDirectPrefillSession();
+        InferenceSession decodeSession = decodeLease?.Session ?? GetDirectDecodeSession();
+        InferenceSession cpSession = cpLease?.Session ?? GetDirectCpSession();
+
         // Build prefill embedding
         var (inputsEmbeds, trailingTextHidden) = BuildPrefillEmbedding(
             tokenIds, speakerId, language, cfg, speakerEmbedding,
@@ -222,7 +235,6 @@ internal sealed class LanguageModel : IDisposable
             Buffer.BlockCopy(attentionMask, 0, flatMask, 0, 1 * prefillLen * sizeof(long));
             Buffer.BlockCopy(positionIds, 0, flatPosIds, 0, 3 * 1 * prefillLen * sizeof(long));
 
-            var prefillSession = GetPrefillSession();
             using var embedsOrt = OrtValue.CreateTensorValueFromMemory<float>(flatEmbeds, [1, prefillLen, _hiddenSize]);
             using var maskOrt = OrtValue.CreateTensorValueFromMemory<long>(flatMask, [1, prefillLen]);
             using var posOrt = OrtValue.CreateTensorValueFromMemory<long>(flatPosIds, [3, 1, prefillLen]);
@@ -259,22 +271,10 @@ internal sealed class LanguageModel : IDisposable
             }
         }
 
-        // Release prefill session to free memory before loading decode + CP sessions. This runs
-        // outside the prefill try, so a throw here would strand the rented KV buffers: hand them
-        // back before rethrowing, since the generation loop's finally never runs in that case.
-        try
-        {
-            _prefillSession?.Dispose();
-            _prefillSession = null;
-        }
-        catch
-        {
-            ArrayPool<float>.Shared.Return(kvKeys);
-            ArrayPool<float>.Shared.Return(kvValues);
-            ArrayPool<float>.Shared.Return(cpKvKeys);
-            ArrayPool<float>.Shared.Return(cpKvValues);
-            throw;
-        }
+        // The prefill session is intentionally NOT released here: it is either owned by
+        // this model for its whole lifetime or shared through the session pool, and the
+        // next synthesis reuses it. Disposing it per synthesis forced a full session
+        // reload (and, on TensorRT routes, an engine load) on every call.
 
         // Generation loop
         var generatedCodes = new List<long[]>();
@@ -369,7 +369,7 @@ internal sealed class LanguageModel : IDisposable
                             NamedOnnxValue.CreateFromTensor("past_values", new DenseTensor<float>(cpKvValues.AsMemory(0, cpKvElementCountPerPosition * cpPastLen), [_cpNumLayers, 1, _cpNumKvHeads, cpPastLen, _cpHeadDim]))
                         };
 
-                        using var cpOutputs = GetCpSession().Run(cpInputsList);
+                        using var cpOutputs = cpSession.Run(cpInputsList);
                         ColdStartCapture.MarkInferenceCompleted(CodePredictorRunSource);
                         var cpLogits = cpOutputs.First(x => x.Name == "logits").AsEnumerable<float>().ToArray();
                         var cpToken = SampleTokenSimple(cpLogits, temperature);
@@ -459,7 +459,7 @@ internal sealed class LanguageModel : IDisposable
                     NamedOnnxValue.CreateFromTensor("past_values", new DenseTensor<float>(kvValues.AsMemory(0, kvElementCountPerPosition * (prefillLen + step)), [_numLayers, 1, _numKvHeads, prefillLen + step, _headDim]))
                 };
 
-                using var decodeOutputs = GetDecodeSession().Run(decodeInputs);
+                using var decodeOutputs = decodeSession.Run(decodeInputs);
                 ColdStartCapture.MarkInferenceCompleted(DecodeRunSource);
                 logits = decodeOutputs.First(x => x.Name == "logits").AsEnumerable<float>().ToArray();
                 hiddenStates = decodeOutputs.First(x => x.Name == "hidden_states").AsEnumerable<float>().ToArray();
@@ -829,47 +829,9 @@ internal sealed class LanguageModel : IDisposable
                     probs[i] = float.NegativeInfinity;
             }
 
-            // Temperature
-            if (temperature > 0)
-            {
-                for (int i = 0; i < vocabSize; i++)
-                    probs[i] /= temperature;
-            }
-
-            // Top-k
-            if (topK > 0 && topK < vocabSize)
-            {
-                var indexed = probs.AsSpan(0, vocabSize).ToArray().Select((p, i) => (p, i)).OrderByDescending(x => x.p).ToArray();
-                for (int i = topK; i < vocabSize; i++)
-                    probs[indexed[i].i] = float.NegativeInfinity;
-            }
-
-            // Softmax
-            float maxLogit = float.NegativeInfinity;
-            for (int i = 0; i < vocabSize; i++)
-            {
-                if (probs[i] > maxLogit) maxLogit = probs[i];
-            }
-            float sumExp = 0;
-            for (int i = 0; i < vocabSize; i++)
-            {
-                probs[i] = MathF.Exp(probs[i] - maxLogit);
-                sumExp += probs[i];
-            }
-            for (int i = 0; i < vocabSize; i++)
-                probs[i] /= sumExp;
-
-            // Multinomial sample
-            float rand = Random.Shared.NextSingle();
-            float cumSum = 0;
-            for (int i = 0; i < vocabSize; i++)
-            {
-                cumSum += probs[i];
-                if (rand < cumSum)
-                    return i;
-            }
-
-            return vocabSize - 1;
+            // Partial top-k/top-p selection plus sampling (no full-vocab sort).
+            return TokenSampling.Sample(
+                probs.AsSpan(0, vocabSize), temperature, topK, topP, Random.Shared.NextSingle());
         }
         finally
         {
@@ -886,24 +848,16 @@ internal sealed class LanguageModel : IDisposable
         {
             Array.Copy(logits, logits.Length - vocabSize, probs, 0, vocabSize);
 
-            // Top-k filtering (subtalker_top_k=50 from Python generation_config.json)
+            // Top-k filtering (subtalker_top_k=50 from Python generation_config.json).
+            // The cutoff is the k-th largest logit found by partial selection; entries
+            // equal to it survive, exactly as with the previous full sort.
             if (topK > 0 && topK < vocabSize)
             {
-                var sorted = ArrayPool<float>.Shared.Rent(vocabSize);
-                try
+                float threshold = TokenSampling.FindKthLargest(probs.AsSpan(0, vocabSize), topK);
+                for (int i = 0; i < vocabSize; i++)
                 {
-                    Array.Copy(probs, 0, sorted, 0, vocabSize);
-                    Array.Sort(sorted, 0, vocabSize);
-                    float threshold = sorted[vocabSize - topK];
-                    for (int i = 0; i < vocabSize; i++)
-                    {
-                        if (probs[i] < threshold)
-                            probs[i] = float.NegativeInfinity;
-                    }
-                }
-                finally
-                {
-                    ArrayPool<float>.Shared.Return(sorted);
+                    if (probs[i] < threshold)
+                        probs[i] = float.NegativeInfinity;
                 }
             }
 
@@ -984,5 +938,11 @@ internal sealed class LanguageModel : IDisposable
         _prefillSession?.Dispose();
         _decodeSession?.Dispose();
         _cpSession?.Dispose();
+        if (_pooledSessions is not null)
+        {
+            _pooledSessions.Prefill.Dispose();
+            _pooledSessions.Decode.Dispose();
+            _pooledSessions.CodePredictor.Dispose();
+        }
     }
 }
