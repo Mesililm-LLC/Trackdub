@@ -64,18 +64,30 @@ internal sealed class Qwen3AsrEmbedTokens
 
     public float[] Lookup(int tokenId)
     {
+        var vector = new float[HiddenSize];
+        Lookup(tokenId, vector.AsSpan());
+        return vector;
+    }
+
+    /// <summary>Allocation-free lookup: writes the token row into <paramref name="destination"/>.</summary>
+    public void Lookup(int tokenId, Span<float> destination)
+    {
         if (tokenId < 0 || tokenId >= VocabularySize)
         {
             throw new ArgumentOutOfRangeException(nameof(tokenId));
         }
 
-        var vector = new float[HiddenSize];
-        for (int hiddenIndex = 0; hiddenIndex < HiddenSize; hiddenIndex++)
+        if (destination.Length != HiddenSize)
         {
-            vector[hiddenIndex] = embeddings[tokenId, hiddenIndex];
+            throw new ArgumentException(
+                $"Destination length {destination.Length} does not match hidden size {HiddenSize}.",
+                nameof(destination));
         }
 
-        return vector;
+        for (int hiddenIndex = 0; hiddenIndex < HiddenSize; hiddenIndex++)
+        {
+            destination[hiddenIndex] = embeddings[tokenId, hiddenIndex];
+        }
     }
 
     private static bool TryReadShapeHeader(ReadOnlySpan<byte> bytes, out int vocabSize, out int hiddenSize)

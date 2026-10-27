@@ -25,6 +25,11 @@ internal sealed class NemotronAsrMelFeatureExtractor
     private readonly float[,] melFilters = BuildMelFilterBank();
     private readonly bool applyPerFeatureNormalization;
 
+    private static int melFilterBankBuildCount;
+
+    /// <summary>Instrumentation seam: how many mel filterbanks have been constructed.</summary>
+    internal static int MelFilterBankBuildCountForTesting => Volatile.Read(ref melFilterBankBuildCount);
+
     public NemotronAsrMelFeatureExtractor(bool applyPerFeatureNormalization = false)
     {
         // Bundled Nemotron export config sets preprocessor.normalize = "NA" (no per-feature
@@ -72,7 +77,10 @@ internal sealed class NemotronAsrMelFeatureExtractor
         return mel;
     }
 
-    public float[] BuildChunk(float[,] mel, int frameOffset, int mainFrameCount, bool includePreEncodeCache)
+    // Static: chunk assembly only slices the finished mel and uses no extractor state.
+    // The decoder calls this, so it must not construct an extractor (which would rebuild
+    // the mel filterbank and Hann window a second time for the same region).
+    public static float[] BuildChunk(float[,] mel, int frameOffset, int mainFrameCount, bool includePreEncodeCache)
     {
         var data = new float[MelBins * ChunkInputFrames];
         if (includePreEncodeCache && frameOffset >= PreEncodeCacheFrames)
@@ -189,6 +197,7 @@ internal sealed class NemotronAsrMelFeatureExtractor
 
     private static float[,] BuildMelFilterBank()
     {
+        Interlocked.Increment(ref melFilterBankBuildCount);
         var filters = new float[MelBins, FrequencyBins];
         double[] fftFrequencies = Enumerable.Range(0, FrequencyBins)
             .Select(static index => index * (SampleRate / (double)FftSize))

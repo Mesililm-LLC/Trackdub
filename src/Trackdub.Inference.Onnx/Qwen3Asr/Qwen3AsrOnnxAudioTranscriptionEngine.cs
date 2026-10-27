@@ -156,6 +156,7 @@ public sealed class Qwen3AsrOnnxAudioTranscriptionEngine
         IReadOnlyList<SpeechRegion> transcriptionRegions = PreserveCallerSpeechRegions(effectiveRegions);
         string? forcedLanguageName = Qwen3AsrLanguageCodes.TryGetLanguageName(request.SourceLanguage);
         var segments = new List<RecognizedTranscriptSegment>(transcriptionRegions.Count);
+        var chunkSkipReasons = new List<string>();
 
         foreach (SpeechRegion region in transcriptionRegions)
         {
@@ -167,6 +168,8 @@ public sealed class Qwen3AsrOnnxAudioTranscriptionEngine
                 region,
                 forcedLanguageName,
                 cancellationToken).ConfigureAwait(false);
+
+            chunkSkipReasons.AddRange(regionResult.ChunkSkipReasons);
 
             if (string.IsNullOrWhiteSpace(regionResult.Text))
             {
@@ -182,7 +185,7 @@ public sealed class Qwen3AsrOnnxAudioTranscriptionEngine
                 regionResult.Words));
         }
 
-        LastExecutionSummary = CreateExecutionSummary(plan, sessionLease);
+        LastExecutionSummary = CreateExecutionSummary(plan, sessionLease, chunkSkipReasons);
         return segments;
     }
 
@@ -199,7 +202,7 @@ public sealed class Qwen3AsrOnnxAudioTranscriptionEngine
         long endSample = Math.Min(targetAudio.SampleFrameCount, (long)Math.Ceiling(region.EndSeconds * 16000d));
         if (endSample <= startSample)
         {
-            return new RegionTranscription(string.Empty, DetectedLanguage: null, Words: []);
+            return new RegionTranscription(string.Empty, DetectedLanguage: null, Words: [], ChunkSkipReasons: []);
         }
 
         float[] regionSamples = new float[checked((int)(endSample - startSample))];
@@ -208,6 +211,7 @@ public sealed class Qwen3AsrOnnxAudioTranscriptionEngine
         const int maxChunkSamples = (int)(28 * 16000);
         var chunkTexts = new List<string>();
         var detectedLanguages = new List<string>();
+        var chunkSkipReasons = new List<string>();
 
         for (int offset = 0; offset < regionSamples.Length; offset += maxChunkSamples)
         {
@@ -220,6 +224,9 @@ public sealed class Qwen3AsrOnnxAudioTranscriptionEngine
             int audioTokenCount = Qwen3AsrFeatureLengths.GetEncoderOutputLength(melFrames);
             if (audioTokenCount <= 0)
             {
+                // Explicit skip reason (mirrors the Whisper engines' dropped-chunk
+                // accounting): a too-short chunk must not vanish silently.
+                chunkSkipReasons.Add(FormatTooShortChunkSkipReason(melFrames, audioTokenCount));
                 continue;
             }
 
@@ -261,7 +268,8 @@ public sealed class Qwen3AsrOnnxAudioTranscriptionEngine
         return new RegionTranscription(
             string.Join(" ", chunkTexts).Trim(),
             ResolveDetectedLanguage(detectedLanguages),
-            Words: []);
+            Words: [],
+            ChunkSkipReasons: chunkSkipReasons);
     }
 
     private static string? ResolveDetectedLanguage(IReadOnlyList<string> detectedLanguages)
@@ -329,16 +337,33 @@ public sealed class Qwen3AsrOnnxAudioTranscriptionEngine
             embedTokensPath);
     }
 
+    internal static string FormatTooShortChunkSkipReason(int melFrames, int audioTokenCount) =>
+        $"chunk too short for Qwen3-ASR encoder: {melFrames} mel frame(s) produced {audioTokenCount} audio token(s), so the chunk was skipped";
+
+    internal static string AppendChunkSkipReasons(string? bootstrapDetail, IReadOnlyList<string> chunkSkipReasons)
+    {
+        string detail = string.IsNullOrWhiteSpace(bootstrapDetail)
+            ? "ONNX Qwen3-ASR greedy decoding."
+            : bootstrapDetail;
+        if (chunkSkipReasons.Count == 0)
+        {
+            return detail;
+        }
+
+        return $"{detail} Skipped {chunkSkipReasons.Count} chunk(s): {string.Join("; ", chunkSkipReasons.Distinct(StringComparer.Ordinal))}";
+    }
+
     private static StageRuntimeExecutionSummary CreateExecutionSummary(
         StageRuntimePlan plan,
-        OnnxExecutionSessionFactory.Qwen3AsrSessionLease sessionLease) =>
+        OnnxExecutionSessionFactory.Qwen3AsrSessionLease sessionLease,
+        IReadOnlyList<string>? chunkSkipReasons = null) =>
         new(
             sessionLease.RequestedProvider,
             sessionLease.SelectedProvider,
             plan.ModelId,
             plan.ModelAlias,
             plan.Variant,
-            sessionLease.BootstrapDetail);
+            AppendChunkSkipReasons(sessionLease.BootstrapDetail, chunkSkipReasons ?? []));
 
     private static StageRuntimeExecutionSummary CreatePlannedOnlySummary(StageRuntimePlan plan, string bootstrapDetail) =>
         new(
@@ -359,5 +384,6 @@ public sealed class Qwen3AsrOnnxAudioTranscriptionEngine
     private sealed record RegionTranscription(
         string Text,
         string? DetectedLanguage,
-        IReadOnlyList<RecognizedTranscriptWord> Words);
+        IReadOnlyList<RecognizedTranscriptWord> Words,
+        IReadOnlyList<string> ChunkSkipReasons);
 }

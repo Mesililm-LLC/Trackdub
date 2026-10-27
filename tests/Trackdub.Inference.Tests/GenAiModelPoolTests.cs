@@ -72,6 +72,52 @@ public class GenAiModelPoolTests
     }
 
     [Fact]
+    public async Task GetLeaseAsync_CachedTokenizer_ReusedAcrossLeases_AndDroppedOnEviction()
+    {
+        using var admission = NewAdmissionPool();
+        var created = new List<FakeGenAiModelResource>();
+        using var pool = new GenAiModelPool(admission, TrackingFactory(created), maxEntries: 1);
+        int tokenizerCreates = 0;
+
+        FakeCachedTokenizer TokenizerFor(GenAiModelLease lease) =>
+            lease.GetOrCreateCachedTokenizer<FakeCachedTokenizer>(_ =>
+            {
+                tokenizerCreates++;
+                return new FakeCachedTokenizer();
+            });
+
+        FakeCachedTokenizer first;
+        using (GenAiModelLease lease = await pool.GetLeaseAsync(Key("a"), CancellationToken.None))
+        {
+            first = TokenizerFor(lease);
+        }
+
+        using (GenAiModelLease lease = await pool.GetLeaseAsync(Key("a"), CancellationToken.None))
+        {
+            Assert.Same(first, TokenizerFor(lease));
+        }
+
+        Assert.Equal(1, tokenizerCreates);
+        Assert.Equal(0, first.DisposeCount);
+
+        // Capacity 1: leasing another key evicts the idle first entry, which must
+        // drop (dispose) its cached tokenizer with the pooled model.
+        using (GenAiModelLease lease = await pool.GetLeaseAsync(Key("b"), CancellationToken.None))
+        {
+            _ = lease;
+        }
+
+        Assert.Equal(1, first.DisposeCount);
+
+        using (GenAiModelLease lease = await pool.GetLeaseAsync(Key("a"), CancellationToken.None))
+        {
+            Assert.NotSame(first, TokenizerFor(lease));
+        }
+
+        Assert.Equal(2, tokenizerCreates);
+    }
+
+    [Fact]
     public async Task GetLeaseAsync_SameKey_ConcurrentWaiter_SerializesWithoutDisposing()
     {
         using var admission = NewAdmissionPool();
@@ -792,6 +838,15 @@ public class GenAiModelPoolTests
                 .WaitAsync(TimeSpan.FromSeconds(5)));
 
         pool.Dispose();
+    }
+
+    private sealed class FakeCachedTokenizer : IDisposable
+    {
+        private int disposeCount;
+
+        public int DisposeCount => Volatile.Read(ref disposeCount);
+
+        public void Dispose() => Interlocked.Increment(ref disposeCount);
     }
 
     private sealed class FakeGenAiModelResource : IGenAiModelResource

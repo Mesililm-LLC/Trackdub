@@ -27,6 +27,9 @@ internal sealed class ParakeetTdtGreedyDecoder(
     {
         int frameCount = Math.Min(encodedLength, encoded.Dimensions[2]);
         int[] stateShape = ResolveStateShape();
+        // Hoisted out of the decode loop: input element types cannot change for this session.
+        TensorElementType targetsElementType = decoderJointSession.InputMetadata["targets"].ElementDataType;
+        TensorElementType targetLengthElementType = decoderJointSession.InputMetadata["target_length"].ElementDataType;
         var state1 = new DenseTensor<float>(stateShape);
         var state2 = new DenseTensor<float>(stateShape);
         int lastToken = vocab.BlankId;
@@ -39,7 +42,7 @@ internal sealed class ParakeetTdtGreedyDecoder(
             cancellationToken.ThrowIfCancellationRequested();
             DenseTensor<float> encoderFrame = SliceFrame(encoded, frame);
             using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results = decoderJointSession.RunWithRetry(
-                BuildInputs(encoderFrame, lastToken, state1, state2),
+                BuildInputs(encoderFrame, lastToken, state1, state2, targetsElementType, targetLengthElementType),
                 cancellationToken: cancellationToken,
                 provider: provider);
 
@@ -79,21 +82,23 @@ internal sealed class ParakeetTdtGreedyDecoder(
         return tokens;
     }
 
-    private List<NamedOnnxValue> BuildInputs(
+    private static List<NamedOnnxValue> BuildInputs(
         DenseTensor<float> encoderFrame,
         int lastToken,
         DenseTensor<float> state1,
-        DenseTensor<float> state2) =>
+        DenseTensor<float> state2,
+        TensorElementType targetsElementType,
+        TensorElementType targetLengthElementType) =>
     [
         NamedOnnxValue.CreateFromTensor("encoder_outputs", encoderFrame),
-        CreateIntegerInput("targets", lastToken, [1, 1]),
-        CreateIntegerInput("target_length", 1, [1]),
+        CreateIntegerInput("targets", targetsElementType, lastToken, [1, 1]),
+        CreateIntegerInput("target_length", targetLengthElementType, 1, [1]),
         NamedOnnxValue.CreateFromTensor("input_states_1", state1),
         NamedOnnxValue.CreateFromTensor("input_states_2", state2),
     ];
 
-    private NamedOnnxValue CreateIntegerInput(string name, int value, int[] dimensions) =>
-        decoderJointSession.InputMetadata[name].ElementDataType switch
+    private static NamedOnnxValue CreateIntegerInput(string name, TensorElementType elementType, int value, int[] dimensions) =>
+        elementType switch
         {
             TensorElementType.Int32 => NamedOnnxValue.CreateFromTensor(name, new DenseTensor<int>(new[] { value }, dimensions)),
             TensorElementType.Int64 => NamedOnnxValue.CreateFromTensor(name, new DenseTensor<long>(new long[] { value }, dimensions)),
