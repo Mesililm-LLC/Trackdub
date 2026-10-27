@@ -253,7 +253,8 @@ internal sealed class GenAiModelLease : IDisposable
 /// instances. Memory is admitted through <see cref="InferenceSessionPool.ReserveExternalAsync"/>
 /// before native load, so GenAI models share the same host RAM / per-device accelerator
 /// ceiling as pooled ONNX sessions — and become eviction candidates for ONNX admission once
-/// idle. Default capacity is one resident model.
+/// idle. Capacity is hardware-scaled by <see cref="GenAiModelPoolCapacity"/> (1 on a 12 GB
+/// card, where only the largest measured model fits with headroom).
 /// </summary>
 internal sealed class GenAiModelPool : IDisposable
 {
@@ -275,21 +276,58 @@ internal sealed class GenAiModelPool : IDisposable
     private volatile bool disposed;
     private int disposeOnce;
 
+    /// <param name="maxEntries">
+    /// Resident entry cap. A positive value always wins; 0 (the default) resolves the
+    /// hardware-scaled capacity from the admission pool's budgets via
+    /// <see cref="GenAiModelPoolCapacity.Resolve"/>, honouring
+    /// <see cref="GenAiModelPoolCapacity.MaxEntriesVariable"/>.
+    /// </param>
     internal GenAiModelPool(
         InferenceSessionPool admissionPool,
         Func<GenAiModelKey, CancellationToken, Task<IGenAiModelResource>>? factory = null,
-        int maxEntries = 1)
+        int maxEntries = 0)
     {
         ArgumentNullException.ThrowIfNull(admissionPool);
-        ArgumentOutOfRangeException.ThrowIfLessThan(maxEntries, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxEntries, 0);
         this.admissionPool = admissionPool;
         this.factory = factory ?? CreateNativeResourceAsync;
-        this.maxEntries = maxEntries;
+        this.maxEntries = maxEntries > 0
+            ? maxEntries
+            : GenAiModelPoolCapacity.Resolve(
+                admissionPool.MemoryBudgetMb,
+                admissionPool.HostMemoryBudgetMb,
+                GenAiModelPoolCapacity.ReadOverride());
     }
+
+    /// <summary>Resolved resident entry cap (explicit or hardware-scaled).</summary>
+    internal int MaxEntries => maxEntries;
 
     internal async Task<GenAiModelLease> GetLeaseAsync(
         GenAiModelKey key,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) =>
+        // Non-warmup acquires never skip, so the core never returns null for them.
+        (await GetLeaseCoreAsync(key, cancellationToken, nonEvictingWarmup: false)
+            .ConfigureAwait(false))!;
+
+    /// <summary>
+    /// Optimization-only warmup acquire: leases the model only when it is already
+    /// resident or a free entry slot exists whose admission fits without evicting
+    /// anything. Returns <see langword="null"/> (recording
+    /// <c>genAiModelWarmupSkipped</c>) when loading would evict a resident idle model —
+    /// e.g. the model the currently executing stage is about to lease, whose
+    /// <c>LastReleasedTicks</c> is the pool's oldest — or would have to wait for
+    /// eviction headroom. The real stage acquire (<see cref="GetLeaseAsync"/>) keeps
+    /// the evicting/waiting behaviour.
+    /// </summary>
+    internal Task<GenAiModelLease?> TryGetWarmupLeaseAsync(
+        GenAiModelKey key,
+        CancellationToken cancellationToken) =>
+        GetLeaseCoreAsync(key, cancellationToken, nonEvictingWarmup: true);
+
+    private async Task<GenAiModelLease?> GetLeaseCoreAsync(
+        GenAiModelKey key,
+        CancellationToken cancellationToken,
+        bool nonEvictingWarmup)
     {
         ArgumentNullException.ThrowIfNull(key);
 
@@ -340,8 +378,14 @@ internal sealed class GenAiModelPool : IDisposable
                     continue;
                 }
 
-                GenAiModelLease? lease = await TryCreateAndLeaseAsync(key, cancellationToken)
-                    .ConfigureAwait(false);
+                (GenAiModelLease? lease, bool warmupSkipped) = await TryCreateAndLeaseAsync(
+                    key, cancellationToken, nonEvictingWarmup).ConfigureAwait(false);
+                if (warmupSkipped)
+                {
+                    BenchmarkPhaseCapture.Increment("genAiModelWarmupSkipped");
+                    return null;
+                }
+
                 if (lease is not null)
                 {
                     return lease;
@@ -357,12 +401,16 @@ internal sealed class GenAiModelPool : IDisposable
     /// <summary>
     /// Evicts idle entries until capacity is available, then reserves admission, creates the
     /// resource, and publishes the entry — all serialized by <see cref="creationLock"/>.
-    /// Returns <see langword="null"/> when the caller must re-evaluate (key appeared, or the
+    /// Returns a null lease when the caller must re-evaluate (key appeared, or the
     /// pool stayed at capacity so it waited a bounded interval for a state change).
+    /// In non-evicting warmup mode it instead reports <c>WarmupSkipped</c> the moment
+    /// creating would require an eviction (entry-count or admission-budget) or a
+    /// capacity wait — warmup never evicts and never parks.
     /// </summary>
-    private async Task<GenAiModelLease?> TryCreateAndLeaseAsync(
+    private async Task<(GenAiModelLease? Lease, bool WarmupSkipped)> TryCreateAndLeaseAsync(
         GenAiModelKey key,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool nonEvictingWarmup)
     {
         // Captured before each attempt: any state change during the attempt fires the
         // one-shot source, so a needed capacity wait cannot miss a wakeup.
@@ -381,7 +429,13 @@ internal sealed class GenAiModelPool : IDisposable
                 ObjectDisposedException.ThrowIf(disposed, this);
                 if (entries.ContainsKey(key))
                 {
-                    return null; // published meanwhile — caller retries the fast path
+                    return (null, false); // published meanwhile — caller retries the fast path
+                }
+
+                if (nonEvictingWarmup && entries.Count >= maxEntries)
+                {
+                    // No free slot: creating here would evict the oldest idle resident.
+                    return (null, true);
                 }
 
                 while (entries.Count >= maxEntries)
@@ -436,25 +490,40 @@ internal sealed class GenAiModelPool : IDisposable
             ObjectDisposedException.ThrowIf(disposed, this);
             if (entries.ContainsKey(key))
             {
-                return null;
+                return (null, false);
             }
 
-            // A competing create may have filled the freed slot. Returning null releases
-            // creationLock in finally and lets the caller loop back through phase 1 — a
-            // recursive call here would deadlock on this non-reentrant semaphore.
+            // A competing create may have filled the freed slot. Returning a null lease
+            // releases creationLock in finally and lets the caller loop back through
+            // phase 1 — a recursive call here would deadlock on this non-reentrant
+            // semaphore. Warmup reports skipped instead of looping into an eviction.
             if (entries.Count >= maxEntries)
             {
-                return null;
+                return (null, nonEvictingWarmup);
             }
 
-            ExternalMemoryReservation reservation = await admissionPool
-                .ReserveExternalAsync(
-                    key.Provider,
-                    key.DeviceId,
-                    key.EstimatedMemoryMb,
-                    cancellationToken,
-                    key.UseOpenVinoCpuProxy)
-                .ConfigureAwait(false);
+            ExternalMemoryReservation? reservation = nonEvictingWarmup
+                ? await admissionPool
+                    .TryReserveExternalWithoutEvictionAsync(
+                        key.Provider,
+                        key.DeviceId,
+                        key.EstimatedMemoryMb,
+                        cancellationToken,
+                        key.UseOpenVinoCpuProxy)
+                    .ConfigureAwait(false)
+                : await admissionPool
+                    .ReserveExternalAsync(
+                        key.Provider,
+                        key.DeviceId,
+                        key.EstimatedMemoryMb,
+                        cancellationToken,
+                        key.UseOpenVinoCpuProxy)
+                    .ConfigureAwait(false);
+            if (reservation is null)
+            {
+                // Admission would have to evict idle work to fit — warmup skips.
+                return (null, true);
+            }
 
             IGenAiModelResource? resource = null;
             try
@@ -496,7 +565,7 @@ internal sealed class GenAiModelPool : IDisposable
             if (!entries.TryAdd(key, entry))
             {
                 entry.Dispose();
-                return null;
+                return (null, false);
             }
 
             // Dispose may race after the pre-publish check above and before TryAdd. If so,
@@ -532,7 +601,7 @@ internal sealed class GenAiModelPool : IDisposable
 
             SignalChanged();
             BenchmarkPhaseCapture.Increment("genAiModelCreate");
-            return new GenAiModelLease(resource, () => ReleaseEntry(entry));
+            return (new GenAiModelLease(resource, () => ReleaseEntry(entry)), false);
         }
         finally
         {

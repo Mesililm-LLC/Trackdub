@@ -367,6 +367,8 @@ public class StageWarmupSchedulingTests
 
     private sealed class ControlledWarmupCoordinator(Action onStarted) : IStageWarmupCoordinator
     {
+        bool IStageWarmupCoordinator.AllowsConcurrentWarmup => true;
+
         public TaskCompletionSource Started { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -394,9 +396,27 @@ public class StageWarmupSchedulingTests
             CancellationToken cancellationToken = default) => handler(request);
     }
 
+    [Fact]
+    public void ShouldStartConcurrentWarmup_RequiresCapacityAndNoPendingWarmup()
+    {
+        var singleEntry = new FakeWarmupCoordinator();
+        var multiEntry = new FakeWarmupCoordinator { AllowsConcurrent = true };
+        var pending = new DubbingPipelineEngine.PendingStageWarmup(
+            StageNames.Asr, Task.FromResult(new StageWarmupResult(true, true)));
+
+        Assert.False(DubbingPipelineEngine.ShouldStartConcurrentWarmup(null, null));
+        Assert.False(DubbingPipelineEngine.ShouldStartConcurrentWarmup(singleEntry, null));
+        Assert.True(DubbingPipelineEngine.ShouldStartConcurrentWarmup(multiEntry, null));
+        Assert.False(DubbingPipelineEngine.ShouldStartConcurrentWarmup(multiEntry, pending));
+    }
+
     private sealed class FakeWarmupCoordinator : IStageWarmupCoordinator
     {
         public List<StageWarmupRequest> Requests { get; } = [];
+
+        public bool AllowsConcurrent { get; init; }
+
+        bool IStageWarmupCoordinator.AllowsConcurrentWarmup => AllowsConcurrent;
 
         public Task<StageWarmupResult> WarmAsync(
             StageWarmupRequest request,

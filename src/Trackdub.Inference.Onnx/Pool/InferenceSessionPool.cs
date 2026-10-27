@@ -608,6 +608,12 @@ internal sealed class InferenceSessionPool : IDisposable
         this.processGpuMemoryReader = processGpuMemoryReader;
     }
 
+    /// <summary>Per-device accelerator admission budget backing this pool, in MiB.</summary>
+    internal long MemoryBudgetMb => memoryBudgetMb;
+
+    /// <summary>Shared host-RAM admission budget backing this pool, in MiB.</summary>
+    internal long HostMemoryBudgetMb => hostMemoryBudgetMb;
+
     private static TaskCompletionSource<bool> CreateBundleStateChangedSignal() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -738,7 +744,35 @@ internal sealed class InferenceSessionPool : IDisposable
         int? deviceId,
         long estimatedMemoryMb,
         CancellationToken cancellationToken,
-        bool useOpenVinoCpuProxy = false)
+        bool useOpenVinoCpuProxy = false) =>
+        (await ReserveExternalCoreAsync(
+            provider, deviceId, estimatedMemoryMb, cancellationToken, useOpenVinoCpuProxy,
+            allowEviction: true).ConfigureAwait(false))!;
+
+    /// <summary>
+    /// Non-evicting variant of <see cref="ReserveExternalAsync"/> for optimization-only
+    /// warmup: returns <see langword="null"/> immediately when the reservation does not
+    /// already fit the bucket budget, instead of evicting idle pooled/external entries
+    /// or waiting for headroom. A request larger than the whole budget also returns
+    /// <see langword="null"/> (the real acquire keeps the authoritative failure).
+    /// </summary>
+    internal Task<ExternalMemoryReservation?> TryReserveExternalWithoutEvictionAsync(
+        ExecutionProviderKind provider,
+        int? deviceId,
+        long estimatedMemoryMb,
+        CancellationToken cancellationToken,
+        bool useOpenVinoCpuProxy = false) =>
+        ReserveExternalCoreAsync(
+            provider, deviceId, estimatedMemoryMb, cancellationToken, useOpenVinoCpuProxy,
+            allowEviction: false);
+
+    private async Task<ExternalMemoryReservation?> ReserveExternalCoreAsync(
+        ExecutionProviderKind provider,
+        int? deviceId,
+        long estimatedMemoryMb,
+        CancellationToken cancellationToken,
+        bool useOpenVinoCpuProxy,
+        bool allowEviction)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(estimatedMemoryMb, 1);
         ObjectDisposedException.ThrowIf(disposed, this);
@@ -747,15 +781,28 @@ internal sealed class InferenceSessionPool : IDisposable
         long budgetMb = BudgetFor(bucket);
         if (estimatedMemoryMb > budgetMb)
         {
+            if (!allowEviction)
+            {
+                return null;
+            }
+
             throw new InvalidOperationException(
                 $"External resource for '{provider}' needs ~{estimatedMemoryMb} MB, which exceeds the " +
                 $"{DescribeBucket(bucket)} admission budget of {budgetMb} MB.");
         }
 
-        // Takes the pending reservation (evicting idle pooled/external entries to fit) so
-        // benchmark maxima see external construction honestly; publishing the live state
-        // below then transfers the accounting so nothing is double-counted.
-        await WaitForAdmissionBudgetAsync(estimatedMemoryMb, bucket, cancellationToken).ConfigureAwait(false);
+        if (allowEviction)
+        {
+            // Takes the pending reservation (evicting idle pooled/external entries to fit) so
+            // benchmark maxima see external construction honestly; publishing the live state
+            // below then transfers the accounting so nothing is double-counted.
+            await WaitForAdmissionBudgetAsync(estimatedMemoryMb, bucket, cancellationToken).ConfigureAwait(false);
+        }
+        else if (!await TryTakePendingReservationWithoutEvictionAsync(
+                     estimatedMemoryMb, bucket, cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
 
         // Publish under creationLock so pool disposal cannot interleave: either the reserve
         // wins the lock and publishes first (Dispose then sees and clears the state), or
@@ -796,6 +843,36 @@ internal sealed class InferenceSessionPool : IDisposable
             {
                 externalReservations.TryRemove(id, out _);
             }
+        }
+    }
+
+    /// <summary>
+    /// Takes the pending reservation only when it already fits <paramref name="bucket"/>'s
+    /// budget under the same usage accounting as <see cref="WaitForAdmissionBudgetAsync"/>
+    /// (reservations floored by the observed process GPU footprint) — never evicting and
+    /// never waiting. Returns <see langword="false"/> when it would not fit as-is.
+    /// </summary>
+    private async Task<bool> TryTakePendingReservationWithoutEvictionAsync(
+        long needMb,
+        AdmissionBucket bucket,
+        CancellationToken cancellationToken)
+    {
+        ProcessGpuObservation? observation = bucket.IsHost ? null : ReadObservedProcessGpu();
+        await creationLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            if (AdmissionUsageMb(bucket, observation) + needMb > BudgetFor(bucket))
+            {
+                return false;
+            }
+
+            AddPendingReservation(bucket, needMb);
+            return true;
+        }
+        finally
+        {
+            creationLock.Release();
         }
     }
 

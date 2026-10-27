@@ -669,8 +669,10 @@ public static class CompositionRoot
                 sp.GetRequiredService<IRuntimePlanner>(),
                 sp.GetRequiredService<IExecutionProviderSmokeTester>(),
                 sp.GetService<IRuntimePlanningPreferences>(),
-                sp.GetService<ISmokeVerdictStore>(),
-                sp.GetService<IHardwareProfileProvider>()));
+                sp.GetService<IInferenceWorkerClient>(),
+                allowsConcurrentWarmup: Trackdub.Inference.Onnx.Pool.GenAiModelPool.Shared.MaxEntries >= 2,
+                smokeVerdictStore: sp.GetService<ISmokeVerdictStore>(),
+                hardwareProfileProvider: sp.GetService<IHardwareProfileProvider>()));
         services.TryAddSingleton<IResidentWarmupService>(sp =>
             new ResidentWarmupService(
                 sp.GetRequiredService<IServiceScopeFactory>(),

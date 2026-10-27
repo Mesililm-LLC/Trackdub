@@ -11,7 +11,7 @@ using Trackdub.Inference.Onnx.Worker;
 
 namespace Trackdub.Inference.Onnx.Kokoro;
 
-public sealed class KokoroTtsEngine : ITtsEngineAdapter, IStageRuntimeExecutionReporter
+public sealed class KokoroTtsEngine : ITtsEngineAdapter, IStageRuntimeExecutionReporter, IKokoroWorkerEngine
 {
     public const string EngineFamilyName = "kokoro";
 
@@ -203,6 +203,61 @@ public sealed class KokoroTtsEngine : ITtsEngineAdapter, IStageRuntimeExecutionR
                 ModelId: plan.ModelId ?? ModelAlias,
                 VoiceId: request.Voice.VoiceId,
                 Provider: lease.SelectedProvider);
+        }
+        finally
+        {
+            sessionGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Creates the real pooled session for <paramref name="plan"/> (plus tokenizer and voice
+    /// catalog) without synthesizing, so a later synthesis reuses it. Warm success means a
+    /// real session exists; a failure throws its reason and caches nothing, leaving the lazy
+    /// inline construction in <see cref="SynthesizeAsync(TtsSynthesisRequest, StageRuntimePlan, CancellationToken)"/>
+    /// intact. On a worker-routed CUDA plan the warm is forwarded to the inference worker.
+    /// </summary>
+    public async Task<StageRuntimeExecutionSummary> WarmAsync(
+        StageRuntimePlan plan,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        cancellationToken.ThrowIfCancellationRequested();
+        EnsurePlanReady(plan);
+
+        if (plan.ExecutionProvider is ExecutionProviderKind.Cuda &&
+            workerClient is not null &&
+            !CudaOrtProbe.IsCudaProviderListed())
+        {
+            WorkerWarmResult warm = await workerClient
+                .WarmTtsAsync(plan, cancellationToken)
+                .ConfigureAwait(false);
+            return new StageRuntimeExecutionSummary(
+                "cuda", warm.Provider, plan.ModelId, plan.ModelAlias, plan.Variant, warm.Detail);
+        }
+
+        BenchmarkModelCandidate candidate = PlannedRuntimeModelResolver.ResolveCandidate(plan, modelPathResolver);
+        string modelRootPath = candidate.RootDirectory
+            ?? Path.GetDirectoryName(candidate.ModelPath)
+            ?? throw new InvalidOperationException("Cannot resolve Kokoro model root path.");
+
+        await sessionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ThrowIfDisposed();
+            PinnedSession session = await GetOrCreatePinnedSessionAsync(
+                candidate.ModelPath,
+                modelRootPath,
+                plan.ExecutionProvider!.Value,
+                cancellationToken,
+                allowTrtInitFallback: !plan.RequirePreferredExecutionProvider).ConfigureAwait(false);
+            return new StageRuntimeExecutionSummary(
+                session.Pin.RequestedProvider,
+                session.Pin.SelectedProvider,
+                plan.ModelId,
+                plan.ModelAlias,
+                plan.Variant,
+                session.Pin.BootstrapDetail);
         }
         finally
         {

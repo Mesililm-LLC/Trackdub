@@ -29,22 +29,12 @@ if (string.Equals(
 var writeGate = new SemaphoreSlim(1, 1);
 var inFlight = new ConcurrentDictionary<long, CancellationTokenSource>();
 var handlers = new ConcurrentDictionary<long, Task>();
-// Created on first use but never cached as a failure, unlike Lazy<T>: a transient construction
-// error (an unreadable manifest, a model cache still being written) must not poison every later
-// request for the life of the worker.
-var kokoroGate = new object();
-KokoroTtsEngine? kokoro = null;
-
-KokoroTtsEngine GetKokoro()
-{
-    lock (kokoroGate)
-    {
-        return kokoro ??= new KokoroTtsEngine(
-            new PlanSuppliedByApplication(),
-            BenchmarkModelPathResolver.CreateDefault(),
-            new EspeakNgPhonemizer());
-    }
-}
+// One host per worker lifetime: the Kokoro engine is constructed at most once, and a
+// failed construction/warm is never cached as a failure — the next request retries.
+var kokoroHost = new KokoroWorkerHost(() => new KokoroTtsEngine(
+    new PlanSuppliedByApplication(),
+    BenchmarkModelPathResolver.CreateDefault(),
+    new EspeakNgPhonemizer()));
 
 async Task RespondAsync(WorkerMessage message)
 {
@@ -68,8 +58,12 @@ async Task HandleAsync(WorkerMessage request, CancellationToken cancellationToke
             InferenceWorkerProtocol.Hello => new WorkerMessage(request.Id, InferenceWorkerProtocol.Result,
                 InferenceWorkerProtocol.ToPayload(DescribeWorker())),
             InferenceWorkerProtocol.TtsSynthesize => new WorkerMessage(request.Id, InferenceWorkerProtocol.Result,
-                InferenceWorkerProtocol.ToPayload(await SynthesizeAsync(
+                InferenceWorkerProtocol.ToPayload(await kokoroHost.SynthesizeAsync(
                     InferenceWorkerProtocol.FromPayload<WorkerTtsRequest>(request.Payload),
+                    cancellationToken).ConfigureAwait(false))),
+            InferenceWorkerProtocol.TtsWarm => new WorkerMessage(request.Id, InferenceWorkerProtocol.Result,
+                InferenceWorkerProtocol.ToPayload(await kokoroHost.WarmAsync(
+                    InferenceWorkerProtocol.FromPayload<WorkerWarmRequest>(request.Payload).Plan,
                     cancellationToken).ConfigureAwait(false))),
             _ => throw new NotSupportedException($"Unknown inference worker request '{request.Kind}'."),
         };
@@ -89,32 +83,6 @@ async Task HandleAsync(WorkerMessage request, CancellationToken cancellationToke
             source.Dispose();
         }
     }
-}
-
-async Task<WorkerTtsResult> SynthesizeAsync(WorkerTtsRequest request, CancellationToken cancellationToken)
-{
-    StageRuntimePlan plan = request.Plan.ToStageRuntimePlan();
-    KokoroTtsEngine engine = string.Equals(plan.EngineFamily, KokoroTtsEngine.EngineFamilyName, StringComparison.OrdinalIgnoreCase)
-        ? GetKokoro()
-        : throw new NotSupportedException($"The inference worker does not host TTS engine family '{plan.EngineFamily}'.");
-    TtsSynthesisResult result = await engine.SynthesizeAsync(
-        new TtsSynthesisRequest(
-            request.Text,
-            request.LanguageCode,
-            request.Voice,
-            request.Speed,
-            request.PhonemeOverride,
-            TargetDurationSeconds: request.TargetDurationSeconds),
-        plan,
-        cancellationToken).ConfigureAwait(false);
-    return new WorkerTtsResult(
-        Convert.ToBase64String(result.WavBytes),
-        result.DurationSamples,
-        result.SampleRate,
-        result.ModelId,
-        result.VoiceId,
-        result.Provider,
-        engine.LastExecutionSummary);
 }
 
 static WorkerHelloResult DescribeWorker()
@@ -171,10 +139,7 @@ async Task DrainAsync()
         Console.Error.WriteLine($"[worker] An in-flight request failed during shutdown: {ex.Message}");
     }
 
-    lock (kokoroGate)
-    {
-        kokoro?.Dispose();
-    }
+    kokoroHost.Dispose();
 }
 
 while (await InferenceWorkerProtocol.ReadAsync(input, CancellationToken.None).ConfigureAwait(false) is { } message)

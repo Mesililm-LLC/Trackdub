@@ -19,6 +19,7 @@ public static class InferenceWorkerProtocol
 
     public const string Hello = "hello";
     public const string TtsSynthesize = "tts.synthesize";
+    public const string TtsWarm = "tts.warm";
     public const string Cancel = "cancel";
     public const string Shutdown = "shutdown";
     public const string Result = "result";
@@ -206,3 +207,16 @@ public sealed record WorkerTtsResult(
     string VoiceId,
     string Provider,
     StageRuntimeExecutionSummary? ExecutionSummary);
+
+/// <summary>
+/// Warm request: construct the worker's Kokoro engine and create its real pooled session
+/// for the supplied plan, without synthesizing. A warm success therefore means a real
+/// session exists; a warm failure reports its reason and leaves the lazy inline
+/// construction on the next <see cref="InferenceWorkerProtocol.TtsSynthesize"/> intact.
+/// </summary>
+public sealed record WorkerWarmRequest(WorkerPlan Plan);
+
+public sealed record WorkerWarmResult(
+    string? ModelId,
+    string Provider,
+    string? Detail = null);
