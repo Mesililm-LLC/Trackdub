@@ -364,9 +364,25 @@ public static class EpContextArtifact
         // FileShare.None serializes publishers across processes, not just sessions in this host.
         // Keep the lock file: deleting it after releasing would let waiters lock different inodes.
         using FileStream publicationLock = AcquirePublicationLock(epContextPath + ".publish.lock");
+        Stamp? probeStamp = null;
+        if (createStamp is not null)
+        {
+            // Refuse before touching any existing artifact: a stamp built from the
+            // placeholder "unknown" hardware identity would replace a usable artifact
+            // with one no lookup can ever validate.
+            probeStamp = createStamp([]);
+            if (!probeStamp.HasIdentifiedHardware)
+            {
+                throw new InvalidOperationException(
+                    "Refusing to publish an EP-context artifact stamped with unidentified hardware " +
+                    $"(architecture '{probeStamp.GpuArchitecture}', driver '{probeStamp.DriverVersion ?? "unknown"}'). " +
+                    "Load the hardware identity (host startup / EP-context warmup) before compiling or capturing.");
+            }
+        }
+
         if (createStamp is not null && File.Exists(epContextPath) && File.Exists(stampPath))
         {
-            Stamp probe = createStamp([]);
+            Stamp probe = probeStamp!;
             if (HasMatchingSourceStamp(
                     sourceModelPath,
                     epContextPath,
@@ -497,6 +513,19 @@ public static class EpContextArtifact
 
     public static void WriteStamp(string sourceModelPath, Stamp stamp, string? outputPath = null)
     {
+        ArgumentNullException.ThrowIfNull(stamp);
+        // A stamp is the artifact's machine identity. Persisting one built from the
+        // placeholder "unknown" hardware identity would create a dead artifact and,
+        // on publish, displace a valid one. Refuse instead of faking readiness.
+        if (!stamp.HasIdentifiedHardware)
+        {
+            throw new InvalidOperationException(
+                "Refusing to write an EP-context stamp with unidentified hardware " +
+                $"(architecture '{stamp.GpuArchitecture}', driver '{stamp.DriverVersion ?? "unknown"}', " +
+                $"ORT '{stamp.OrtRuntimeVersion ?? "unknown"}'). " +
+                "Load the hardware identity (host startup / EP-context warmup) before stamping.");
+        }
+
         string stampPath = outputPath is null ? GetStampPath(sourceModelPath) : GetOutputStampPath(outputPath);
         string? directory = Path.GetDirectoryName(stampPath);
         if (!string.IsNullOrEmpty(directory))

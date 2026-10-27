@@ -1,0 +1,212 @@
+{
+  "whisper-sine1000": {
+    "Frames": 3000,
+    "Spots": [
+      {
+        "Mel": 26,
+        "Frame": 50,
+        "Value": 1.4396517
+      },
+      {
+        "Mel": 0,
+        "Frame": 50,
+        "Value": -0.5603483
+      },
+      {
+        "Mel": 79,
+        "Frame": 50,
+        "Value": -0.5603483
+      },
+      {
+        "Mel": 26,
+        "Frame": 10,
+        "Value": 1.4396517
+      },
+      {
+        "Mel": 62,
+        "Frame": 90,
+        "Value": -0.5603483
+      },
+      {
+        "Mel": 12,
+        "Frame": 10,
+        "Value": -0.5603483
+      }
+    ]
+  },
+  "whisper-chirp": {
+    "Frames": 3000,
+    "Spots": [
+      {
+        "Mel": 26,
+        "Frame": 50,
+        "Value": -0.56209826
+      },
+      {
+        "Mel": 0,
+        "Frame": 50,
+        "Value": -0.56209826
+      },
+      {
+        "Mel": 79,
+        "Frame": 50,
+        "Value": -0.56209826
+      },
+      {
+        "Mel": 26,
+        "Frame": 10,
+        "Value": -0.51994026
+      },
+      {
+        "Mel": 62,
+        "Frame": 90,
+        "Value": -0.2582053
+      },
+      {
+        "Mel": 12,
+        "Frame": 10,
+        "Value": 1.4289027
+      }
+    ]
+  },
+  "qwen-sine1000": {
+    "Frames": 100,
+    "Spots": [
+      {
+        "Mel": 42,
+        "Frame": 50,
+        "Value": 1.474446
+      },
+      {
+        "Mel": 0,
+        "Frame": 50,
+        "Value": -0.52555394
+      },
+      {
+        "Mel": 127,
+        "Frame": 50,
+        "Value": -0.52555394
+      },
+      {
+        "Mel": 42,
+        "Frame": 10,
+        "Value": 1.474446
+      },
+      {
+        "Mel": 99,
+        "Frame": 90,
+        "Value": -0.52555394
+      },
+      {
+        "Mel": 20,
+        "Frame": 10,
+        "Value": -0.52555394
+      }
+    ]
+  },
+  "qwen-chirp": {
+    "Frames": 100,
+    "Spots": [
+      {
+        "Mel": 42,
+        "Frame": 50,
+        "Value": -0.5086248
+      },
+      {
+        "Mel": 0,
+        "Frame": 50,
+        "Value": -0.5086248
+      },
+      {
+        "Mel": 127,
+        "Frame": 50,
+        "Value": -0.5086248
+      },
+      {
+        "Mel": 42,
+        "Frame": 10,
+        "Value": -0.49071896
+      },
+      {
+        "Mel": 99,
+        "Frame": 90,
+        "Value": -0.25085962
+      },
+      {
+        "Mel": 20,
+        "Frame": 10,
+        "Value": 1.4203476
+      }
+    ]
+  },
+  "nemotron-sine1000": {
+    "Frames": 100,
+    "Spots": [
+      {
+        "Mel": 42,
+        "Frame": 50,
+        "Value": 2.458131
+      },
+      {
+        "Mel": 0,
+        "Frame": 50,
+        "Value": -16.610748
+      },
+      {
+        "Mel": 127,
+        "Frame": 50,
+        "Value": -16.635532
+      },
+      {
+        "Mel": 42,
+        "Frame": 10,
+        "Value": 2.458131
+      },
+      {
+        "Mel": 99,
+        "Frame": 90,
+        "Value": -16.63547
+      },
+      {
+        "Mel": 20,
+        "Frame": 10,
+        "Value": -14.957996
+      }
+    ]
+  },
+  "nemotron-chirp": {
+    "Frames": 100,
+    "Spots": [
+      {
+        "Mel": 42,
+        "Frame": 50,
+        "Value": -16.563848
+      },
+      {
+        "Mel": 0,
+        "Frame": 50,
+        "Value": -16.629652
+      },
+      {
+        "Mel": 127,
+        "Frame": 50,
+        "Value": -16.635525
+      },
+      {
+        "Mel": 42,
+        "Frame": 10,
+        "Value": -15.969926
+      },
+      {
+        "Mel": 99,
+        "Frame": 90,
+        "Value": -10.774138
+      },
+      {
+        "Mel": 20,
+        "Frame": 10,
+        "Value": 0.78314793
+      }
+    ]
+  }
+}

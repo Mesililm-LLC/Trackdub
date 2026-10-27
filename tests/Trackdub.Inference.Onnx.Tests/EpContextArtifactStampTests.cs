@@ -97,9 +97,15 @@ public sealed class EpContextArtifactStampTests
                 sourceSha256: null,
                 gpuArchitecture: "unknown",
                 driverVersion: null);
-            EpContextArtifact.WriteStamp(sourcePath, stamp);
-
             Assert.False(stamp.HasIdentifiedHardware);
+            // Writing such a stamp is refused: it would persist a bogus machine identity.
+            Assert.Throws<InvalidOperationException>(() => EpContextArtifact.WriteStamp(sourcePath, stamp));
+            Assert.False(File.Exists(EpContextArtifact.GetStampPath(sourcePath)));
+
+            // A pre-existing unknown stamp already on disk (written before the refusal)
+            // still never resolves, even against its own fingerprint.
+            string json = System.Text.Json.JsonSerializer.Serialize(stamp);
+            File.WriteAllText(EpContextArtifact.GetStampPath(sourcePath), json);
             Assert.Null(EpContextArtifact.TryResolveValidLoadPath(sourcePath, stamp.EnvironmentFingerprint));
         }
         finally

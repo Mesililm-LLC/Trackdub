@@ -159,7 +159,10 @@ public sealed class FileSmokeVerdictStore : ISmokeVerdictStore
 
             var payload = new SmokeVerdictFilePayload
             {
-                Version = 1,
+                // Version 2: verdict keys gained the ORT runtime version. Version-1 entries
+                // use the old key string and simply never match a v2 key, so they invalidate
+                // safely on load instead of crashing or being served as proven.
+                Version = 2,
                 Verified = entries,
             };
             File.WriteAllText(filePath, JsonSerializer.Serialize(payload, InfrastructureSerializationContext.Default.SmokeVerdictFilePayload));

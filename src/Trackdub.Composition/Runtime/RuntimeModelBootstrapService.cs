@@ -852,9 +852,7 @@ public sealed class RuntimeModelBootstrapService(
         string selectedRelativePath = NormalizeRelativePath(selectedEntryRelativePath);
         string benchmarkRelativePath = NormalizeRelativePath(
             Path.GetRelativePath(entry.RootDirectory, entry.DefaultBenchmarkEntryPath));
-        HashVerificationResult? selectedEntryResult = null;
-        HashVerificationResult lastResult = new(true, false, null, null, "No hash verification was required.");
-
+        var candidates = new List<RequiredModelFileHashVerifier.Candidate>();
         foreach (string relativePath in requiredFiles)
         {
             string normalizedRelativePath = NormalizeRelativePath(relativePath);
@@ -868,28 +866,31 @@ public sealed class RuntimeModelBootstrapService(
                 entry,
                 normalizedRelativePath,
                 benchmarkRelativePath);
-            if (string.IsNullOrWhiteSpace(expectedHash))
+            if (!string.IsNullOrWhiteSpace(expectedHash))
             {
-                continue;
-            }
-
-            HashVerificationResult hashResult = await hashVerifier
-                .VerifyAsync(expectedHash, filePath, cancellationToken)
-                .ConfigureAwait(false);
-            lastResult = hashResult;
-
-            if (!hashResult.IsValid)
-            {
-                return (normalizedRelativePath, hashResult);
-            }
-
-            if (normalizedRelativePath.Equals(selectedRelativePath, StringComparison.OrdinalIgnoreCase))
-            {
-                selectedEntryResult = hashResult;
+                candidates.Add(new(normalizedRelativePath, filePath, expectedHash));
             }
         }
 
-        return (selectedRelativePath, selectedEntryResult ?? lastResult);
+        IReadOnlyList<(RequiredModelFileHashVerifier.Candidate Candidate, HashVerificationResult Result)> results =
+            await RequiredModelFileHashVerifier.VerifyAsync(candidates, hashVerifier, cancellationToken).ConfigureAwait(false);
+        (RequiredModelFileHashVerifier.Candidate Candidate, HashVerificationResult Result)? firstFailure =
+            results.Where(item => !item.Result.IsValid)
+                .Select(item => ((RequiredModelFileHashVerifier.Candidate Candidate, HashVerificationResult Result)?)item)
+                .FirstOrDefault();
+        if (firstFailure is { } failed)
+        {
+            return (failed.Candidate.RelativePath, failed.Result);
+        }
+
+        HashVerificationResult selectedEntryResult = results
+            .Where(item => item.Candidate.RelativePath.Equals(selectedRelativePath, StringComparison.OrdinalIgnoreCase))
+            .Select(item => item.Result)
+            .FirstOrDefault() ?? new(true, false, null, null, "No hash verification was required.");
+        HashVerificationResult lastResult = results.Count == 0
+            ? new(true, false, null, null, "No hash verification was required.")
+            : results[^1].Result;
+        return (selectedRelativePath, selectedEntryResult.WasVerified ? selectedEntryResult : lastResult);
     }
 
     private static string ResolveStatusRelativePath(
