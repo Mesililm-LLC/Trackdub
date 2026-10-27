@@ -173,7 +173,9 @@ internal sealed class RuntimePlanFactory
                     preferredExecutionProviderSkippedForEngine: preferredForbiddenForEngine
                         ? preferredExecutionProvider
                         : null,
-                    modelRevisionHash: modelSha256);
+                    modelRevisionHash: modelSha256,
+                    devices: devices,
+                    exclusions: exclusions);
             }
         }
 
