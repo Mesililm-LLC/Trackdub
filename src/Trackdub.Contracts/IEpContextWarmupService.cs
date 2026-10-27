@@ -25,6 +25,16 @@ public sealed record EpContextWarmReport(
 /// </summary>
 public interface IEpContextWarmupService
 {
+    /// <summary>
+    /// Loads the machine hardware identity asynchronously and publishes it to the
+    /// EP-context load-path resolver, so pooled session creation can resolve cached
+    /// artifacts without ever probing (or blocking) on the session-creation path.
+    /// Host startup awaits this before the first session is created. Until it runs,
+    /// EP-context lookups are honest cache misses and no artifact is stamped with
+    /// the placeholder "unknown" identity.
+    /// </summary>
+    Task InitializeHardwareIdentityAsync(CancellationToken cancellationToken = default);
+
     /// <param name="provider">
     /// <see cref="ExecutionProviderKind.TensorRTRtx"/> (default) keeps the EP-context AOT +
     /// runtime-cache warm behavior. <see cref="ExecutionProviderKind.TensorRt"/> warms the

@@ -15,6 +15,7 @@ internal sealed class Vocoder : IDisposable
     private string? _inputName;
     private readonly string _modelPath;
     private readonly Func<SessionOptions> _sessionOptionsFactory;
+    private readonly QwenPooledSession? _pooledSession;
 
     public int SampleRate => 24000;
 
@@ -27,9 +28,15 @@ internal sealed class Vocoder : IDisposable
     /// <param name="modelPath">Path to the vocoder ONNX model.</param>
     /// <param name="sessionOptionsFactory">Optional factory for ONNX Runtime session options (e.g., for GPU acceleration).</param>
     public Vocoder(string modelPath, Func<SessionOptions>? sessionOptionsFactory = null)
+        : this(modelPath, sessionOptionsFactory, pooledSession: null)
+    {
+    }
+
+    internal Vocoder(string modelPath, Func<SessionOptions>? sessionOptionsFactory, QwenPooledSession? pooledSession)
     {
         _modelPath = modelPath;
         _sessionOptionsFactory = sessionOptionsFactory ?? CreateDefaultOptions;
+        _pooledSession = pooledSession;
     }
 
     private static SessionOptions CreateDefaultOptions() => new()
@@ -37,7 +44,7 @@ internal sealed class Vocoder : IDisposable
         GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
     };
 
-    private InferenceSession GetSession()
+    private InferenceSession GetDirectSession()
     {
         if (_session is null)
         {
@@ -72,12 +79,18 @@ internal sealed class Vocoder : IDisposable
                 for (int t = 0; t < timesteps; t++)
                     tensor[b, q, t] = codes[b, q, t];
 
+        // Call-scoped pooled lease: the gate is held for this decode only, never for the
+        // engine lifetime; residency still comes from the pin.
+        using var pooledLease = _pooledSession?.AcquireAsync(CancellationToken.None).GetAwaiter().GetResult();
+        InferenceSession session = pooledLease?.Session ?? GetDirectSession();
+        _inputName ??= session.InputMetadata.Keys.FirstOrDefault() ?? "codes";
+
         var inputs = new List<NamedOnnxValue>
         {
             NamedOnnxValue.CreateFromTensor(_inputName ?? "codes", tensor)
         };
 
-        using var results = GetSession().Run(inputs);
+        using var results = session.Run(inputs);
         ColdStartCapture.MarkInferenceCompleted("qwen3-tts:vocoder");
 
         // Extract waveform from first output tensor
@@ -106,5 +119,6 @@ internal sealed class Vocoder : IDisposable
     public void Dispose()
     {
         _session?.Dispose();
+        _pooledSession?.Dispose();
     }
 }

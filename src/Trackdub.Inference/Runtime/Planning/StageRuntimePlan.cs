@@ -55,8 +55,19 @@ public sealed record StageRuntimePlan
     [JsonIgnore]
     public string? ModelRevisionHash { get; init; }
 
+    /// <summary>
+    /// Planner-ranked device for this plan's execution provider: the lowest-index
+    /// non-excluded device advertising the provider (CPU plans always name the CPU
+    /// entry). Drives device-fallback exclusion routing, not session placement —
+    /// pooled session creation keys on <c>deviceId: null</c> and binds provider device 0
+    /// (CUDA/DirectML), so on same-provider multi-GPU hosts a fallback replan can still
+    /// bind the failed physical device. Null when planning ran without a device list.
+    /// </summary>
     public int? DeviceIndex { get; init; }
 
+    /// <summary>
+    /// Human-readable adapter for <see cref="DeviceIndex"/>; used in degradation reports.
+    /// </summary>
     public string? DeviceAdapterDescription { get; init; }
 
     public RuntimePlanFallback? Fallback { get; init; }
@@ -82,7 +93,8 @@ public sealed record HardwareProfile(
     long TotalRamMb = 0,
     long DedicatedVramMb = 0,
     NvidiaGpuArchitectureBucket NvidiaGpuArchitecture = NvidiaGpuArchitectureBucket.Unknown,
-    string? GpuDriverVersion = null);
+    string? GpuDriverVersion = null,
+    string? OrtRuntimeVersion = null);
 
 /// <param name="EngineFamilies">
 /// When set, only these engine families may run on the provider: it is reachable only through a
@@ -103,8 +115,27 @@ public sealed record ExecutionProviderSmokeTestRequest(
     ExecutionProviderKind ExecutionProvider,
     string ModelRootPath,
     string EntryPath,
-    string? ModelRevisionHash = null);
+    string? ModelRevisionHash = null)
+{
+    /// <summary>
+    /// Set only by optimization-only warmup callers: a GenAI smoke must then never evict
+    /// a resident model (or wait for eviction headroom) to make room. When loading the
+    /// target model would require eviction, the smoke reports
+    /// <see cref="ExecutionProviderSmokeTestResult.NotAttempted"/> instead of loading it.
+    /// Planner verification leaves this false — its verdict is authoritative, so it uses
+    /// the regular evicting lease.
+    /// </summary>
+    public bool NonEvictingWarmup { get; init; }
+}
 
 public sealed record ExecutionProviderSmokeTestResult(
     bool Passed,
-    string? Detail = null);
+    string? Detail = null)
+{
+    /// <summary>
+    /// True when the smoke honestly did not run (a non-evicting warmup skipped because
+    /// loading would have evicted a resident model). Distinct from a failed smoke:
+    /// nothing was proven or disproven about the provider/model pair.
+    /// </summary>
+    public bool NotAttempted { get; init; }
+}

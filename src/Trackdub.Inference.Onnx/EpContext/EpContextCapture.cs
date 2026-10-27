@@ -22,7 +22,9 @@ internal static class EpContextCapture
     /// Reasons a capture was not attempted. <see cref="InsufficientDiskSpace"/> is observed
     /// per call and never memoized: free space can change between sessions (a disk that was
     /// full during one launch may be fine the next), so it must not permanently disable
-    /// capture. Every other reason reflects a property of the graph/capture itself and is
+    /// capture. The hardware-identity deferral in <c>Publish</c> is likewise transient and
+    /// bypasses both dictionaries: identity can load later and capture must then be retried.
+    /// Every other reason reflects a property of the graph/capture itself and is
     /// sticky for the process.
     /// </summary>
     private static readonly ConcurrentDictionary<string, string> SkippedSources = new(StringComparer.OrdinalIgnoreCase);
@@ -177,6 +179,20 @@ internal static class EpContextCapture
         if (!EpContextCompatibility.AllowsTensorRtRtxArtifact(stagedModel))
         {
             MarkFailed(sourceModelPath, "Captured artifact is not EP_SUPPORTED_OPTIMAL for the selected TensorRT-RTX device.");
+            return;
+        }
+
+        // Publishing now would stamp the artifact with the placeholder "unknown" hardware
+        // identity, producing an artifact no lookup can validate (and displacing a valid
+        // one). The session itself is unaffected; only the capture is deferred.
+        // Not memoized: identity can load later (host startup or warmup), and capture
+        // must then be retried for this source.
+        if (!EpContextLoadPathResolver.HasIdentifiedHardware)
+        {
+            Trace.TraceWarning(
+                "EP-context capture deferred for '{0}': hardware identity is not available " +
+                "(GPU architecture, driver version, or host ORT version is unknown).",
+                sourceModelPath);
             return;
         }
 

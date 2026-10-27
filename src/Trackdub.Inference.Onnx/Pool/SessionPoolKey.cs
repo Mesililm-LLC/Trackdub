@@ -394,6 +394,47 @@ internal sealed record SessionPoolKey
         ModelContentHashGenerations.AddOrUpdate(cacheKey, 1, static (_, generation) => generation + 1);
     }
 
+    /// <summary>
+    /// One graph's pooled-key inputs for <see cref="CreateManyAsync"/>.
+    /// </summary>
+    internal sealed record PooledKeyRequest(
+        string EngineFamily,
+        string? ModelId,
+        string? Variant,
+        ExecutionProviderKind Provider,
+        string ModelPath,
+        int? DeviceId,
+        string GraphRole,
+        string? OptionsFingerprint);
+
+    /// <summary>
+    /// Builds pooled keys for every graph in <paramref name="requests"/> concurrently
+    /// (C3): each graph's content hash streams independently via
+    /// <see cref="HashModelContentAsync"/>, so no graph's full model bytes are buffered
+    /// and the (path, length, mtime) digest-cache semantics are unchanged. Result order
+    /// matches request order. <paramref name="modelContentHasher"/> is a test seam that
+    /// replaces the streaming file hash so concurrency tests can gate hash completion
+    /// with synchronization instead of wall-clock timing; production passes null.
+    /// </summary>
+    internal static async Task<SessionPoolKey[]> CreateManyAsync(
+        IReadOnlyList<PooledKeyRequest> requests,
+        CancellationToken cancellationToken,
+        Func<string, CancellationToken, Task<string?>>? modelContentHasher = null)
+    {
+        ArgumentNullException.ThrowIfNull(requests);
+        var tasks = new Task<SessionPoolKey>[requests.Count];
+        for (int i = 0; i < requests.Count; i++)
+        {
+            PooledKeyRequest request = requests[i];
+            tasks[i] = CreateAsync(
+                request.EngineFamily, request.ModelId, request.Variant, request.Provider,
+                request.ModelPath, request.DeviceId, request.GraphRole, request.OptionsFingerprint,
+                cancellationToken, modelContentHasher);
+        }
+
+        return await Task.WhenAll(tasks).ConfigureAwait(false);
+    }
+
     internal static async Task<SessionPoolKey> CreateAsync(
         string engineFamily,
         string? modelId,
@@ -403,10 +444,13 @@ internal sealed record SessionPoolKey
         int? deviceId,
         string graphRole,
         string? optionsFingerprint,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<string, CancellationToken, Task<string?>>? modelContentHasher = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        string? contentHash = await HashModelContentAsync(modelPath, cancellationToken).ConfigureAwait(false);
+        string? contentHash = modelContentHasher is not null
+            ? await modelContentHasher(modelPath, cancellationToken).ConfigureAwait(false)
+            : await HashModelContentAsync(modelPath, cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
 
         return new SessionPoolKey(

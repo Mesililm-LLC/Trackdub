@@ -26,6 +26,16 @@ public interface IInferenceWorkerClient
         TtsSynthesisRequest request,
         StageRuntimePlan plan,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Asks the worker to construct its Kokoro engine and real session for
+    /// <paramref name="plan"/> without synthesizing. Success means a real session exists in
+    /// the worker; failure throws <see cref="InferenceWorkerException"/> with the worker's
+    /// reason and leaves the worker usable for a lazy inline synthesis retry.
+    /// </summary>
+    Task<WorkerWarmResult> WarmTtsAsync(
+        StageRuntimePlan plan,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -136,6 +146,18 @@ public sealed class InferenceWorkerClient : IInferenceWorkerClient, IAsyncDispos
             result.ModelId,
             result.VoiceId,
             result.Provider);
+    }
+
+    public async Task<WorkerWarmResult> WarmTtsAsync(
+        StageRuntimePlan plan,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        WorkerMessage response = await SendAsync(
+            InferenceWorkerProtocol.TtsWarm,
+            InferenceWorkerProtocol.ToPayload(new WorkerWarmRequest(WorkerPlan.From(plan))),
+            cancellationToken).ConfigureAwait(false);
+        return InferenceWorkerProtocol.FromPayload<WorkerWarmResult>(response.Payload);
     }
 
     /// <summary>Execution summary the worker reported for the most recent synthesis.</summary>

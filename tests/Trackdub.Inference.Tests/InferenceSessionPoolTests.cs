@@ -678,6 +678,41 @@ public sealed class InferenceSessionPoolTests
         Assert.Equal(80, maxima["pendingReservationMb"]);
     }
 
+    [Fact]
+    public async Task GetLeaseAsync_AdmissionWait_RecordsPoolAdmissionWaitSpan()
+    {
+        // The admission wait was the one un-spanned async wait in the create path: a
+        // tight-budget wait could burn hundreds of seconds invisibly (no phase total,
+        // no log line). It must record under 'pool-admission-wait' like the other
+        // pool waits (pool-wait, pool-single-flight-wait, pool-creation-lock-wait).
+        using var pool = new InferenceSessionPool(
+            maxSessions: 4,
+            enableMemoryAdmission: true,
+            memoryBudgetMb: 100,
+            hostMemoryBudgetMb: 100);
+        var key1 = new SessionPoolKey("eng", null, null, ExecutionProviderKind.Cpu, "aw1", 0, "default") { EstimatedVramMb = 80 };
+        var key2 = new SessionPoolKey("eng", null, null, ExecutionProviderKind.Cpu, "aw2", 0, "default") { EstimatedVramMb = 80 };
+
+        var capture = new BenchmarkPhaseCapture();
+        using (BenchmarkPhaseCapture.Activate(capture))
+        {
+            using SessionLease lease1 = await pool.GetLeaseAsync(
+                key1, _ => Task.FromResult(CreateMinimalSession()), CancellationToken.None);
+
+            // 80 MB leased of a 100 MB budget: key2 parks in the admission wait until
+            // the caller cancels — that wait is the span under test.
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => pool.GetLeaseAsync(key2, _ => Task.FromResult(CreateMinimalSession()), cts.Token));
+        }
+
+        IReadOnlyDictionary<string, double?> phases = capture.SnapshotMilliseconds();
+        Assert.True(
+            phases.TryGetValue("phase:pool-admission-wait", out double? waitMs),
+            "admission wait recorded no 'pool-admission-wait' phase span");
+        Assert.True(waitMs > 0, "admission wait span recorded no elapsed time");
+    }
+
     // ── Residency ≠ execution exclusivity (audit §3A) ─────────────────────────
 
     [Fact]
@@ -796,6 +831,345 @@ public sealed class InferenceSessionPoolTests
     }
 
     [Fact]
+    public async Task GetLeaseBundleAsync_DisjointBundles_CreateFactoriesConcurrently()
+    {
+        // C1: disjoint bundles must not serialize behind a process-wide bundle lock.
+        // Every factory signals entry and then blocks on a gate; all four factories
+        // (two per bundle) can only be in flight at once if bundle creation overlaps.
+        // Synchronization proves overlap — no wall-clock timing is asserted.
+        using var pool = new InferenceSessionPool(maxSessions: 8);
+        int enteredCount = 0;
+        var allEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Func<CancellationToken, Task<InferenceSession>> GatedFactory() => async ct =>
+        {
+            if (Interlocked.Increment(ref enteredCount) == 4)
+            {
+                allEntered.TrySetResult();
+            }
+
+            await release.Task.WaitAsync(ct);
+            return CreateMinimalSession();
+        };
+
+        SessionLeaseRequest Req(string hash) => new(
+            new SessionPoolKey("disjoint", null, null, ExecutionProviderKind.Cpu, hash, 0, "default") { EstimatedVramMb = 16 },
+            GatedFactory());
+
+        Task<SessionLeaseBundle> t1 = Task.Run(() => pool.GetLeaseBundleAsync(
+            [Req("dx1"), Req("dx2")], CancellationToken.None));
+        Task<SessionLeaseBundle> t2 = Task.Run(() => pool.GetLeaseBundleAsync(
+            [Req("dy1"), Req("dy2")], CancellationToken.None));
+
+        try
+        {
+            await allEntered.Task.AwaitWithHangGuard(
+                "factories from disjoint bundles never ran concurrently (bundle creation is serialized)");
+            Assert.Equal(4, enteredCount);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        using SessionLeaseBundle bundle1 = await t1.AwaitWithHangGuard("first disjoint bundle never completed");
+        using SessionLeaseBundle bundle2 = await t2.AwaitWithHangGuard("second disjoint bundle never completed");
+        Assert.Equal(2, bundle1.Count);
+        Assert.Equal(2, bundle2.Count);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task GetLeaseBundleAsync_SynchronousFactories_CreateBundleGraphsConcurrently(bool enableMemoryAdmission)
+    {
+        // Production factories are ct => Task.FromResult(CreateSession(...)): the session
+        // is created synchronously on the calling thread before the task exists, so no
+        // await inside the create path ever yields. Bundle warming must still overlap the
+        // graphs of one bundle (the yielding factories in the disjoint-bundle test above
+        // cannot catch a serial loop). Every factory signals entry, then blocks its thread
+        // on a gate; all three can only be entered before release if creation overlaps.
+        using var pool = new InferenceSessionPool(maxSessions: 8, enableMemoryAdmission: enableMemoryAdmission);
+        int enteredCount = 0;
+        using var allEntered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+
+        Func<CancellationToken, Task<InferenceSession>> SyncGatedFactory() => _ =>
+        {
+            if (Interlocked.Increment(ref enteredCount) == 3)
+            {
+                allEntered.Set();
+            }
+
+            release.Wait();
+            return Task.FromResult(CreateMinimalSession());
+        };
+
+        SessionLeaseRequest Req(string hash) => new(
+            new SessionPoolKey("syncbundle", null, null, ExecutionProviderKind.Cpu, hash, 0, "default") { EstimatedVramMb = 16 },
+            SyncGatedFactory());
+
+        Task<SessionLeaseBundle> acquire = Task.Run(() => pool.GetLeaseBundleAsync(
+            [Req("sx1"), Req("sx2"), Req("sx3")], CancellationToken.None));
+
+        // Release (and drain the acquire) before asserting so a serial bundle fails
+        // cleanly instead of leaving a factory blocked on the gate.
+        bool overlapped = allEntered.Wait(TimeSpan.FromSeconds(10));
+        release.Set();
+        using SessionLeaseBundle bundle = await acquire.AwaitWithHangGuard("the synchronous-factory bundle never completed");
+
+        Assert.True(overlapped,
+            "synchronous factories never overlapped within one bundle (bundle graph creation is serial)");
+        Assert.Equal(3, Volatile.Read(ref enteredCount));
+        Assert.Equal(3, bundle.Count);
+    }
+
+    [Fact]
+    public async Task GetLeaseBundleAsync_OverlappingOppositeOrders_UnderEvictionPressure_BothComplete()
+    {
+        // C1 deadlock regression: two bundles request the same graphs in opposite caller
+        // orders while the host budget forces eviction of an idle filler. Both must
+        // complete (one gate-set at a time); neither may pin itself into a deadlock.
+        using var pool = new InferenceSessionPool(maxSessions: 8, hostMemoryBudgetMb: 100);
+        var shared1 = HostKey("sh1", 40);
+        var shared2 = HostKey("sh2", 40);
+        var filler = HostKey("fill", 40);
+
+        // Idle filler occupies budget that bundle creation must evict to fit.
+        using (await pool.GetLeaseAsync(filler, _ => Task.FromResult(CreateMinimalSession()), CancellationToken.None))
+        {
+        }
+
+        SessionLeaseRequest a = new(shared1, _ => Task.FromResult(CreateMinimalSession()));
+        SessionLeaseRequest b = new(shared2, _ => Task.FromResult(CreateMinimalSession()));
+
+        Task<SessionLeaseBundle> t1 = Task.Run(() => pool.GetLeaseBundleAsync([a, b], CancellationToken.None));
+        Task<SessionLeaseBundle> t2 = Task.Run(() => pool.GetLeaseBundleAsync([b, a], CancellationToken.None));
+
+        Task<SessionLeaseBundle> first = await Task.WhenAny(t1, t2)
+            .AwaitWithHangGuard("neither overlapping bundle completed under eviction pressure");
+        SessionLeaseBundle firstBundle = await first.AwaitWithHangGuard("the first overlapping bundle never resolved");
+        firstBundle.Dispose();
+
+        Task<SessionLeaseBundle> second = ReferenceEquals(first, t1) ? t2 : t1;
+        SessionLeaseBundle secondBundle = await second.AwaitWithHangGuard("the second overlapping bundle never resolved");
+        secondBundle.Dispose();
+    }
+
+    [Fact]
+    public async Task GetLeaseBundleAsync_CancellationDuringCreate_LeavesNoPinnedHalfBundle()
+    {
+        // A bundle cancelled while a later graph is still creating must not leave the
+        // earlier graph pinned: a probe that only fits by evicting that graph succeeds
+        // only if the pin was released (same probe shape as the preparation-failure test).
+        using var pool = new InferenceSessionPool(maxSessions: 8, hostMemoryBudgetMb: 100);
+        var first = HostKey("cx1", 40);
+        var second = HostKey("cx2", 40);
+        var probe = HostKey("cxp", 80);
+        var secondEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var never = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var cts = new CancellationTokenSource();
+        Task<SessionLeaseBundle> acquire = pool.GetLeaseBundleAsync(
+            [
+                new SessionLeaseRequest(first, _ => Task.FromResult(CreateMinimalSession())),
+                new SessionLeaseRequest(second, async ct =>
+                {
+                    secondEntered.TrySetResult();
+                    await never.Task.WaitAsync(ct);
+                    return CreateMinimalSession();
+                }),
+            ],
+            cts.Token);
+
+        await secondEntered.Task.AwaitWithHangGuard("the second graph factory never started");
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => acquire);
+
+        int probeCalls = 0;
+        using SessionLease lease = await pool.GetLeaseAsync(
+            probe,
+            _ => { probeCalls++; return Task.FromResult(CreateMinimalSession()); },
+            CancellationToken.None).AwaitWithHangGuard("probe never acquired — a cancelled bundle left a pinned half-bundle");
+        Assert.Equal(1, probeCalls);
+        Assert.NotNull(lease.Session);
+    }
+
+    [Fact]
+    public async Task GetLeaseBundleAsync_SiblingCountsAgainstGpuFloor_DoesNotEvictWarmedGraphMidAcquire()
+    {
+        // Regression for the C1 bundle-admission stall: graph A's freshly created
+        // session raises the process-GPU observation floor, so on the old shape
+        // graph B's per-graph admission wait found the bucket observation-blocked
+        // and evicted the only idle entry — A itself, still unpinned until phase 2 —
+        // then phase 2 re-created A (in production each such cycle also resets the
+        // other wait's stall progress). The scripted reader models exactly that:
+        // no floor until A is created, a hot 90 MB floor for the next few reads
+        // (A's session counts against the 100 MB budget), then drained.
+        var reader = new FloorAfterFirstCreateReader(hotMb: 90, drainedMb: 10, hotReads: 3);
+        using var pool = new InferenceSessionPool(
+            maxSessions: 8,
+            memoryBudgetMb: 100,
+            hostMemoryBudgetMb: 100,
+            processGpuMemoryReader: () => reader);
+        var graphA = new SessionPoolKey("bundlefloor", null, null, ExecutionProviderKind.DirectMl, "bf-a", 0, "a-graph") { EstimatedVramMb = 40 };
+        var graphB = new SessionPoolKey("bundlefloor", null, null, ExecutionProviderKind.DirectMl, "bf-b", 0, "b-graph") { EstimatedVramMb = 40 };
+        int aCalls = 0;
+        int bCalls = 0;
+
+        using SessionLeaseBundle bundle = await pool.GetLeaseBundleAsync(
+            [
+                new SessionLeaseRequest(graphA, _ =>
+                {
+                    aCalls++;
+                    reader.MarkCreated();
+                    return Task.FromResult(CreateMinimalSession());
+                }),
+                new SessionLeaseRequest(graphB, _ =>
+                {
+                    bCalls++;
+                    return Task.FromResult(CreateMinimalSession());
+                }),
+            ],
+            CancellationToken.None).AwaitWithHangGuard("bundle under a sibling-raised GPU floor never completed");
+
+        Assert.Equal(2, bundle.Count);
+        // A created exactly once: it was never evicted mid-acquire and re-created in
+        // the pin phase. B likewise.
+        Assert.Equal(1, aCalls);
+        Assert.Equal(1, bCalls);
+    }
+
+    [Fact]
+    public async Task GetLeaseBundleAsync_WarmQueuedBehindAdmissionWaitingCreator_DoesNotDeadlock()
+    {
+        // Regression for the createGate hold deadlock: a plain acquire takes K1's
+        // single-flight gate and then waits for admission (the bundle's aggregate
+        // hold plus a pinned sibling leave no room), while the bundle's warm for K1
+        // queues behind that gate still holding its K1 share of the aggregate. The
+        // share is the only thing the plain wait could ever be freed by, so both
+        // hang until cancellation unless the warm returns its share before queueing.
+        // The scripted reader parks the plain acquire (gate held) until the bundle
+        // hold exists, making the interleave deterministic.
+        var reader = new FirstReadBlockingReader();
+        using var pool = new InferenceSessionPool(
+            maxSessions: 8,
+            memoryBudgetMb: 100,
+            hostMemoryBudgetMb: 100,
+            processGpuMemoryReader: () => reader);
+        var graphK1 = new SessionPoolKey("gatehold", null, null, ExecutionProviderKind.DirectMl, "gh-1", 0, "g1") { EstimatedVramMb = 40 };
+        var graphK2 = new SessionPoolKey("gatehold", null, null, ExecutionProviderKind.DirectMl, "gh-2", 0, "g2") { EstimatedVramMb = 40 };
+        int plainCalls = 0;
+        int bundleK1Calls = 0;
+        int bundleK2Calls = 0;
+        var k2Created = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task<SessionLease> plainTask = Task.Run(() => pool.GetLeaseAsync(
+            graphK1,
+            _ =>
+            {
+                Interlocked.Increment(ref plainCalls);
+                return Task.FromResult(CreateMinimalSession());
+            },
+            CancellationToken.None));
+
+        await reader.FirstReadEntered.AwaitWithHangGuard("the plain acquire never reached its admission observation");
+
+        Task<SessionLeaseBundle> bundleTask = Task.Run(() => pool.GetLeaseBundleAsync(
+            [
+                new SessionLeaseRequest(graphK1, _ =>
+                {
+                    Interlocked.Increment(ref bundleK1Calls);
+                    return Task.FromResult(CreateMinimalSession());
+                }),
+                new SessionLeaseRequest(graphK2, _ =>
+                {
+                    Interlocked.Increment(ref bundleK2Calls);
+                    k2Created.TrySetResult();
+                    return Task.FromResult(CreateMinimalSession());
+                }),
+            ],
+            CancellationToken.None));
+
+        await k2Created.Task.AwaitWithHangGuard("the bundle's second graph never created");
+        reader.ReleaseFirstRead();
+
+        using SessionLease plainLease = await plainTask.AwaitWithHangGuard(
+            "the plain acquire deadlocked against the bundle warm queued behind its gate");
+        // Release the plain lease before awaiting the bundle: the warm's residency
+        // acquire serializes on the same entry gate the lease holds.
+        plainLease.Dispose();
+        using SessionLeaseBundle bundle = await bundleTask.AwaitWithHangGuard(
+            "the bundle warm deadlocked behind the admission-waiting plain acquire");
+
+        Assert.Equal(2, bundle.Count);
+        Assert.Equal(1, plainCalls);
+        // The bundle's K1 warm landed on the session the plain acquire published.
+        Assert.Equal(0, bundleK1Calls);
+        Assert.Equal(1, bundleK2Calls);
+    }
+
+    /// <summary>
+    /// Reader whose first read parks until released: holds a plain acquire (which
+    /// has already taken its key's single-flight gate) at the admission observation
+    /// while a bundle takes its aggregate hold. Later reads return immediately.
+    /// </summary>
+    private sealed class FirstReadBlockingReader : IProcessGpuMemoryReader
+    {
+        private int reads;
+        private readonly TaskCompletionSource firstReadEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource releaseFirstRead = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public string UnavailableReason => "Test double: first read blocks until released.";
+
+        public Task FirstReadEntered => firstReadEntered.Task;
+
+        public void ReleaseFirstRead() => releaseFirstRead.TrySetResult();
+
+        public long? ReadDedicatedGpuMemoryBytes()
+        {
+            if (Interlocked.Increment(ref reads) == 1)
+            {
+                firstReadEntered.TrySetResult();
+                releaseFirstRead.Task.Wait();
+            }
+
+            return null;
+        }
+    }
+
+    [Fact]
+    public async Task GetLeaseBundleAsync_DisjointBundles_BudgetFitsOnlyOne_BothCompleteWithoutDeadlock()
+    {
+        // Pinning each graph as its create completes is only deadlock-safe because the
+        // aggregate reservation is taken all-or-nothing first: with a budget that fits
+        // just one bundle, the losing bundle must wait at the aggregate step holding
+        // no pins, and complete once the winner's leases are released. (Pin-first
+        // without the aggregate would let each bundle pin one graph and then wait
+        // forever on the other's memory.)
+        using var pool = new InferenceSessionPool(maxSessions: 8, hostMemoryBudgetMb: 100);
+
+        SessionLeaseRequest Req(string hash) => new(
+            HostKey(hash, 40), _ => Task.FromResult(CreateMinimalSession()));
+
+        Task<SessionLeaseBundle> t1 = Task.Run(() => pool.GetLeaseBundleAsync(
+            [Req("db1a"), Req("db1b")], CancellationToken.None));
+        Task<SessionLeaseBundle> t2 = Task.Run(() => pool.GetLeaseBundleAsync(
+            [Req("db2a"), Req("db2b")], CancellationToken.None));
+
+        Task<SessionLeaseBundle> first = await Task.WhenAny(t1, t2)
+            .AwaitWithHangGuard("neither disjoint bundle completed under a one-bundle budget");
+        SessionLeaseBundle firstBundle = await first.AwaitWithHangGuard("the first disjoint bundle never resolved");
+        firstBundle.Dispose();
+
+        Task<SessionLeaseBundle> second = ReferenceEquals(first, t1) ? t2 : t1;
+        SessionLeaseBundle secondBundle = await second.AwaitWithHangGuard(
+            "the second disjoint bundle never resolved — early pins deadlocked the aggregate wait");
+        secondBundle.Dispose();
+    }
+
+    [Fact]
     public async Task GetLeaseBundleAsync_DoesNotHoldFirstGraphWhileBlockedOnSecond()
     {
         using var pool = new InferenceSessionPool(maxSessions: 8);
@@ -821,6 +1195,186 @@ public sealed class InferenceSessionPoolTests
             CancellationToken.None);
         Assert.NotNull(takeB.Session);
         holdA.Dispose();
+    }
+
+    [Fact]
+    public async Task GetLeaseBundleAsync_EvictedResidentRecreate_DoesNotStealSiblingCredit()
+    {
+        // T1 admission-credit correctness: the aggregate hold is sized only for graphs
+        // missing at hold time. The hold wait itself can evict an idle resident graph of
+        // the same bundle; its re-create must not draw on the siblings' shared credit.
+        // With per-bucket shared credit and all-or-nothing TryConsume, a steal leaves a
+        // sliver the last sibling cannot consume, so it falls back to a full reservation
+        // while the sliver stays pending (phantom over-count) with early pins unevictable
+        // and no fail-fast on reservation-blocked waits — the bundle hangs though it fits.
+        // Sizes are chosen so a steal strands the large sibling: B=50 cannot consume a
+        // sliver left by A=30/C=10 sharing the 60 MB hold, while the scoped fix lets B/C
+        // consume exactly their shares and A fall back to ordinary admission (evicting
+        // only the idle filler). Loop iterations to cover the racy consume order; the
+        // delay between the pre-populations keeps the LRU ticks distinct so the hold
+        // wait deterministically evicts the resident A rather than the filler.
+        for (int iteration = 0; iteration < 10; iteration++)
+        {
+            using var pool = new InferenceSessionPool(maxSessions: 8, hostMemoryBudgetMb: 100);
+            var residentA = new SessionPoolKey("t1", "ma", null, ExecutionProviderKind.Cpu, "t1a-" + iteration, null, "default") { EstimatedVramMb = 30 };
+            var missingB = new SessionPoolKey("t1", "mb", null, ExecutionProviderKind.Cpu, "t1b-" + iteration, null, "default") { EstimatedVramMb = 50 };
+            var missingC = new SessionPoolKey("t1", "mc", null, ExecutionProviderKind.Cpu, "t1c-" + iteration, null, "default") { EstimatedVramMb = 10 };
+            var filler = new SessionPoolKey("t1", "mf", null, ExecutionProviderKind.Cpu, "t1f-" + iteration, null, "default") { EstimatedVramMb = 40 };
+
+            // Resident A is oldest (evicted first); filler is recent.
+            using (await pool.GetLeaseAsync(residentA, _ => Task.FromResult(CreateMinimalSession()), CancellationToken.None))
+            {
+            }
+            await Task.Delay(20);
+            using (await pool.GetLeaseAsync(filler, _ => Task.FromResult(CreateMinimalSession()), CancellationToken.None))
+            {
+            }
+
+            int aCalls = 0, bCalls = 0, cCalls = 0;
+            using SessionLeaseBundle bundle = await pool.GetLeaseBundleAsync(
+                [
+                    new SessionLeaseRequest(residentA, _ => { Interlocked.Increment(ref aCalls); return Task.FromResult(CreateMinimalSession()); }),
+                    new SessionLeaseRequest(missingB, _ => { Interlocked.Increment(ref bCalls); return Task.FromResult(CreateMinimalSession()); }),
+                    new SessionLeaseRequest(missingC, _ => { Interlocked.Increment(ref cCalls); return Task.FromResult(CreateMinimalSession()); }),
+                ],
+                CancellationToken.None).AwaitWithHangGuard(
+                    $"bundle with an evicted resident hung on phantom credit (iteration {iteration})");
+
+            Assert.Equal(3, bundle.Count);
+            // A was evicted by the hold wait itself, so it is re-created once; B and C
+            // each consume exactly their scoped share — never a stolen fallback.
+            Assert.Equal(1, Volatile.Read(ref aCalls));
+            Assert.Equal(1, Volatile.Read(ref bCalls));
+            Assert.Equal(1, Volatile.Read(ref cCalls));
+        }
+    }
+
+    [Fact]
+    public async Task GetLeaseBundleAsync_ExplicitEvictWhileBundleWaiting_CompletesWithoutDeadlock()
+    {
+        // T2 lock-ordering liveness: phase-1 early pins must not be carried into the
+        // bundleAcquireLock wait. A bundle stuck holding that lock while re-creating an
+        // explicitly-evicted graph in phase-2 admission deadlocks against a waiter whose
+        // early pins are unevictable (and unreleasable until it owns the lock), with no
+        // fail-fast on reservation-blocked waits. Dropping early pins before the lock
+        // wait is safe because phase 2 re-pins every graph; the probe below fits only
+        // once the waiter's (and holder's) early pins are gone.
+        using var pool = new InferenceSessionPool(maxSessions: 8, hostMemoryBudgetMb: 200);
+        SessionPoolKey Key(string engine, string model, string hash, long mb) =>
+            new SessionPoolKey(engine, model, null, ExecutionProviderKind.Cpu, hash, null, "default") { EstimatedVramMb = mb };
+
+        var keyHA = Key("h", "a", "t2ha", 40);
+        var keyHB = Key("h", "b", "t2hb", 40);
+        var keyWC = Key("w", "c", "t2wc", 40);
+        var keyWD = Key("w", "d", "t2wd", 40);
+        var keyProbe = Key("p", "q", "t2pq", 100);
+
+        int haCalls = 0, hbEntered = 0;
+        var releaseHB = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseHA2 = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Func<CancellationToken, Task<InferenceSession>> Hafactory() => async ct =>
+        {
+            // First call (phase 1) runs immediately; the phase-2 re-create after the
+            // explicit eviction below stays blocked, holding the bundle lock.
+            if (Interlocked.Increment(ref haCalls) == 1)
+            {
+                return CreateMinimalSession();
+            }
+
+            await releaseHA2.Task.WaitAsync(ct);
+            return CreateMinimalSession();
+        };
+        Func<CancellationToken, Task<InferenceSession>> HbFactory() => async ct =>
+        {
+            Interlocked.Increment(ref hbEntered);
+            await releaseHB.Task.WaitAsync(ct);
+            return CreateMinimalSession();
+        };
+
+        Task<SessionLeaseBundle> holder = Task.Run(() => pool.GetLeaseBundleAsync(
+            [new SessionLeaseRequest(keyHA, Hafactory()), new SessionLeaseRequest(keyHB, HbFactory())],
+            CancellationToken.None));
+
+        // Wait until HA is published and HB's factory is in flight (phase 1 spans the
+        // wide window below because HB stays blocked). Counter polling only.
+        await SpinUntilAsync(() => Volatile.Read(ref haCalls) >= 1, "HA was never published");
+        await SpinUntilAsync(() => Volatile.Read(ref hbEntered) >= 1, "HB factory never entered");
+
+        // Explicitly evict HA while the holder is still in phase 1; its phase-2 pin
+        // loop must re-create it via admission while holding the bundle lock. Spin
+        // until the eviction lands: HA#1 may not have published yet when we arrive.
+        await SpinUntilTaskAsync(
+            async () => await pool.EvictModelAsync("h", "a", CancellationToken.None) == 1,
+            "HA never became evictable");
+
+        // Wait until the holder is stuck in its phase-2 pin loop: HA was re-requested
+        // (call #2) after the explicit eviction, so the holder owns the bundle lock
+        // while its HA factory stays blocked. Only then start the waiter, which
+        // parks at the lock after finishing phase 1.
+        releaseHB.TrySetResult();
+        await SpinUntilAsync(() => Volatile.Read(ref haCalls) >= 2, "holder never stuck re-creating HA");
+
+        int wcCalls = 0, wdCalls = 0;
+        Task<SessionLeaseBundle> waiter = Task.Run(() => pool.GetLeaseBundleAsync(
+            [
+                new SessionLeaseRequest(keyWC, _ => { Interlocked.Increment(ref wcCalls); return Task.FromResult(CreateMinimalSession()); }),
+                new SessionLeaseRequest(keyWD, _ => { Interlocked.Increment(ref wdCalls); return Task.FromResult(CreateMinimalSession()); }),
+            ],
+            CancellationToken.None));
+
+        // Wait until the waiter finished phase 1 (both graphs published) so it is
+        // parked at the bundle lock while the holder is stuck owning it.
+        await SpinUntilAsync(
+            () => Volatile.Read(ref wcCalls) >= 1 && Volatile.Read(ref wdCalls) >= 1,
+            "waiter never finished phase 1");
+
+        // The holder owns the lock and is stuck re-creating evicted HA; the waiter
+        // parks at the lock. A 100 MB probe fits the 200 MB budget only by evicting a
+        // 40 MB graph, which is possible only when no early pins are held across the
+        // lock wait.
+        try
+        {
+            using SessionLease probe = await pool.GetLeaseAsync(
+                    keyProbe, _ => Task.FromResult(CreateMinimalSession()), CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.NotNull(probe.Session);
+        }
+        finally
+        {
+            releaseHB.TrySetResult();
+            releaseHA2.TrySetResult();
+        }
+
+        // Let every bundle finish (re-created graphs fit once the probe is gone).
+        releaseHA2.TrySetResult();
+        using SessionLeaseBundle holderBundle = await holder.WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.Equal(2, holderBundle.Count);
+        holderBundle.Dispose();
+        using SessionLeaseBundle waiterBundle = await waiter.WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.Equal(2, waiterBundle.Count);
+
+        static async Task SpinUntilAsync(Func<bool> condition, string expectation)
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            while (!condition())
+            {
+                await Task.Delay(5, cts.Token);
+            }
+
+            if (!condition())
+            {
+                throw new TimeoutException(expectation);
+            }
+        }
+
+        static async Task SpinUntilTaskAsync(Func<Task<bool>> condition, string expectation)
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            while (!await condition().WaitAsync(cts.Token))
+            {
+                await Task.Delay(5, cts.Token);
+            }
+        }
     }
 
     // ── TrimToVramBudgetAsync ─────────────────────────────────────────────────
@@ -1599,6 +2153,32 @@ public sealed class InferenceSessionPoolTests
 
         public long? ReadDedicatedGpuMemoryBytes() =>
             Interlocked.Increment(ref reads) <= hotReads ? hotBytes : 0;
+    }
+
+    /// <summary>
+    /// No GPU floor until <see cref="MarkCreated"/> (the first bundle graph's factory),
+    /// then a hot floor for a fixed number of reads — the created sibling counting
+    /// against admission — then a drained floor.
+    /// </summary>
+    private sealed class FloorAfterFirstCreateReader(long hotMb, long drainedMb, int hotReads) : IProcessGpuMemoryReader
+    {
+        private int created;
+        private int hotReadsRemaining = hotReads;
+
+        public string UnavailableReason => "Test double: floor appears after first create.";
+
+        public void MarkCreated() => Volatile.Write(ref created, 1);
+
+        public long? ReadDedicatedGpuMemoryBytes()
+        {
+            if (Volatile.Read(ref created) == 0)
+            {
+                return null;
+            }
+
+            long mb = Interlocked.Decrement(ref hotReadsRemaining) >= 0 ? hotMb : drainedMb;
+            return mb * 1024 * 1024;
+        }
     }
 
     /// <summary>

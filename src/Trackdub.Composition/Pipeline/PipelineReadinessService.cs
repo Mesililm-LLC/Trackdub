@@ -430,30 +430,31 @@ public sealed class PipelineReadinessService(
             .PlanAsync(request, cancellationToken)
             .ConfigureAwait(false);
 
-        return MapPlanToReadiness(stage, plan, selectionIntent, runtimeValidated: !request.SkipProviderSmokeTest);
+        return MapPlanToReadiness(stage, plan, selectionIntent);
     }
 
     private static StageReadiness MapPlanToReadiness(
         RuntimeStage stage,
         StageRuntimePlan plan,
-        RuntimeModelSelectionIntent selectionIntent,
-        bool runtimeValidated)
+        RuntimeModelSelectionIntent selectionIntent)
     {
         string stageName = StageNameFor(stage);
 
         if (plan.Status is StageRuntimePlanStatus.Ready or StageRuntimePlanStatus.Verified)
         {
-            // Files/metadata passed but the caller skipped the provider smoke test.
+            // Files/metadata passed but this plan was never smoke-proven: either the caller
+            // skipped the provider smoke test, or planning returned the honest file-only
+            // Ready for a non-CPU provider with no persisted verdict (C4 — proving is
+            // deferred to warmup/stage execution). Never promote that to Ready.
             // CPU plans are never smoke-tested, so Ready is already their full check.
-            bool smokeTestSkipped = plan.Status == StageRuntimePlanStatus.Ready
-                && !runtimeValidated
+            bool smokeNotProven = plan.Status == StageRuntimePlanStatus.Ready
                 && plan.ExecutionProvider is not (null or ExecutionProviderKind.Cpu);
-            if (smokeTestSkipped)
+            if (smokeNotProven)
             {
                 return new StageReadiness(
                     stageName,
                     ReadinessState.Unverified,
-                    Detail: $"Model '{plan.ModelId}' is present; runtime path not verified (smoke test skipped)",
+                    Detail: $"Model '{plan.ModelId}' is present; runtime path not verified (provider smoke has not proven this plan)",
                     plan.ModelId,
                     plan.ModelAlias,
                     null);

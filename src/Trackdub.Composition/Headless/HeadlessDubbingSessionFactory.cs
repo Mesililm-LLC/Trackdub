@@ -1,4 +1,5 @@
 using Trackdub.Application.Dubbing;
+using Trackdub.Composition.Pipeline;
 using Trackdub.Contracts;
 using Trackdub.Licensing;
 using Microsoft.Extensions.DependencyInjection;
@@ -15,9 +16,7 @@ public sealed class HeadlessDubbingSessionFactory : IDubbingSessionFactory
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly Trackdub.Contracts.Benchmarking.IProcessGpuMemoryReader? _processGpuReader;
     private readonly IReadOnlyDictionary<int, long>? _adapterLuidMap;
-    private readonly object _licenseInitGate = new();
     private volatile bool _disposed;
-    private volatile bool _licenseInitialized;
 
     public HeadlessDubbingSessionFactory(ServiceProvider serviceProvider)
     {
@@ -29,6 +28,16 @@ public sealed class HeadlessDubbingSessionFactory : IDubbingSessionFactory
         // resolved singleton remains owned and disposed by this provider.
         serviceProvider.GetService<HeadlessStorageEnvironmentScope>();
 
+        // Same centralization for the engine auto-warm installer: hosts that run a
+        // generic host get it as an IHostedService, and TrackdubBuilder starts it
+        // explicitly, but an advanced host constructing this factory directly would
+        // otherwise skip license initialization, voice-catalog loading, and the
+        // EP-context hardware identity. StartAsync is idempotent (the holder and
+        // license initializer guard re-entry), so hosts that already started it
+        // observe no second effect.
+        serviceProvider.GetService<EngineAutoWarmInstaller>()
+            ?.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
+
         _scopeFactory = serviceProvider.GetRequiredService<IServiceScopeFactory>();
         _processGpuReader = HeadlessCompositionRoot.BindSharedPoolProcessGpuAdmission(serviceProvider);
         _adapterLuidMap = HeadlessCompositionRoot.BindSharedPoolAdapterLuidMap(serviceProvider);
@@ -39,8 +48,6 @@ public sealed class HeadlessDubbingSessionFactory : IDubbingSessionFactory
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(projectRootPath);
-
-        EnsureLicenseInitialized();
 
         IServiceScope scope = _scopeFactory.CreateScope();
         try
@@ -64,27 +71,5 @@ public sealed class HeadlessDubbingSessionFactory : IDubbingSessionFactory
         HeadlessCompositionRoot.ClearSharedPoolProcessGpuAdmission(_processGpuReader);
         HeadlessCompositionRoot.ClearSharedPoolAdapterLuidMap(_adapterLuidMap);
         _serviceProvider.Dispose();
-    }
-
-    private void EnsureLicenseInitialized()
-    {
-        if (_licenseInitialized)
-            return;
-
-        lock (_licenseInitGate)
-        {
-            if (_licenseInitialized)
-                return;
-
-            ILicenseInitializer? initializer = _serviceProvider.GetService<ILicenseInitializer>();
-            if (initializer is null)
-            {
-                _licenseInitialized = true;
-                return;
-            }
-
-            initializer.InitializeAsync().GetAwaiter().GetResult();
-            _licenseInitialized = true;
-        }
     }
 }

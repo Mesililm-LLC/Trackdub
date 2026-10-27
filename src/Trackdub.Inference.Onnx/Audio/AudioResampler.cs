@@ -7,6 +7,8 @@ public sealed class ResampledAudioReader : IAudioSamples
     private readonly IAudioSamples source;
     private readonly int targetSampleRate;
     private readonly double ratio;
+    private readonly float[]? lowPassFilter;
+    private readonly int lowPassHalfLength;
 
     public int SampleRate => targetSampleRate;
     public long SampleFrameCount { get; }
@@ -21,6 +23,15 @@ public sealed class ResampledAudioReader : IAudioSamples
         }
 
         ratio = (double)source.SampleRate / targetSampleRate;
+        // M-H5: downsampling without a low-pass aliases above-Nyquist content into the
+        // passband. Pipeline-normalized audio is 48 kHz (FfmpegAudioExtractionService)
+        // while most consumers target 16 kHz, so this path is live, not theoretical.
+        if (ratio > 1d)
+        {
+            lowPassFilter = AudioResampler.BuildAntiAliasFilter(ratio);
+            lowPassHalfLength = lowPassFilter.Length / 2;
+        }
+
         SampleFrameCount = source.SampleFrameCount == 0
             ? 0
             : Math.Max(1, (long)Math.Round(source.SampleFrameCount / ratio));
@@ -53,12 +64,20 @@ public sealed class ResampledAudioReader : IAudioSamples
 
         int sourceFramesNeeded = (int)(endSourceRightIndex - startSourceLeftIndex + 1);
 
-        // Rent a buffer to hold the source chunk
-        float[] sourceBuffer = System.Buffers.ArrayPool<float>.Shared.Rent(sourceFramesNeeded);
+        // Rent a buffer to hold the source chunk (anti-alias filtered when downsampling)
+        float[]? filteredBuffer = lowPassFilter is null
+            ? null
+            : AudioResampler.ReadFilteredRange(
+                startSourceLeftIndex, sourceFramesNeeded, lowPassHalfLength, lowPassFilter,
+                source.SampleFrameCount, source.ReadMonoSamples);
+        float[]? sourceBuffer = filteredBuffer ?? System.Buffers.ArrayPool<float>.Shared.Rent(sourceFramesNeeded);
         try
         {
             Span<float> sourceSpan = sourceBuffer.AsSpan(0, sourceFramesNeeded);
-            source.ReadMonoSamples(startSourceLeftIndex, sourceSpan);
+            if (filteredBuffer is null)
+            {
+                source.ReadMonoSamples(startSourceLeftIndex, sourceSpan);
+            }
 
             double sourcePosition = startSourcePosition;
             for (int i = 0; i < framesToCompute; i++, sourcePosition += ratio)
@@ -82,7 +101,10 @@ public sealed class ResampledAudioReader : IAudioSamples
         }
         finally
         {
-            System.Buffers.ArrayPool<float>.Shared.Return(sourceBuffer);
+            if (filteredBuffer is null)
+            {
+                System.Buffers.ArrayPool<float>.Shared.Return(sourceBuffer);
+            }
         }
     }
 
@@ -97,6 +119,8 @@ internal sealed class ResampledChannelAudioReader : IAudioChannelSamples
     private readonly IAudioChannelSamples source;
     private readonly int targetSampleRate;
     private readonly double ratio;
+    private readonly float[]? lowPassFilter;
+    private readonly int lowPassHalfLength;
 
     public int SampleRate => targetSampleRate;
     public int ChannelCount => source.ChannelCount;
@@ -112,6 +136,12 @@ internal sealed class ResampledChannelAudioReader : IAudioChannelSamples
         }
 
         ratio = (double)source.SampleRate / targetSampleRate;
+        if (ratio > 1d)
+        {
+            lowPassFilter = AudioResampler.BuildAntiAliasFilter(ratio);
+            lowPassHalfLength = lowPassFilter.Length / 2;
+        }
+
         SampleFrameCount = source.SampleFrameCount == 0
             ? 0
             : Math.Max(1, (long)Math.Round(source.SampleFrameCount / ratio));
@@ -176,11 +206,20 @@ internal sealed class ResampledChannelAudioReader : IAudioChannelSamples
         long endSourceRightIndex = Math.Min((long)Math.Floor(endSourcePosition) + 1, source.SampleFrameCount - 1);
         int sourceFramesNeeded = (int)(endSourceRightIndex - startSourceLeftIndex + 1);
 
-        float[] sourceBuffer = System.Buffers.ArrayPool<float>.Shared.Rent(sourceFramesNeeded);
+        float[]? filteredBuffer = lowPassFilter is null
+            ? null
+            : AudioResampler.ReadFilteredRange(
+                startSourceLeftIndex, sourceFramesNeeded, lowPassHalfLength, lowPassFilter,
+                source.SampleFrameCount,
+                (start, dest) => source.ReadChannelSamples(start, channelIndex, dest));
+        float[]? sourceBuffer = filteredBuffer ?? System.Buffers.ArrayPool<float>.Shared.Rent(sourceFramesNeeded);
         try
         {
             Span<float> sourceSpan = sourceBuffer.AsSpan(0, sourceFramesNeeded);
-            source.ReadChannelSamples(startSourceLeftIndex, channelIndex, sourceSpan);
+            if (filteredBuffer is null)
+            {
+                source.ReadChannelSamples(startSourceLeftIndex, channelIndex, sourceSpan);
+            }
 
             double sourcePosition = startSourcePosition;
             for (int index = 0; index < framesToCompute; index++, sourcePosition += ratio)
@@ -204,7 +243,10 @@ internal sealed class ResampledChannelAudioReader : IAudioChannelSamples
         }
         finally
         {
-            System.Buffers.ArrayPool<float>.Shared.Return(sourceBuffer);
+            if (filteredBuffer is null)
+            {
+                System.Buffers.ArrayPool<float>.Shared.Return(sourceBuffer);
+            }
         }
     }
 
@@ -224,6 +266,13 @@ internal static class AudioResampler
         if (outputSampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(outputSampleRate), "Sample rate must be positive.");
         if (input.Length == 0 || inputSampleRate == outputSampleRate) return input.ToArray();
 
+        // M-H5 (live): pipeline-normalized audio is 48 kHz and most consumers target
+        // 16 kHz, so downsampling must low-pass at the output Nyquist before decimation
+        // or above-Nyquist content folds into the passband. Upsampling needs no filter.
+        float[] sourceSamples = inputSampleRate > outputSampleRate
+            ? ApplyFilter(input, BuildAntiAliasFilter((double)inputSampleRate / outputSampleRate))
+            : input;
+
         int outputLength = Math.Max(1, (int)Math.Round(input.Length * (double)outputSampleRate / inputSampleRate));
         var output = new float[outputLength];
         double ratio = (double)inputSampleRate / outputSampleRate;
@@ -235,8 +284,8 @@ internal static class AudioResampler
             int rightIndex = Math.Min(leftIndex + 1, input.Length - 1);
             double fraction = sourcePosition - leftIndex;
 
-            float left = input[Math.Min(leftIndex, input.Length - 1)];
-            float right = input[rightIndex];
+            float left = sourceSamples[Math.Min(leftIndex, input.Length - 1)];
+            float right = sourceSamples[rightIndex];
             output[index] = (float)(left + ((right - left) * fraction));
         }
 
@@ -267,5 +316,96 @@ internal static class AudioResampler
         }
 
         return new ResampledChannelAudioReader(source, targetSampleRate);
+    }
+
+    // Blackman-windowed sinc low-pass at the output Nyquist (cutoff 0.5/ratio cycles
+    // per input sample), unity DC gain. Length scales with ratio so the transition
+    // band stays a similar fraction of the output Nyquist for any downsample factor.
+    internal static float[] BuildAntiAliasFilter(double ratio)
+    {
+        int halfLength = Math.Clamp((int)Math.Ceiling(16d * ratio), 16, 96);
+        int length = (halfLength * 2) + 1;
+        double cutoff = 0.5d / ratio;
+        var filter = new float[length];
+        double sum = 0;
+        for (int index = 0; index < length; index++)
+        {
+            double offset = index - halfLength;
+            double sinc = offset == 0
+                ? 2d * cutoff
+                : Math.Sin(2d * Math.PI * cutoff * offset) / (Math.PI * offset);
+            double window = 0.42d
+                - (0.5d * Math.Cos(2d * Math.PI * index / (length - 1)))
+                + (0.08d * Math.Cos(4d * Math.PI * index / (length - 1)));
+            double value = sinc * window;
+            filter[index] = (float)value;
+            sum += value;
+        }
+
+        for (int index = 0; index < length; index++)
+        {
+            filter[index] = (float)(filter[index] / sum);
+        }
+
+        return filter;
+    }
+
+    internal static float[] ApplyFilter(ReadOnlySpan<float> input, float[] filter)
+    {
+        int halfLength = filter.Length / 2;
+        var output = new float[input.Length];
+        for (int index = 0; index < input.Length; index++)
+        {
+            double sum = 0;
+            for (int tap = 0; tap < filter.Length; tap++)
+            {
+                int sourceIndex = Math.Clamp(index - halfLength + tap, 0, input.Length - 1);
+                sum += filter[tap] * input[sourceIndex];
+            }
+
+            output[index] = (float)sum;
+        }
+
+        return output;
+    }
+
+    internal static float[] ReadFilteredRange(
+        long startIndex,
+        int count,
+        int halfLength,
+        float[] filter,
+        long totalFrames,
+        Action<long, Span<float>> read)
+    {
+        long expandedStart = Math.Max(0, startIndex - halfLength);
+        long expandedEnd = Math.Min(totalFrames - 1, startIndex + count - 1 + halfLength);
+        int expandedCount = (int)(expandedEnd - expandedStart + 1);
+        float[] expanded = System.Buffers.ArrayPool<float>.Shared.Rent(expandedCount);
+        try
+        {
+            Span<float> expandedSpan = expanded.AsSpan(0, expandedCount);
+            expandedSpan.Clear();
+            read(expandedStart, expandedSpan);
+            var filtered = new float[count];
+            for (int index = 0; index < count; index++)
+            {
+                long globalIndex = startIndex + index;
+                double sum = 0;
+                for (int tap = 0; tap < filter.Length; tap++)
+                {
+                    long sourceGlobal = Math.Clamp(
+                        globalIndex - halfLength + tap, expandedStart, expandedEnd);
+                    sum += filter[tap] * expandedSpan[(int)(sourceGlobal - expandedStart)];
+                }
+
+                filtered[index] = (float)sum;
+            }
+
+            return filtered;
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<float>.Shared.Return(expanded);
+        }
     }
 }
