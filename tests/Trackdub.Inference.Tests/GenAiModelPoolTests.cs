@@ -163,11 +163,35 @@ public class GenAiModelPoolTests
             lease.GetOrCreateCachedTokenizer(_ => new ThrowingTokenizer());
         }
 
-        Assert.Throws<InvalidOperationException>(pool.Dispose);
+        Assert.Throws<AggregateException>(pool.Dispose);
         Assert.Equal(1, created[0].DisposeCount);
         using var replacement = new GenAiModelPool(admission, TrackingFactory(created), maxEntries: 1);
         using GenAiModelLease next = await replacement.GetLeaseAsync(Key("replacement", estimatedMb: 80), CancellationToken.None)
             .WaitAsync(HangGuard);
+    }
+
+    [Fact]
+    public async Task Dispose_MultipleThrowingTokenizers_DisposesAllEntriesAndAggregatesFailures()
+    {
+        using var admission = NewAdmissionPool(hostBudgetMb: 400);
+        var created = new List<FakeGenAiModelResource>();
+        var pool = new GenAiModelPool(admission, TrackingFactory(created), maxEntries: 2);
+        using (GenAiModelLease first = await pool.GetLeaseAsync(Key("throwing-a"), CancellationToken.None))
+        {
+            first.GetOrCreateCachedTokenizer(_ => new ThrowingTokenizer());
+        }
+
+        using (GenAiModelLease second = await pool.GetLeaseAsync(Key("throwing-b"), CancellationToken.None))
+        {
+            second.GetOrCreateCachedTokenizer(_ => new ThrowingTokenizer());
+        }
+
+        AggregateException failure = Assert.Throws<AggregateException>(pool.Dispose);
+
+        Assert.Equal(2, failure.InnerExceptions.Count);
+        Assert.All(failure.InnerExceptions, ex => Assert.IsType<InvalidOperationException>(ex));
+        Assert.Equal(2, created.Count);
+        Assert.All(created, resource => Assert.Equal(1, resource.DisposeCount));
     }
 
     [Fact]

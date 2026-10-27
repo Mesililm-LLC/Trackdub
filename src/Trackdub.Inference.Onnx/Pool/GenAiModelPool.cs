@@ -795,9 +795,24 @@ internal sealed class GenAiModelPool : IDisposable
         }
 
         SignalChanged();
+        var disposeFailures = new List<Exception>();
         foreach (Entry entry in toDispose)
         {
-            entry.Dispose();
+            try
+            {
+                entry.Dispose();
+            }
+            catch (Exception ex)
+            {
+                disposeFailures.Add(ex);
+            }
+        }
+
+        if (disposeFailures.Count > 0)
+        {
+            throw new AggregateException(
+                "One or more GenAI model entries failed to dispose.",
+                disposeFailures);
         }
     }
 
