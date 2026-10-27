@@ -193,7 +193,6 @@ public sealed class RuntimeStageWarmupCoordinator(
                 {
                     await RecordVerdictAsync(warmedPlan, warmedProvider, cancellationToken).ConfigureAwait(false);
                 }
-                }
 
                 BenchmarkPhaseCapture.Increment(
                     smoke.Passed ? "stageWarmupSuccess" : "stageWarmupFailure");
