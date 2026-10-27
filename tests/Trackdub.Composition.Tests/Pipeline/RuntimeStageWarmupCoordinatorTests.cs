@@ -217,6 +217,40 @@ public class RuntimeStageWarmupCoordinatorTests
     }
 
     [Fact]
+    public async Task WarmAsync_SmokeFailure_GenAiRoute_NeverReplansWithAuthoritativeSmoke()
+    {
+        // The no-replan guard is load-bearing: re-planning a GenAI route with the
+        // authoritative smoke would take the evicting GenAI lease. A failed (not
+        // skipped) GenAI smoke must stay a single plan + single smoke.
+        int planCalls = 0;
+        var planner = new FakeRuntimePlanner
+        {
+            PlanHandler = req =>
+            {
+                planCalls++;
+                return RunnablePlan(req);
+            },
+        };
+        int smokeCalls = 0;
+        var smoke = new FakeExecutionProviderSmokeTester(_ =>
+        {
+            smokeCalls++;
+            return new ExecutionProviderSmokeTestResult(false, "genai load failed");
+        });
+        var coordinator = new RuntimeStageWarmupCoordinator(planner, smoke);
+
+        StageWarmupResult result = await coordinator.WarmAsync(
+            new StageWarmupRequest(RuntimeStage.TextRefinement, Selections()),
+            CancellationToken.None);
+
+        Assert.True(result.Attempted);
+        Assert.False(result.Succeeded);
+        Assert.Equal("genai load failed", result.Detail);
+        Assert.Equal(1, planCalls);
+        Assert.Equal(1, smokeCalls);
+    }
+
+    [Fact]
     public async Task WarmAsync_WorkerWarmOnWrongProvider_ReportsFailureAndSkipsSmoke()
     {
         var planner = new FakeRuntimePlanner
