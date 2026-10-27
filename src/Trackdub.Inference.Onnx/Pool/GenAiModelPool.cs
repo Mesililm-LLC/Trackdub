@@ -876,8 +876,14 @@ internal sealed class GenAiModelPool : IDisposable
             try
             {
                 // The cached tokenizer wraps the native model, so it goes first.
-                TokenizerCache.Dispose();
-                Resource.Dispose();
+                try
+                {
+                    TokenizerCache.Dispose();
+                }
+                finally
+                {
+                    Resource.Dispose();
+                }
             }
             finally
             {
