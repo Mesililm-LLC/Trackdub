@@ -31,7 +31,13 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
                 return null;
             }
 
-            using FileStream stream = info.OpenRead();
+            // Share read/write/delete so this probe never blocks a concurrent
+            // atomic replace (File.Move overwrite) of the index on Windows.
+            using var stream = new FileStream(
+                info.FullName,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
             string contentHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream));
             return (info.LastWriteTimeUtc.Ticks, info.Length, contentHash);
         }

@@ -39,6 +39,16 @@ public sealed class EngineAutoWarmInstaller : IHostedService
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+
+        // Idempotent: hosts that already started this service (generic host,
+        // TrackdubBuilder.Build) must not re-run license validation, the
+        // hardware probe, or the catalog load when a later eager activation
+        // point (e.g. HeadlessDubbingSessionFactory) starts it again.
+        if (queue.IsHostStarted)
+        {
+            return;
+        }
+
         if (voiceCatalogHolder is not null)
         {
             await voiceCatalogHolder.InitializeAsync(cancellationToken).ConfigureAwait(false);

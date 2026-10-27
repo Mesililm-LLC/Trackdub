@@ -138,13 +138,37 @@ public class EngineAutoWarmIntegrationTests
         Assert.Equal(["ep-context-hardware-identity", "host-started"], order);
     }
 
+    [Fact]
+    public async Task Installer_second_start_does_not_repeat_startup_work()
+    {
+        // Hosts that already started the installer (generic host, TrackdubBuilder)
+        // must not re-probe hardware or re-validate the license when a later eager
+        // activation point (HeadlessDubbingSessionFactory) starts it again.
+        var order = new List<string>();
+        var queue = new RecordingQueue(order);
+        var warmup = new RecordingEpContextWarmupService(order);
+        var initializer = new RecordingLicenseInitializer();
+        var installer = new EngineAutoWarmInstaller(
+            queue, initializer, epContextWarmupService: warmup);
+
+        await installer.StartAsync(TestContext.Current.CancellationToken);
+        await installer.StartAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, warmup.InitializeCount);
+        Assert.Equal(1, initializer.InitializeCount);
+        Assert.Equal(["ep-context-hardware-identity", "host-started"], order);
+    }
+
     private sealed class RecordingEpContextWarmupService(List<string> order) : IEpContextWarmupService
     {
         public bool WasInitialized { get; private set; }
 
+        public int InitializeCount { get; private set; }
+
         public Task InitializeHardwareIdentityAsync(CancellationToken cancellationToken = default)
         {
             WasInitialized = true;
+            InitializeCount++;
             order.Add("ep-context-hardware-identity");
             return Task.CompletedTask;
         }
@@ -161,9 +185,12 @@ public class EngineAutoWarmIntegrationTests
     {
         public bool WasInitialized { get; private set; }
 
+        public int InitializeCount { get; private set; }
+
         public Task<LicenseValidationResult> InitializeAsync(CancellationToken cancellationToken = default)
         {
             WasInitialized = true;
+            InitializeCount++;
             return Task.FromResult(new LicenseValidationResult(LicenseTier.Free, null, 0, 0, null, null));
         }
     }

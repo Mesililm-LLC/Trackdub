@@ -538,16 +538,16 @@ public sealed class LocalModelCacheRecordStoreTests : IDisposable
         // A same-length replacement (same revision width, different SHA) that also
         // preserves the modification time: mtime + length alone cannot distinguish
         // it, so only the content hash in the identity can invalidate the snapshot.
+        // Rewrite the store's own bytes in place so the length is identical by
+        // construction (serializing here would use a different writer and change it).
         DateTime originalWriteTime = File.GetLastWriteTimeUtc(storagePaths.ModelCacheIndexPath);
-        LocalModelCacheRecord external = record with
-        {
-            Revision = "rev-bbbbb",
-            Sha256 = new string('b', 64),
-        };
-        await File.WriteAllTextAsync(
-            storagePaths.ModelCacheIndexPath,
-            JsonSerializer.Serialize(new[] { external }),
-            CancellationToken.None);
+        string originalJson = await File.ReadAllTextAsync(storagePaths.ModelCacheIndexPath, CancellationToken.None);
+        string replacedJson = originalJson
+            .Replace("rev-aaaaa", "rev-bbbbb", StringComparison.Ordinal)
+            .Replace(new string('a', 64), new string('b', 64), StringComparison.Ordinal);
+        Assert.Equal(originalJson.Length, replacedJson.Length);
+        Assert.NotEqual(originalJson, replacedJson);
+        await File.WriteAllTextAsync(storagePaths.ModelCacheIndexPath, replacedJson, CancellationToken.None);
         File.SetLastWriteTimeUtc(storagePaths.ModelCacheIndexPath, originalWriteTime);
 
         LocalModelCacheRecord found = Assert.IsType<LocalModelCacheRecord>(lookup.Find(record.ModelId, modelRoot));
