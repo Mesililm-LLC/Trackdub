@@ -225,6 +225,10 @@ public sealed class SqliteSpeakerRepository(
             }
         }
 
+        // A replay after a merge must attribute archived labels to the surviving speaker.
+        Dictionary<Guid, Guid> mergedSpeakerTargets =
+            await LoadMergedSpeakerTargetsAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
+
         await using (SqliteCommand insertTurn = connection.CreateCommand())
         {
             insertTurn.Transaction = transaction;
@@ -262,7 +266,7 @@ public sealed class SqliteSpeakerRepository(
             {
                 idParameter.Value = turn.Id.ToString("D");
                 projectIdParameter.Value = turn.ProjectId.ToString("D");
-                speakerIdParameter.Value = turn.SpeakerId.ToString("D");
+                speakerIdParameter.Value = ResolveActiveSpeaker(mergedSpeakerTargets, turn.SpeakerId).ToString("D");
                 stageRunIdParameter.Value = turn.StageRunId?.ToString("D") ?? (object)DBNull.Value;
                 startSecondsParameter.Value = turn.StartSeconds;
                 endSecondsParameter.Value = turn.EndSeconds;
@@ -273,6 +277,40 @@ public sealed class SqliteSpeakerRepository(
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<Dictionary<Guid, Guid>> LoadMergedSpeakerTargetsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid projectId,
+        CancellationToken cancellationToken)
+    {
+        var targets = new Dictionary<Guid, Guid>();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT id, merged_into_speaker_id
+            FROM speakers
+            WHERE project_id = $projectId AND merged_into_speaker_id IS NOT NULL;
+            """;
+        command.Parameters.AddWithValue("$projectId", projectId.ToString("D"));
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            targets[Guid.Parse(reader.GetString(0))] = Guid.Parse(reader.GetString(1));
+        }
+        return targets;
+    }
+
+    private static Guid ResolveActiveSpeaker(IReadOnlyDictionary<Guid, Guid> mergedTargets, Guid speakerId)
+    {
+        Guid resolved = speakerId;
+        for (int hop = 0; mergedTargets.TryGetValue(resolved, out Guid target) && hop < mergedTargets.Count; hop++)
+        {
+            resolved = target;
+        }
+        return resolved;
     }
 
     public async Task RenameSpeakerAsync(

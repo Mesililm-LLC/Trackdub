@@ -114,7 +114,7 @@ public sealed class SequenceEditorTests
         SequenceDocument withChild = SequenceEditor.AddSource(document,
             source with { Id = Guid.NewGuid(), ProjectId = childProjectId, WorkspaceRelativePath = "sources/x" });
         Assert.Throws<InvalidDataException>(() => SequenceEditor.AddSource(withChild,
-            source with { Id = Guid.NewGuid(), ProjectId = childProjectId, WorkspaceRelativePath = "sources/x." }));
+            source with { Id = Guid.NewGuid(), ProjectId = Guid.NewGuid(), WorkspaceRelativePath = "sources/x." }));
         Assert.Throws<InvalidDataException>(() => SequenceEditor.AddPlacement(document,
             new SequencePlacement(Guid.NewGuid(), source.Id, 0, 11, new SequenceCrop())));
         Assert.Throws<InvalidDataException>(() => SequenceEditor.AddPlacement(document,

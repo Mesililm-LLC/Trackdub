@@ -107,4 +107,43 @@ public sealed class SqliteSpeakerRepositoryTests
             }
         }
     }
+
+    [Fact]
+    public async Task ReplaceDiarizationAsync_attributes_replayed_merged_speaker_turns_to_the_active_target()
+    {
+        string projectRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"), "Speakers.trackdub");
+        try
+        {
+            var database = new SqliteProjectDatabase(projectRoot);
+            var projectRepository = new SqliteProjectRepository(database);
+            var speakerRepository = new SqliteSpeakerRepository(database);
+            var transcriptRepository = new SqliteTranscriptRepository(database);
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            var project = new TrackdubProject(Guid.NewGuid(), "Speakers", now, now);
+
+            await projectRepository.InitializeAsync(project, TestContext.Current.CancellationToken);
+            ProjectSpeaker source = ProjectSpeaker.Create(project.Id, "Speaker 1", now.AddMilliseconds(1));
+            ProjectSpeaker target = ProjectSpeaker.Create(project.Id, "Speaker 2", now.AddMilliseconds(2));
+            SpeakerTurn[] turns = [SpeakerTurn.Create(project.Id, source.Id, 0d, 5.8d, 0.9d, hasOverlap: false)];
+            await speakerRepository.ReplaceDiarizationAsync(project.Id, [source, target], turns, TestContext.Current.CancellationToken);
+            await transcriptRepository.ReassignAndMergeSpeakersAsync(project.Id, source.Id, target.Id, TestContext.Current.CancellationToken);
+
+            // A replay of the same diarization result must not attach turns to the archived speaker.
+            await speakerRepository.ReplaceDiarizationAsync(project.Id, [source], turns, TestContext.Current.CancellationToken);
+
+            IReadOnlyList<SpeakerTurn> reloadedTurns = await speakerRepository.ListTurnsAsync(project.Id, TestContext.Current.CancellationToken);
+            IReadOnlyList<ProjectSpeaker> speakers = await speakerRepository.ListSpeakersAsync(project.Id, TestContext.Current.CancellationToken);
+            SpeakerTurn turn = Assert.Single(reloadedTurns);
+            Assert.Equal(target.Id, turn.SpeakerId);
+            ProjectSpeaker activeSpeaker = Assert.Single(speakers);
+            Assert.Equal(target.Id, activeSpeaker.Id);
+        }
+        finally
+        {
+            if (Directory.Exists(projectRoot))
+            {
+                Directory.Delete(projectRoot, recursive: true);
+            }
+        }
+    }
 }
