@@ -21,39 +21,23 @@ public sealed class SqliteSpeakerRepositoryTests
         ];
         await db.Transcripts.SaveRevisionAsync(revision, segments, TestContext.Current.CancellationToken);
 
-        ProjectSpeaker speaker2 = ProjectSpeaker.Create(db.Project.Id, "Speaker 2", db.Now.AddMilliseconds(1));
-        ProjectSpeaker speaker3 = ProjectSpeaker.Create(db.Project.Id, "Speaker 3", db.Now.AddMilliseconds(2));
-        SpeakerTurn[] turns =
-        [
-            SpeakerTurn.Create(db.Project.Id, speaker2.Id, 0d, 5.8d, 0.9d, hasOverlap: false),
-            SpeakerTurn.Create(db.Project.Id, speaker3.Id, 6d, 11.8d, 0.8d, hasOverlap: false)
-        ];
+        ProjectSpeaker speaker2 = db.NewSpeaker(2);
+        ProjectSpeaker speaker3 = db.NewSpeaker(3);
+        await db.ReplaceAsync([speaker2, speaker3], [db.NewTurn(speaker2, 0d), db.NewTurn(speaker3, 6d)]);
 
-        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [speaker2, speaker3], turns, TestContext.Current.CancellationToken);
+        ReloadedState initial = await db.ReloadAsync(revision.Id);
+        Assert.Equal(3, initial.Speakers.Count);
+        Assert.Contains(initial.Speakers, speaker => speaker.Id == defaultSpeaker.Id);
+        Assert.Contains(initial.Speakers, speaker => speaker.Id == speaker2.Id);
+        Assert.Contains(initial.Speakers, speaker => speaker.Id == speaker3.Id);
+        Assert.Equal(2, initial.Turns.Count);
+        Assert.Equal(defaultSpeaker.Id, Assert.Single(initial.Segments).SpeakerId);
 
-        IReadOnlyList<ProjectSpeaker> speakers = await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken);
-        IReadOnlyList<SpeakerTurn> reloadedTurns = await db.Speakers.ListTurnsAsync(db.Project.Id, TestContext.Current.CancellationToken);
-        IReadOnlyList<TranscriptSegment> reloadedSegments = await db.Transcripts.GetSegmentsAsync(revision.Id, TestContext.Current.CancellationToken);
-
-        Assert.Equal(3, speakers.Count);
-        Assert.Contains(speakers, speaker => speaker.Id == defaultSpeaker.Id);
-        Assert.Contains(speakers, speaker => speaker.Id == speaker2.Id);
-        Assert.Contains(speakers, speaker => speaker.Id == speaker3.Id);
-        Assert.Equal(2, reloadedTurns.Count);
-        Assert.Equal(defaultSpeaker.Id, Assert.Single(reloadedSegments).SpeakerId);
-
-        ProjectSpeaker speaker4 = ProjectSpeaker.Create(db.Project.Id, "Speaker 4", db.Now.AddMilliseconds(3));
-        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [speaker4],
-            [SpeakerTurn.Create(db.Project.Id, speaker4.Id, 0d, 5.8d)],
-            TestContext.Current.CancellationToken);
-        ReloadedState reloaded = await db.ReloadAsync(revision.Id);
-        AssertRerunKeptDefaultSpeaker(reloaded, defaultSpeaker, speaker4);
+        ProjectSpeaker speaker4 = db.NewSpeaker(4);
+        await db.ReplaceAsync([speaker4], [db.NewTurn(speaker4, 0d)]);
+        ReloadedState rerun = await db.ReloadAsync(revision.Id);
+        AssertRerunKeptDefaultSpeaker(rerun, defaultSpeaker, speaker4);
     }
-
-    private sealed record ReloadedState(
-        IReadOnlyList<ProjectSpeaker> Speakers,
-        IReadOnlyList<SpeakerTurn> Turns,
-        IReadOnlyList<TranscriptSegment> Segments);
 
     private static void AssertRerunKeptDefaultSpeaker(
         ReloadedState reloaded,
@@ -70,13 +54,13 @@ public sealed class SqliteSpeakerRepositoryTests
     public async Task ReplaceDiarizationAsync_keeps_existing_speakers_when_a_rerun_resupplies_their_ids()
     {
         using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
-        ProjectSpeaker speaker = ProjectSpeaker.Create(db.Project.Id, "Speaker 1", db.Now);
-        SpeakerTurn[] turns = [SpeakerTurn.Create(db.Project.Id, speaker.Id, 0d, 5.8d, 0.9d, hasOverlap: false)];
+        ProjectSpeaker speaker = db.NewSpeaker(1);
+        SpeakerTurn[] turns = [db.NewTurn(speaker, 0d)];
 
-        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [speaker], turns, TestContext.Current.CancellationToken);
+        await db.ReplaceAsync([speaker], turns);
 
         // A cached rerun or fixture can resupply the same speaker identity.
-        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [speaker], turns, TestContext.Current.CancellationToken);
+        await db.ReplaceAsync([speaker], turns);
 
         IReadOnlyList<ProjectSpeaker> speakers = await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken);
         IReadOnlyList<SpeakerTurn> reloadedTurns = await db.Speakers.ListTurnsAsync(db.Project.Id, TestContext.Current.CancellationToken);
@@ -89,32 +73,22 @@ public sealed class SqliteSpeakerRepositoryTests
     public async Task ReplaceDiarizationAsync_attributes_replayed_merged_speaker_turns_to_the_active_target()
     {
         using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
-        ProjectSpeaker source = ProjectSpeaker.Create(db.Project.Id, "Speaker 1", db.Now.AddMilliseconds(1));
-        ProjectSpeaker target = ProjectSpeaker.Create(db.Project.Id, "Speaker 2", db.Now.AddMilliseconds(2));
-        SpeakerTurn[] turns = [SpeakerTurn.Create(db.Project.Id, source.Id, 0d, 5.8d, 0.9d, hasOverlap: false)];
-        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [source, target], turns, TestContext.Current.CancellationToken);
-        await db.Transcripts.ReassignAndMergeSpeakersAsync(db.Project.Id, source.Id, target.Id, TestContext.Current.CancellationToken);
+        (ProjectSpeaker source, ProjectSpeaker target, SpeakerTurn turn) = await db.MergeTwoSpeakersWithTurnAsync();
 
         // A replay of the same diarization result must not attach turns to the archived speaker.
-        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [source], turns, TestContext.Current.CancellationToken);
+        await db.ReplaceAsync([source], [turn]);
 
         IReadOnlyList<SpeakerTurn> reloadedTurns = await db.Speakers.ListTurnsAsync(db.Project.Id, TestContext.Current.CancellationToken);
         IReadOnlyList<ProjectSpeaker> speakers = await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken);
-        SpeakerTurn turn = Assert.Single(reloadedTurns);
-        Assert.Equal(target.Id, turn.SpeakerId);
-        ProjectSpeaker activeSpeaker = Assert.Single(speakers);
-        Assert.Equal(target.Id, activeSpeaker.Id);
+        Assert.Equal(target.Id, Assert.Single(reloadedTurns).SpeakerId);
+        Assert.Equal(target.Id, Assert.Single(speakers).Id);
     }
 
     [Fact]
     public async Task ListMergedSpeakersAsync_returns_archived_speakers_with_their_merge_target()
     {
         using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
-        ProjectSpeaker source = ProjectSpeaker.Create(db.Project.Id, "Speaker 1", db.Now.AddMilliseconds(1));
-        ProjectSpeaker target = ProjectSpeaker.Create(db.Project.Id, "Speaker 2", db.Now.AddMilliseconds(2));
-        SpeakerTurn[] turns = [SpeakerTurn.Create(db.Project.Id, source.Id, 0d, 5.8d, 0.9d, hasOverlap: false)];
-        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [source, target], turns, TestContext.Current.CancellationToken);
-        await db.Transcripts.ReassignAndMergeSpeakersAsync(db.Project.Id, source.Id, target.Id, TestContext.Current.CancellationToken);
+        (ProjectSpeaker source, ProjectSpeaker target, SpeakerTurn _) = await db.MergeTwoSpeakersWithTurnAsync();
 
         IReadOnlyList<MergedSpeakerEntry> merged = await db.Speakers.ListMergedSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken);
         IReadOnlyList<ProjectSpeaker> active = await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken);
@@ -141,13 +115,10 @@ public sealed class SqliteSpeakerRepositoryTests
     public async Task DeleteEmptySpeakerAsync_refuses_a_speaker_with_turns()
     {
         using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
-        ProjectSpeaker speaker = ProjectSpeaker.Create(db.Project.Id, "Speaker 1", db.Now);
-        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [speaker],
-            [SpeakerTurn.Create(db.Project.Id, speaker.Id, 0d, 5.8d)],
-            TestContext.Current.CancellationToken);
+        ProjectSpeaker speaker = db.NewSpeaker(1);
+        await db.ReplaceAsync([speaker], [db.NewTurn(speaker, 0d)]);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            db.Speakers.DeleteEmptySpeakerAsync(db.Project.Id, speaker.Id, TestContext.Current.CancellationToken));
+        await AssertDeleteRefused(db, speaker.Id);
         Assert.Single(await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken));
     }
 
@@ -160,8 +131,7 @@ public sealed class SqliteSpeakerRepositoryTests
             VoiceAssignment.Create(db.Project.Id, speaker.Id, "kokoro-onnx"),
             TestContext.Current.CancellationToken);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            db.Speakers.DeleteEmptySpeakerAsync(db.Project.Id, speaker.Id, TestContext.Current.CancellationToken));
+        await AssertDeleteRefused(db, speaker.Id);
         Assert.Single(await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken));
     }
 
@@ -169,10 +139,9 @@ public sealed class SqliteSpeakerRepositoryTests
     public async Task DeleteEmptySpeakerAsync_refuses_a_merged_speaker()
     {
         using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
-        (ProjectSpeaker source, ProjectSpeaker target) = await db.MergeTwoSpeakersAsync();
+        (ProjectSpeaker source, ProjectSpeaker _) = await db.MergeTwoSpeakersAsync();
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            db.Speakers.DeleteEmptySpeakerAsync(db.Project.Id, source.Id, TestContext.Current.CancellationToken));
+        await AssertDeleteRefused(db, source.Id);
         Assert.Single(await db.Speakers.ListMergedSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken));
     }
 
@@ -184,21 +153,24 @@ public sealed class SqliteSpeakerRepositoryTests
 
         // The target has no turns, segments, or voice assignments of its own, but deleting it
         // would leave the archived source pointing at a missing speaker.
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            db.Speakers.DeleteEmptySpeakerAsync(db.Project.Id, target.Id, TestContext.Current.CancellationToken));
+        await AssertDeleteRefused(db, target.Id);
         Assert.Contains(
             await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken),
             speaker => speaker.Id == target.Id);
     }
 
+    private static Task AssertDeleteRefused(SpeakerDb db, Guid speakerId) =>
+        Assert.ThrowsAsync<InvalidOperationException>(() =>
+            db.Speakers.DeleteEmptySpeakerAsync(db.Project.Id, speakerId, TestContext.Current.CancellationToken));
+
     [Fact]
     public async Task ListMergedSpeakersAsync_resolves_merge_chains_to_the_surviving_target()
     {
         using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
-        ProjectSpeaker first = ProjectSpeaker.Create(db.Project.Id, "Speaker 1", db.Now.AddMilliseconds(1));
-        ProjectSpeaker second = ProjectSpeaker.Create(db.Project.Id, "Speaker 2", db.Now.AddMilliseconds(2));
-        ProjectSpeaker third = ProjectSpeaker.Create(db.Project.Id, "Speaker 3", db.Now.AddMilliseconds(3));
-        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [first, second, third], [], TestContext.Current.CancellationToken);
+        ProjectSpeaker first = db.NewSpeaker(1);
+        ProjectSpeaker second = db.NewSpeaker(2);
+        ProjectSpeaker third = db.NewSpeaker(3);
+        await db.ReplaceAsync([first, second, third], []);
         await db.Transcripts.ReassignAndMergeSpeakersAsync(db.Project.Id, first.Id, second.Id, TestContext.Current.CancellationToken);
         await db.Transcripts.ReassignAndMergeSpeakersAsync(db.Project.Id, second.Id, third.Id, TestContext.Current.CancellationToken);
 
@@ -212,9 +184,9 @@ public sealed class SqliteSpeakerRepositoryTests
     public async Task GetForSpeakerIncludingMergedAsync_returns_the_assignment_of_an_archived_speaker()
     {
         using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
-        ProjectSpeaker source = ProjectSpeaker.Create(db.Project.Id, "Speaker 1", db.Now.AddMilliseconds(1));
-        ProjectSpeaker target = ProjectSpeaker.Create(db.Project.Id, "Speaker 2", db.Now.AddMilliseconds(2));
-        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [source, target], [], TestContext.Current.CancellationToken);
+        ProjectSpeaker source = db.NewSpeaker(1);
+        ProjectSpeaker target = db.NewSpeaker(2);
+        await db.ReplaceAsync([source, target], []);
         VoiceAssignment assignment = VoiceAssignment.Create(db.Project.Id, source.Id, "kokoro-onnx", "af-heart");
         await db.VoiceAssignments.SaveAsync(assignment, TestContext.Current.CancellationToken);
         await db.Transcripts.ReassignAndMergeSpeakersAsync(db.Project.Id, source.Id, target.Id, TestContext.Current.CancellationToken);
@@ -227,6 +199,11 @@ public sealed class SqliteSpeakerRepositoryTests
         Assert.Equal(source.Id, history.SpeakerId);
         Assert.Equal("af-heart", history.VoiceVariant);
     }
+
+    private sealed record ReloadedState(
+        IReadOnlyList<ProjectSpeaker> Speakers,
+        IReadOnlyList<SpeakerTurn> Turns,
+        IReadOnlyList<TranscriptSegment> Segments);
 
     private sealed class SpeakerDb : IDisposable
     {
@@ -260,13 +237,32 @@ public sealed class SqliteSpeakerRepositoryTests
             return db;
         }
 
+        public ProjectSpeaker NewSpeaker(int index) =>
+            ProjectSpeaker.Create(Project.Id, $"Speaker {index}", Now.AddMilliseconds(index));
+
+        public SpeakerTurn NewTurn(ProjectSpeaker speaker, double startSeconds) =>
+            SpeakerTurn.Create(Project.Id, speaker.Id, startSeconds, startSeconds + 5.8d, 0.9d, hasOverlap: false);
+
+        public Task ReplaceAsync(ProjectSpeaker[] speakers, SpeakerTurn[] turns) =>
+            Speakers.ReplaceDiarizationAsync(Project.Id, speakers, turns, TestContext.Current.CancellationToken);
+
         public async Task<(ProjectSpeaker Source, ProjectSpeaker Target)> MergeTwoSpeakersAsync()
         {
-            ProjectSpeaker source = ProjectSpeaker.Create(Project.Id, "Speaker 1", Now.AddMilliseconds(1));
-            ProjectSpeaker target = ProjectSpeaker.Create(Project.Id, "Speaker 2", Now.AddMilliseconds(2));
-            await Speakers.ReplaceDiarizationAsync(Project.Id, [source, target], [], TestContext.Current.CancellationToken);
+            ProjectSpeaker source = NewSpeaker(1);
+            ProjectSpeaker target = NewSpeaker(2);
+            await ReplaceAsync([source, target], []);
             await Transcripts.ReassignAndMergeSpeakersAsync(Project.Id, source.Id, target.Id, TestContext.Current.CancellationToken);
             return (source, target);
+        }
+
+        public async Task<(ProjectSpeaker Source, ProjectSpeaker Target, SpeakerTurn Turn)> MergeTwoSpeakersWithTurnAsync()
+        {
+            ProjectSpeaker source = NewSpeaker(1);
+            ProjectSpeaker target = NewSpeaker(2);
+            SpeakerTurn turn = NewTurn(source, 0d);
+            await ReplaceAsync([source, target], [turn]);
+            await Transcripts.ReassignAndMergeSpeakersAsync(Project.Id, source.Id, target.Id, TestContext.Current.CancellationToken);
+            return (source, target, turn);
         }
 
         public async Task<ReloadedState> ReloadAsync(Guid revisionId)
