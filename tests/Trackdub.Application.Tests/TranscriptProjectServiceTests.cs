@@ -826,6 +826,20 @@ public sealed partial class TranscriptProjectServiceTests : IDisposable
         public Task<IReadOnlyList<ProjectSpeaker>> ListSpeakersAsync(Guid projectId, CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<ProjectSpeaker>>(Speakers.Where(speaker => speaker.ProjectId == projectId).OrderBy(speaker => speaker.CreatedAtUtc).ToArray());
 
+        public Task<IReadOnlyList<MergedSpeakerEntry>> ListMergedSpeakersAsync(Guid projectId, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<MergedSpeakerEntry>>([]);
+
+        public Task DeleteEmptySpeakerAsync(Guid projectId, Guid speakerId, CancellationToken cancellationToken)
+        {
+            if (Turns.Exists(turn => turn.ProjectId == projectId && turn.SpeakerId == speakerId))
+            {
+                throw new InvalidOperationException("Only speakers with no turns, segments, or voice assignments can be removed.");
+            }
+
+            Speakers.RemoveAll(speaker => speaker.ProjectId == projectId && speaker.Id == speakerId);
+            return Task.CompletedTask;
+        }
+
         public Task<IReadOnlyList<SpeakerTurn>> ListTurnsAsync(Guid projectId, CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<SpeakerTurn>>(Turns.Where(turn => turn.ProjectId == projectId).OrderBy(turn => turn.StartSeconds).ToArray());
 
@@ -964,6 +978,9 @@ public sealed partial class TranscriptProjectServiceTests : IDisposable
                 assignment.ProjectId == projectId &&
                 assignment.SpeakerId == speakerId &&
                 !assignment.IsFallback));
+
+        public Task<VoiceAssignment?> GetForSpeakerIncludingMergedAsync(Guid projectId, Guid speakerId, CancellationToken cancellationToken) =>
+            GetAsync(projectId, speakerId, cancellationToken);
 
         public Task<IReadOnlyList<VoiceAssignment>> GetAllAsync(Guid projectId, CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<VoiceAssignment>>(Assignments

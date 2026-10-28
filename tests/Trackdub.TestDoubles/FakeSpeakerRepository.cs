@@ -29,6 +29,20 @@ public sealed class FakeSpeakerRepository : ISpeakerRepository
         return Task.FromResult(result);
     }
 
+    public Task<IReadOnlyList<MergedSpeakerEntry>> ListMergedSpeakersAsync(Guid projectId, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<MergedSpeakerEntry>>([]);
+
+    public Task DeleteEmptySpeakerAsync(Guid projectId, Guid speakerId, CancellationToken cancellationToken)
+    {
+        if (turns.Exists(t => t.ProjectId == projectId && t.SpeakerId == speakerId))
+        {
+            throw new InvalidOperationException("Only speakers with no turns, segments, or voice assignments can be removed.");
+        }
+
+        speakers.RemoveAll(s => s.ProjectId == projectId && s.Id == speakerId);
+        return Task.CompletedTask;
+    }
+
     public Task<IReadOnlyList<SpeakerTurn>> ListTurnsAsync(Guid projectId, CancellationToken cancellationToken)
     {
         IReadOnlyList<SpeakerTurn> result = turns

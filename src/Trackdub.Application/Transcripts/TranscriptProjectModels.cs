@@ -159,6 +159,9 @@ public sealed record MergeSpeakersRequest(
     Guid SourceSpeakerId,
     Guid TargetSpeakerId);
 
+public sealed record DeleteEmptySpeakerRequest(
+    Guid SpeakerId);
+
 public sealed record AssignVoiceToSpeakerRequest(
     Guid SpeakerId,
     string VoiceId,

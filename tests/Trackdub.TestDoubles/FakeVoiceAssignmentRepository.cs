@@ -21,6 +21,9 @@ public sealed class FakeVoiceAssignmentRepository : IVoiceAssignmentRepository
         return Task.FromResult(assignment);
     }
 
+    public Task<VoiceAssignment?> GetForSpeakerIncludingMergedAsync(Guid projectId, Guid speakerId, CancellationToken cancellationToken) =>
+        GetAsync(projectId, speakerId, cancellationToken);
+
     public Task<IReadOnlyList<VoiceAssignment>> GetAllAsync(Guid projectId, CancellationToken cancellationToken)
     {
         IReadOnlyList<VoiceAssignment> result = assignments

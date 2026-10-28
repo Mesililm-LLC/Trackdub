@@ -1,3 +1,5 @@
+using Trackdub.Domain.Speakers;
+
 namespace Trackdub.Application.Transcripts;
 
 public sealed class SpeakerWorkflow(
@@ -22,6 +24,22 @@ public sealed class SpeakerWorkflow(
     {
         TranscriptProjectState currentState = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await speakerAssignmentService.MergeSpeakersAsync(currentState, request, cancellationToken).ConfigureAwait(false);
+        return await ReloadAsync(currentState.SelectedTranslationTargetLanguage, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<MergedSpeakerEntry>> ListMergedSpeakersAsync(
+        CancellationToken cancellationToken)
+    {
+        TranscriptProjectState currentState = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        return await speakerAssignmentService.ListMergedSpeakersAsync(currentState, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<TranscriptProjectState> DeleteEmptySpeakerAsync(
+        DeleteEmptySpeakerRequest request,
+        CancellationToken cancellationToken)
+    {
+        TranscriptProjectState currentState = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await speakerAssignmentService.DeleteEmptySpeakerAsync(currentState, request, cancellationToken).ConfigureAwait(false);
         return await ReloadAsync(currentState.SelectedTranslationTargetLanguage, cancellationToken).ConfigureAwait(false);
     }
 

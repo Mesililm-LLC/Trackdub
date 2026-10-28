@@ -56,6 +56,12 @@ public sealed class VoiceAssignmentService(
         }
     }
 
+    public Task<VoiceAssignment?> GetVoiceAssignmentHistoryAsync(
+        Guid projectId,
+        Guid speakerId,
+        CancellationToken cancellationToken) =>
+        voiceAssignmentRepository.GetForSpeakerIncludingMergedAsync(projectId, speakerId, cancellationToken);
+
     public async Task RestoreVoiceAssignmentsAsync(
         Guid projectId,
         IReadOnlyList<VoiceAssignment> targetAssignments,
