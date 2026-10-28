@@ -97,13 +97,28 @@ public sealed class FakeSpeakerRepository : ISpeakerRepository
             throw new InvalidOperationException("Merged speakers are retained as history and cannot be deleted.");
         }
 
-        if (turns.Exists(t => t.ProjectId == projectId && t.SpeakerId == speakerId) ||
-            segmentSpeakerIds.Contains(speakerId) ||
-            voiceAssignmentSpeakerIds.Contains(speakerId) ||
-            mergedTargets.ContainsValue(speakerId))
+        if (turns.Exists(t => t.ProjectId == projectId && t.SpeakerId == speakerId))
         {
-            throw new InvalidOperationException("Only speakers with no turns, segments, voice assignments, or archived merge history can be removed.");
+            throw NotEmpty();
         }
+
+        if (segmentSpeakerIds.Contains(speakerId))
+        {
+            throw NotEmpty();
+        }
+
+        if (voiceAssignmentSpeakerIds.Contains(speakerId))
+        {
+            throw NotEmpty();
+        }
+
+        if (mergedTargets.ContainsValue(speakerId))
+        {
+            throw NotEmpty();
+        }
+
+        static InvalidOperationException NotEmpty() =>
+            new("Only speakers with no turns, segments, voice assignments, or archived merge history can be removed.");
     }
 
     public Task<IReadOnlyList<SpeakerTurn>> ListTurnsAsync(Guid projectId, CancellationToken cancellationToken)
