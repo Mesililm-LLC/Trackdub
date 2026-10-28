@@ -39,7 +39,8 @@ public sealed class JsonStudioSettingsServiceTests
                 MatchOriginalLoudness: true),
             Playback: new StudioPlaybackSettings(
                 SubtitlesEnabled: true,
-                SubtitleContentMode: StudioPlaybackSettings.BilingualSubtitleContentMode),
+                SubtitleContentMode: StudioPlaybackSettings.BilingualSubtitleContentMode,
+                KaraokeEnabled: true),
             StarterPackOnboardingCompleted: true);
 
         try
@@ -71,6 +72,7 @@ public sealed class JsonStudioSettingsServiceTests
             Assert.NotNull(loaded.Playback);
             Assert.True(loaded.Playback!.SubtitlesEnabled);
             Assert.Equal(StudioPlaybackSettings.BilingualSubtitleContentMode, loaded.Playback.SubtitleContentMode);
+            Assert.True(loaded.Playback.KaraokeEnabled);
             Assert.True(loaded.StarterPackOnboardingCompleted);
         }
         finally
@@ -253,6 +255,7 @@ public sealed class JsonStudioSettingsServiceTests
             Assert.NotNull(loaded.Playback);
             Assert.False(loaded.Playback!.SubtitlesEnabled);
             Assert.Equal(StudioPlaybackSettings.TranslatedSubtitleContentMode, loaded.Playback.SubtitleContentMode);
+            Assert.False(loaded.Playback.KaraokeEnabled);
         }
         finally
         {
