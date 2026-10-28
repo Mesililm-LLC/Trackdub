@@ -167,7 +167,7 @@ public static class SequenceEditor
                 }
             }
             else if (source.ProjectId == document.ProjectId || !IsSafeRelativePath(source.WorkspaceRelativePath) ||
-                     !workspacePaths.Add(source.WorkspaceRelativePath.Replace('\\', '/')))
+                     !workspacePaths.Add(NormalizeWorkspacePath(source.WorkspaceRelativePath)))
             {
                 throw new InvalidDataException("A child source workspace path is invalid or duplicated.");
             }
@@ -211,12 +211,22 @@ public static class SequenceEditor
             return false;
         }
         return path.Split(['/', '\\']).All(static part =>
-            part.Length > 0 && part is not ("." or "..") && !IsReservedWindowsFileName(part));
+        {
+            // Windows strips trailing spaces and dots per component, so ".. " resolves to "..".
+            string normalized = part.TrimEnd(' ', '.');
+            return normalized.Length > 0 &&
+                   normalized is not ("." or "..") &&
+                   !normalized.StartsWith('.') &&
+                   !IsReservedWindowsFileName(normalized);
+        });
     }
+
+    private static string NormalizeWorkspacePath(string path) =>
+        string.Join('/', path.Split(['/', '\\']).Select(static part => part.TrimEnd(' ', '.')));
 
     /// <summary>Windows maps device names such as CON or COM1 to devices even when an extension follows the name.</summary>
     private static bool IsReservedWindowsFileName(string segment) =>
-        ReservedWindowsFileNames.Contains(segment.Split('.')[0]);
+        ReservedWindowsFileNames.Contains(segment.Split('.')[0].TrimEnd(' ', '.'));
 
     private static SequenceDocument Replace(SequenceDocument document, Guid placementId, Func<SequencePlacement, SequencePlacement> replace)
     {

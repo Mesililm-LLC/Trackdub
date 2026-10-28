@@ -102,6 +102,19 @@ public sealed class SequenceEditorTests
             source with { Id = Guid.NewGuid(), ProjectId = Guid.NewGuid(), WorkspaceRelativePath = "sources/CON.trackdub" }));
         Assert.Throws<InvalidDataException>(() => SequenceEditor.AddSource(document,
             source with { Id = Guid.NewGuid(), ProjectId = Guid.NewGuid(), WorkspaceRelativePath = "sources/chi\0ld.trackdub" }));
+        Assert.Throws<InvalidDataException>(() => SequenceEditor.AddSource(document,
+            source with { Id = Guid.NewGuid(), ProjectId = Guid.NewGuid(), WorkspaceRelativePath = "sources/.. " }));
+        Assert.Throws<InvalidDataException>(() => SequenceEditor.AddSource(document,
+            source with { Id = Guid.NewGuid(), ProjectId = Guid.NewGuid(), WorkspaceRelativePath = "sources/..." }));
+        Assert.Throws<InvalidDataException>(() => SequenceEditor.AddSource(document,
+            source with { Id = Guid.NewGuid(), ProjectId = Guid.NewGuid(), WorkspaceRelativePath = "sources/COM1 .trackdub" }));
+        Assert.Throws<InvalidDataException>(() => SequenceEditor.AddSource(document,
+            source with { Id = Guid.NewGuid(), ProjectId = Guid.NewGuid(), WorkspaceRelativePath = "sources/.git" }));
+        Guid childProjectId = Guid.NewGuid();
+        SequenceDocument withChild = SequenceEditor.AddSource(document,
+            source with { Id = Guid.NewGuid(), ProjectId = childProjectId, WorkspaceRelativePath = "sources/x" });
+        Assert.Throws<InvalidDataException>(() => SequenceEditor.AddSource(withChild,
+            source with { Id = Guid.NewGuid(), ProjectId = childProjectId, WorkspaceRelativePath = "sources/x." }));
         Assert.Throws<InvalidDataException>(() => SequenceEditor.AddPlacement(document,
             new SequencePlacement(Guid.NewGuid(), source.Id, 0, 11, new SequenceCrop())));
         Assert.Throws<InvalidDataException>(() => SequenceEditor.AddPlacement(document,
