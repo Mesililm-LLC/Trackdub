@@ -811,6 +811,12 @@ public sealed partial class TranscriptProjectServiceTests : IDisposable
             await ReassignSpeakerAsync(projectId, sourceSpeakerId, targetSpeakerId, cancellationToken).ConfigureAwait(false);
             if (speakerRepository is not null)
             {
+                ProjectSpeaker? source = speakerRepository.Speakers.Find(speaker => speaker.ProjectId == projectId && speaker.Id == sourceSpeakerId);
+                if (source is not null)
+                {
+                    speakerRepository.MergedSpeakers.Add(new MergedSpeakerEntry(source, targetSpeakerId));
+                }
+
                 speakerRepository.Turns.RemoveAll(turn => turn.ProjectId == projectId && turn.SpeakerId == sourceSpeakerId);
                 speakerRepository.Speakers.RemoveAll(speaker => speaker.ProjectId == projectId && speaker.Id == sourceSpeakerId);
             }
@@ -823,11 +829,34 @@ public sealed partial class TranscriptProjectServiceTests : IDisposable
 
         public List<SpeakerTurn> Turns { get; } = [];
 
+        public List<MergedSpeakerEntry> MergedSpeakers { get; } = [];
+
         public Task<IReadOnlyList<ProjectSpeaker>> ListSpeakersAsync(Guid projectId, CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<ProjectSpeaker>>(Speakers.Where(speaker => speaker.ProjectId == projectId).OrderBy(speaker => speaker.CreatedAtUtc).ToArray());
 
         public Task<IReadOnlyList<MergedSpeakerEntry>> ListMergedSpeakersAsync(Guid projectId, CancellationToken cancellationToken) =>
-            Task.FromResult<IReadOnlyList<MergedSpeakerEntry>>([]);
+            Task.FromResult<IReadOnlyList<MergedSpeakerEntry>>(MergedSpeakers
+                .Where(entry => entry.Speaker.ProjectId == projectId)
+                .OrderBy(entry => entry.Speaker.CreatedAtUtc)
+                .Select(entry => entry with { MergedIntoSpeakerId = ResolveActiveTarget(entry.MergedIntoSpeakerId) })
+                .ToArray());
+
+        private Guid ResolveActiveTarget(Guid speakerId)
+        {
+            Guid resolved = speakerId;
+            for (int hop = 0; hop < MergedSpeakers.Count; hop++)
+            {
+                MergedSpeakerEntry? entry = MergedSpeakers.Find(candidate => candidate.Speaker.Id == resolved);
+                if (entry is null)
+                {
+                    break;
+                }
+
+                resolved = entry.MergedIntoSpeakerId;
+            }
+
+            return resolved;
+        }
 
         public HashSet<Guid> SegmentSpeakerIds { get; } = [];
 
@@ -865,7 +894,12 @@ public sealed partial class TranscriptProjectServiceTests : IDisposable
                 return true;
             }
 
-            return VoiceAssignmentSpeakerIds.Contains(speakerId);
+            if (VoiceAssignmentSpeakerIds.Contains(speakerId))
+            {
+                return true;
+            }
+
+            return MergedSpeakers.Exists(entry => entry.Speaker.ProjectId == projectId && entry.MergedIntoSpeakerId == speakerId);
         }
 
         public Task<IReadOnlyList<SpeakerTurn>> ListTurnsAsync(Guid projectId, CancellationToken cancellationToken) =>

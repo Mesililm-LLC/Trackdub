@@ -149,20 +149,29 @@ public sealed class SqliteSpeakerRepositoryTests
         Assert.Single(await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken));
     }
 
-    [Fact]
-    public async Task DeleteEmptySpeakerAsync_refuses_a_speaker_with_transcript_segments()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeleteEmptySpeakerAsync_refuses_a_speaker_with_only_consent(bool revokeConsent)
     {
         using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
         ProjectSpeaker speaker = await db.Speakers.CreateSpeakerAsync(db.Project.Id, TestContext.Current.CancellationToken);
-        TranscriptRevision revision = TranscriptRevision.Create(db.Project.Id, stageRunId: null, revisionNumber: 1, db.Now);
-        TranscriptSegment[] segments =
-        [
-            TranscriptSegment.Create(revision.Id, 0, 0d, 5.8d, "Hello", speaker.Id)
-        ];
-        await db.Transcripts.SaveRevisionAsync(revision, segments, TestContext.Current.CancellationToken);
+        var consents = new SqliteSpeakerConsentService(db.Database);
+        VoiceCloneConsentRecord consent = await consents.RecordConsentAsync(
+            db.Project.Id, speaker.Id, isThirdPartyConsent: false, notes: null, TestContext.Current.CancellationToken);
+        if (revokeConsent)
+        {
+            await consents.RevokeConsentAsync(speaker.Id, TestContext.Current.CancellationToken);
+        }
+
+        Assert.Null(await db.VoiceAssignments.GetAsync(db.Project.Id, speaker.Id, TestContext.Current.CancellationToken));
 
         await AssertDeleteRefused(db, speaker.Id);
-        Assert.Single(await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken));
+
+        Assert.Equal(speaker.Id, Assert.Single(await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken)).Id);
+        VoiceCloneConsentRecord? retained = await consents.GetConsentAsync(speaker.Id, TestContext.Current.CancellationToken);
+        Assert.NotNull(retained);
+        Assert.Equal(consent.Id, retained.Id);
     }
 
     [Fact]
