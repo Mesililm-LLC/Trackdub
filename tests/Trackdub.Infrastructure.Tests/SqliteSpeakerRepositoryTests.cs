@@ -46,23 +46,24 @@ public sealed class SqliteSpeakerRepositoryTests
         await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [speaker4],
             [SpeakerTurn.Create(db.Project.Id, speaker4.Id, 0d, 5.8d)],
             TestContext.Current.CancellationToken);
-        speakers = await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken);
-        reloadedTurns = await db.Speakers.ListTurnsAsync(db.Project.Id, TestContext.Current.CancellationToken);
-        reloadedSegments = await db.Transcripts.GetSegmentsAsync(revision.Id, TestContext.Current.CancellationToken);
-        AssertRerunKeptDefaultSpeaker(speakers, reloadedTurns, reloadedSegments, defaultSpeaker, speaker4);
+        ReloadedState reloaded = await db.ReloadAsync(revision.Id);
+        AssertRerunKeptDefaultSpeaker(reloaded, defaultSpeaker, speaker4);
     }
 
+    private sealed record ReloadedState(
+        IReadOnlyList<ProjectSpeaker> Speakers,
+        IReadOnlyList<SpeakerTurn> Turns,
+        IReadOnlyList<TranscriptSegment> Segments);
+
     private static void AssertRerunKeptDefaultSpeaker(
-        IReadOnlyList<ProjectSpeaker> speakers,
-        IReadOnlyList<SpeakerTurn> turns,
-        IReadOnlyList<TranscriptSegment> segments,
+        ReloadedState reloaded,
         ProjectSpeaker defaultSpeaker,
         ProjectSpeaker rerunSpeaker)
     {
-        Assert.Contains(speakers, speaker => speaker.Id == defaultSpeaker.Id);
-        Assert.Contains(speakers, speaker => speaker.Id == rerunSpeaker.Id);
-        Assert.Equal(rerunSpeaker.Id, Assert.Single(turns).SpeakerId);
-        Assert.Equal(defaultSpeaker.Id, Assert.Single(segments).SpeakerId);
+        Assert.Contains(reloaded.Speakers, speaker => speaker.Id == defaultSpeaker.Id);
+        Assert.Contains(reloaded.Speakers, speaker => speaker.Id == rerunSpeaker.Id);
+        Assert.Equal(rerunSpeaker.Id, Assert.Single(reloaded.Turns).SpeakerId);
+        Assert.Equal(defaultSpeaker.Id, Assert.Single(reloaded.Segments).SpeakerId);
     }
 
     [Fact]
@@ -266,6 +267,14 @@ public sealed class SqliteSpeakerRepositoryTests
             await Speakers.ReplaceDiarizationAsync(Project.Id, [source, target], [], TestContext.Current.CancellationToken);
             await Transcripts.ReassignAndMergeSpeakersAsync(Project.Id, source.Id, target.Id, TestContext.Current.CancellationToken);
             return (source, target);
+        }
+
+        public async Task<ReloadedState> ReloadAsync(Guid revisionId)
+        {
+            IReadOnlyList<ProjectSpeaker> speakers = await Speakers.ListSpeakersAsync(Project.Id, TestContext.Current.CancellationToken);
+            IReadOnlyList<SpeakerTurn> turns = await Speakers.ListTurnsAsync(Project.Id, TestContext.Current.CancellationToken);
+            IReadOnlyList<TranscriptSegment> segments = await Transcripts.GetSegmentsAsync(revisionId, TestContext.Current.CancellationToken);
+            return new ReloadedState(speakers, turns, segments);
         }
 
         public void Dispose()
