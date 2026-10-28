@@ -33,6 +33,11 @@ public static class SequenceSubtitleMapper
                 {
                     continue;
                 }
+                if (!double.IsFinite(cue.StartSeconds) || !double.IsFinite(cue.EndSeconds) ||
+                    cue.StartSeconds < 0 || cue.EndSeconds <= cue.StartSeconds)
+                {
+                    continue;
+                }
                 SequenceRange? range = SequenceEditor.RebaseRange(position, cue.StartSeconds, cue.EndSeconds);
                 if (range is not null)
                 {

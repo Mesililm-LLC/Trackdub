@@ -17,7 +17,11 @@ public sealed class SequenceEditorTests
         document = SequenceEditor.AddPlacement(document, new SequencePlacement(selectedId, source.Id, 10, 20, new SequenceCrop()));
         IReadOnlyDictionary<Guid, IReadOnlyList<SubtitleCue>> cues = new Dictionary<Guid, IReadOnlyList<SubtitleCue>>
         {
-            [source.Id] = [new SubtitleCue(Guid.NewGuid(), 0, 8, 12, "First"), new SubtitleCue(Guid.NewGuid(), 1, 18, 22, "Last")],
+            [source.Id] = [
+                new SubtitleCue(Guid.NewGuid(), 0, 8, 12, "First"),
+                new SubtitleCue(Guid.NewGuid(), 1, 18, 22, "Last"),
+                new SubtitleCue(Guid.NewGuid(), 2, 5, 5, "ZeroLength"),
+                new SubtitleCue(Guid.NewGuid(), 3, -1, 4, "Negative")],
         };
 
         IReadOnlyList<SubtitleCue> full = SequenceSubtitleMapper.Map(document, cues);
