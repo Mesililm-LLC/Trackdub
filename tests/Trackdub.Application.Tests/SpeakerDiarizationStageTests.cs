@@ -242,6 +242,119 @@ public sealed class SpeakerDiarizationStageTests
         Assert.All(revisedSegments, segment => Assert.NotEqual(Guid.Empty, segment.SpeakerId));
     }
 
+    [Theory]
+    [InlineData(SpeakerAssignmentOrigin.Unknown, true)]
+    [InlineData(SpeakerAssignmentOrigin.Manual, true)]
+    [InlineData(SpeakerAssignmentOrigin.Automatic, false)]
+    public async Task RerunDiarizationAsync_preserves_protected_assignments(
+        SpeakerAssignmentOrigin origin,
+        bool expectedPreserved)
+    {
+        TranscriptProjectState state = BuildRerunDiarizationState();
+        TranscriptSegment segment = Assert.Single(state.TranscriptSegments) with
+        {
+            SpeakerAssignmentOrigin = origin,
+        };
+        state = state with { TranscriptSegments = [segment] };
+        speakerRepository.Seed(state.Speakers,
+        [
+            SpeakerTurn.Create(projectId, segment.SpeakerId!.Value, 0, 12)
+        ]);
+
+        await BuildSpeakerAssignmentService().RerunDiarizationAsync(
+            state, new RerunDiarizationRequest(), TestContext.Current.CancellationToken);
+
+        TranscriptRevision revision = (await transcriptRepository.GetCurrentRevisionAsync(
+            projectId, TestContext.Current.CancellationToken))!;
+        TranscriptSegment revised = Assert.Single(await transcriptRepository.GetSegmentsAsync(
+            revision.Id, TestContext.Current.CancellationToken));
+        Assert.Equal(expectedPreserved, revised.SpeakerId == segment.SpeakerId);
+        Assert.Equal(origin, revised.SpeakerAssignmentOrigin);
+        Assert.Contains(speakerRepository.Speakers, speaker => speaker.Id == segment.SpeakerId);
+    }
+
+    [Fact]
+    public async Task Split_and_merge_keep_manual_speaker_origin()
+    {
+        TranscriptProjectState state = BuildRerunDiarizationState();
+        TranscriptSegment segment = Assert.Single(state.TranscriptSegments) with
+        {
+            SpeakerAssignmentOrigin = SpeakerAssignmentOrigin.Manual,
+        };
+        state = state with { TranscriptSegments = [segment] };
+        var editor = new SegmentEditingService(transcriptRepository, ttsTakeRepository, BuildArtifactWriter());
+        await editor.SplitSegmentAsync(state,
+            new SplitTranscriptSegmentRequest(state.CurrentTranscriptRevision!.Id, segment.Id, 6),
+            TestContext.Current.CancellationToken);
+
+        TranscriptRevision splitRevision = (await transcriptRepository.GetCurrentRevisionAsync(
+            projectId, TestContext.Current.CancellationToken))!;
+        IReadOnlyList<TranscriptSegment> split = await transcriptRepository.GetSegmentsAsync(
+            splitRevision.Id, TestContext.Current.CancellationToken);
+        Assert.Equal(2, split.Count);
+        Assert.All(split, item => Assert.Equal(SpeakerAssignmentOrigin.Manual, item.SpeakerAssignmentOrigin));
+
+        state = state with { CurrentTranscriptRevision = splitRevision, TranscriptSegments = split };
+        await editor.MergeSegmentRunAsync(state,
+            new MergeTranscriptSegmentRunRequest(splitRevision.Id, split.Select(item => item.Id).ToArray()),
+            TestContext.Current.CancellationToken);
+        TranscriptRevision mergedRevision = (await transcriptRepository.GetCurrentRevisionAsync(
+            projectId, TestContext.Current.CancellationToken))!;
+        TranscriptSegment merged = Assert.Single(await transcriptRepository.GetSegmentsAsync(
+            mergedRevision.Id, TestContext.Current.CancellationToken));
+        Assert.Equal(SpeakerAssignmentOrigin.Manual, merged.SpeakerAssignmentOrigin);
+        Assert.Equal(segment.SpeakerId, merged.SpeakerId);
+    }
+
+    [Fact]
+    public async Task RerunDiarizationAsync_preserves_a_manual_unassignment()
+    {
+        TranscriptProjectState state = BuildRerunDiarizationState();
+        TranscriptSegment segment = Assert.Single(state.TranscriptSegments) with
+        {
+            SpeakerId = null,
+            SpeakerAssignmentOrigin = SpeakerAssignmentOrigin.Manual,
+        };
+        state = state with { TranscriptSegments = [segment] };
+
+        await BuildSpeakerAssignmentService().RerunDiarizationAsync(
+            state, new RerunDiarizationRequest(), TestContext.Current.CancellationToken);
+
+        TranscriptRevision revision = (await transcriptRepository.GetCurrentRevisionAsync(
+            projectId, TestContext.Current.CancellationToken))!;
+        TranscriptSegment revised = Assert.Single(await transcriptRepository.GetSegmentsAsync(
+            revision.Id, TestContext.Current.CancellationToken));
+        Assert.Null(revised.SpeakerId);
+        Assert.Equal(SpeakerAssignmentOrigin.Manual, revised.SpeakerAssignmentOrigin);
+    }
+
+    [Fact]
+    public async Task SaveEditsAsync_records_a_manual_unassignment_for_an_already_unassigned_segment()
+    {
+        TranscriptProjectState state = BuildRerunDiarizationState();
+        TranscriptSegment segment = Assert.Single(state.TranscriptSegments) with
+        {
+            SpeakerId = null,
+            SpeakerAssignmentOrigin = SpeakerAssignmentOrigin.Automatic,
+        };
+        state = state with { TranscriptSegments = [segment] };
+
+        var editor = new SegmentEditingService(transcriptRepository, ttsTakeRepository, BuildArtifactWriter());
+        await editor.SaveEditsAsync(
+            state,
+            new SaveTranscriptEditsRequest(
+                state.CurrentTranscriptRevision!.Id,
+                [new EditedTranscriptSegment(segment.Id, segment.Text, SpeakerId: null)]),
+            TestContext.Current.CancellationToken);
+
+        TranscriptRevision revision = (await transcriptRepository.GetCurrentRevisionAsync(
+            projectId, TestContext.Current.CancellationToken))!;
+        TranscriptSegment revised = Assert.Single(await transcriptRepository.GetSegmentsAsync(
+            revision.Id, TestContext.Current.CancellationToken));
+        Assert.Null(revised.SpeakerId);
+        Assert.Equal(SpeakerAssignmentOrigin.Manual, revised.SpeakerAssignmentOrigin);
+    }
+
     [Fact]
     public async Task ExecuteAsync_WritesDiarizationArtifact_WhenDiarizationIsEnabled()
     {

@@ -588,7 +588,8 @@ public sealed record StudioExportSettings(
 public sealed record StudioPlaybackSettings(
     bool SubtitlesEnabled,
     string SubtitleContentMode,
-    string VideoDecode = PlaybackVideoDecodePreferenceSettings.AutoKey)
+    string VideoDecode = PlaybackVideoDecodePreferenceSettings.AutoKey,
+    bool KaraokeEnabled = false)
 {
     public const string SourceSubtitleContentMode = "source";
     public const string TranslatedSubtitleContentMode = "translated";

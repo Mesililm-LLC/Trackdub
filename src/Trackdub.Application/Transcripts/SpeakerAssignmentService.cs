@@ -153,7 +153,10 @@ public sealed class SpeakerAssignmentService(
                     ? request.SpeakerId
                     : segment.SpeakerId,
                 segment.DetectedLanguage,
-                TranscriptWorkflowUtilities.CloneWords(segment.Words)))
+                TranscriptWorkflowUtilities.CloneWords(segment.Words),
+                requestedIds.Contains(segment.Id)
+                    ? SpeakerAssignmentOrigin.Manual
+                    : segment.SpeakerAssignmentOrigin))
             .ToArray();
 
         return segmentEditingService.SaveTranscriptRevisionAsync(
@@ -257,11 +260,17 @@ public sealed class SpeakerAssignmentService(
                 segment.StartSeconds,
                 segment.EndSeconds,
                 segment.Text,
-                speakerIdsBySegmentIndex.TryGetValue(segment.SegmentIndex, out Guid speakerId)
+                (segment.SpeakerAssignmentOrigin == SpeakerAssignmentOrigin.Automatic ||
+                    (segment.SpeakerAssignmentOrigin == SpeakerAssignmentOrigin.Unknown && segment.SpeakerId is null)) &&
+                    speakerIdsBySegmentIndex.TryGetValue(segment.SegmentIndex, out Guid speakerId)
                     ? speakerId
                     : segment.SpeakerId,
                 segment.DetectedLanguage,
-                TranscriptWorkflowUtilities.CloneWords(segment.Words)))
+                TranscriptWorkflowUtilities.CloneWords(segment.Words),
+                segment.SpeakerAssignmentOrigin == SpeakerAssignmentOrigin.Unknown &&
+                    segment.SpeakerId is null && speakerIdsBySegmentIndex.ContainsKey(segment.SegmentIndex)
+                    ? SpeakerAssignmentOrigin.Automatic
+                    : segment.SpeakerAssignmentOrigin))
             .ToArray();
 
         await segmentEditingService.SaveTranscriptRevisionAsync(

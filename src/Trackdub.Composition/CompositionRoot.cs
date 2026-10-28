@@ -5,6 +5,7 @@ using Trackdub.Contracts.Serving;
 using Trackdub.Contracts.LipSync;
 using Trackdub.Contracts.Licensing;
 using Trackdub.Application.Mixing;
+using Trackdub.Application.Editing;
 using Trackdub.Application.Updates;
 using Trackdub.Contracts.Projects;
 using Trackdub.Application.Pipeline;
@@ -509,6 +510,7 @@ public static class CompositionRoot
         services.TryAddScoped<MixPlanBuilder>();
         services.TryAddScoped<TimelineMediaMixPreparer>();
         services.TryAddScoped<MixPlanStore>();
+        services.TryAddScoped<SequenceStore>();
         services.TryAddScoped<ProjectMediaIngestService>();
         services.TryAddScoped<TranscriptProjectStateService>();
         services.TryAddScoped<VadGenerationStage>();

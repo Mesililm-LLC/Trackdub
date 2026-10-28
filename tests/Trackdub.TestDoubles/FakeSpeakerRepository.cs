@@ -67,8 +67,7 @@ public sealed class FakeSpeakerRepository : ISpeakerRepository
         IReadOnlyList<SpeakerTurn> newTurns,
         CancellationToken cancellationToken)
     {
-        bool preserveExistingSpeakers = speakers.Any(s => s.ProjectId == projectId) &&
-                                        !turns.Any(t => t.ProjectId == projectId);
+        bool preserveExistingSpeakers = speakers.Any(s => s.ProjectId == projectId);
         if (!preserveExistingSpeakers)
         {
             speakers.RemoveAll(s => s.ProjectId == projectId);

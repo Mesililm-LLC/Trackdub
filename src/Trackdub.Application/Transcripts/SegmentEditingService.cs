@@ -44,7 +44,13 @@ public sealed class SegmentEditingService(
                     segment.DetectedLanguage,
                     TranscriptWorkflowUtilities.ShouldPreserveWords(segment, text)
                         ? TranscriptWorkflowUtilities.CloneWords(segment.Words)
-                        : []);
+                        : [],
+                    // An included edit that selects no speaker records a manual unassignment
+                    // even when the segment was already unassigned.
+                    speakerId != segment.SpeakerId ||
+                        (replacement is not null && replacement.SpeakerId is null)
+                        ? SpeakerAssignmentOrigin.Manual
+                        : segment.SpeakerAssignmentOrigin);
             })
             .ToArray();
 
@@ -94,7 +100,8 @@ public sealed class SegmentEditingService(
                     segment.Text,
                     segment.SpeakerId,
                     segment.DetectedLanguage,
-                    TranscriptWorkflowUtilities.CloneWords(segment.Words)));
+                    TranscriptWorkflowUtilities.CloneWords(segment.Words),
+                    segment.SpeakerAssignmentOrigin));
                 continue;
             }
 
@@ -106,7 +113,8 @@ public sealed class SegmentEditingService(
                 leftText,
                 segment.SpeakerId,
                 segment.DetectedLanguage,
-                TranscriptWorkflowUtilities.CloneWordsInRange(segment.Words, segment.StartSeconds, request.SplitSeconds)));
+                TranscriptWorkflowUtilities.CloneWordsInRange(segment.Words, segment.StartSeconds, request.SplitSeconds),
+                segment.SpeakerAssignmentOrigin));
             revisedSegments.Add(TranscriptSegment.Create(
                 currentRevision.Id,
                 revisedIndex++,
@@ -115,7 +123,8 @@ public sealed class SegmentEditingService(
                 rightText,
                 segment.SpeakerId,
                 segment.DetectedLanguage,
-                TranscriptWorkflowUtilities.CloneWordsInRange(segment.Words, request.SplitSeconds, segment.EndSeconds)));
+                TranscriptWorkflowUtilities.CloneWordsInRange(segment.Words, request.SplitSeconds, segment.EndSeconds),
+                segment.SpeakerAssignmentOrigin));
         }
 
         await SaveTranscriptRevisionAsync(currentState, revisedSegments, "segment-split", cancellationToken).ConfigureAwait(false);
@@ -189,6 +198,12 @@ public sealed class SegmentEditingService(
         string? mergedDetectedLanguage = selectedSegments
             .Select(segment => segment.DetectedLanguage)
             .Aggregate(TranscriptWorkflowUtilities.MergeDetectedLanguage);
+        SpeakerAssignmentOrigin mergedOrigin = selectedSegments.Any(static segment =>
+            segment.SpeakerAssignmentOrigin == SpeakerAssignmentOrigin.Manual)
+            ? SpeakerAssignmentOrigin.Manual
+            : selectedSegments.Any(static segment => segment.SpeakerAssignmentOrigin == SpeakerAssignmentOrigin.Unknown)
+                ? SpeakerAssignmentOrigin.Unknown
+                : SpeakerAssignmentOrigin.Automatic;
         var revisedSegments = new List<TranscriptSegment>(existingSegments.Length - selectedSegments.Length + 1);
         int revisedIndex = 0;
         foreach (TranscriptSegment segment in existingSegments)
@@ -203,7 +218,8 @@ public sealed class SegmentEditingService(
                     mergedText,
                     mergedSpeakerId,
                     mergedDetectedLanguage,
-                    TranscriptWorkflowUtilities.CloneMergedWords(selectedSegments)));
+                    TranscriptWorkflowUtilities.CloneMergedWords(selectedSegments),
+                    mergedOrigin));
                 continue;
             }
 
@@ -220,7 +236,8 @@ public sealed class SegmentEditingService(
                 segment.Text,
                 segment.SpeakerId,
                 segment.DetectedLanguage,
-                TranscriptWorkflowUtilities.CloneWords(segment.Words)));
+                TranscriptWorkflowUtilities.CloneWords(segment.Words),
+                segment.SpeakerAssignmentOrigin));
         }
 
         await SaveTranscriptRevisionAsync(currentState, revisedSegments, "segment-merge", cancellationToken).ConfigureAwait(false);
@@ -285,7 +302,8 @@ public sealed class SegmentEditingService(
                         replacementSegment.Text,
                         replacementSegment.SpeakerId,
                         replacementSegment.DetectedLanguage,
-                        TranscriptWorkflowUtilities.CloneWords(replacementSegment.Words)));
+                        TranscriptWorkflowUtilities.CloneWords(replacementSegment.Words),
+                        replacementSegment.SpeakerAssignmentOrigin));
                 }
 
                 continue;
@@ -299,7 +317,8 @@ public sealed class SegmentEditingService(
                 segment.Text,
                 segment.SpeakerId,
                 segment.DetectedLanguage,
-                TranscriptWorkflowUtilities.CloneWords(segment.Words)));
+                TranscriptWorkflowUtilities.CloneWords(segment.Words),
+                segment.SpeakerAssignmentOrigin));
         }
 
         await SaveTranscriptRevisionAsync(currentState, revisedSegments, "segment-trim", cancellationToken).ConfigureAwait(false);
@@ -362,7 +381,8 @@ public sealed class SegmentEditingService(
                 segment.Text,
                 segment.SpeakerId,
                 segment.DetectedLanguage,
-                TranscriptWorkflowUtilities.CloneWords(segment.Words)));
+                TranscriptWorkflowUtilities.CloneWords(segment.Words),
+                segment.SpeakerAssignmentOrigin));
         }
 
         await SaveTranscriptRevisionAsync(currentState, revisedSegments, "segment-delete", cancellationToken).ConfigureAwait(false);
@@ -405,7 +425,8 @@ public sealed class SegmentEditingService(
                 TranscriptWorkflowUtilities.CloneWordsInRange(
                     targetSegment.Words,
                     part.StartSeconds,
-                    part.EndSeconds)))
+                    part.EndSeconds),
+                targetSegment.SpeakerAssignmentOrigin))
             .ToArray();
     }
 
@@ -639,7 +660,8 @@ public sealed class SegmentEditingService(
                 segment.Text,
                 segment.SpeakerId,
                 segment.DetectedLanguage,
-                TranscriptWorkflowUtilities.CloneWords(segment.Words)))
+                TranscriptWorkflowUtilities.CloneWords(segment.Words),
+                segment.SpeakerAssignmentOrigin))
             .ToArray();
 
         await transcriptRepository.SaveRevisionAsync(editedRevision, revisedSegments, cancellationToken).ConfigureAwait(false);

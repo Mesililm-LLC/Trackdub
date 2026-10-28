@@ -10,6 +10,22 @@ public sealed class SqliteVoiceAssignmentRepository(
     IScopedConnectionProvider? scopedConnectionProvider = null)
     : IVoiceAssignmentRepository
 {
+    public async Task<VoiceAssignment?> GetByIdAsync(Guid projectId, Guid id, CancellationToken cancellationToken)
+    {
+        await database.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await using SqliteConnectionLease lease = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using SqliteCommand command = lease.Connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, project_id, speaker_id, voice_model_id, voice_variant, requires_consent,
+                   created_at_utc, is_fallback, reference_clip_artifact_id
+            FROM voice_assignments WHERE project_id = $projectId AND id = $id;
+            """;
+        command.Parameters.AddWithValue("$projectId", projectId.ToString("D"));
+        command.Parameters.AddWithValue("$id", id.ToString("D"));
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadAssignment(reader) : null;
+    }
+
     public async Task<VoiceAssignment?> GetAsync(
         Guid projectId,
         Guid speakerId,
@@ -33,6 +49,7 @@ public sealed class SqliteVoiceAssignmentRepository(
             FROM voice_assignments
             WHERE project_id = $projectId
               AND speaker_id = $speakerId
+              AND EXISTS (SELECT 1 FROM speakers WHERE id = $speakerId AND merged_into_speaker_id IS NULL)
               AND is_fallback = 0
             LIMIT 1;
             """;
@@ -67,6 +84,7 @@ public sealed class SqliteVoiceAssignmentRepository(
             FROM voice_assignments
             WHERE project_id = $projectId
               AND is_fallback = 0
+              AND EXISTS (SELECT 1 FROM speakers WHERE speakers.id = voice_assignments.speaker_id AND speakers.merged_into_speaker_id IS NULL)
             ORDER BY created_at_utc;
             """;
         command.Parameters.AddWithValue("$projectId", projectId.ToString("D"));

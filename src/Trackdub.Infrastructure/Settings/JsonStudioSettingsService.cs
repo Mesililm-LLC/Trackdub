@@ -383,7 +383,8 @@ public sealed class JsonStudioSettingsService(
         return new StudioPlaybackSettings(
             SubtitlesEnabled: settings.SubtitlesEnabled && validInputMode,
             SubtitleContentMode: mode,
-            VideoDecode: videoDecode);
+            VideoDecode: videoDecode,
+            KaraokeEnabled: settings.KaraokeEnabled);
     }
 
     private void ArchiveCorruptSettingsFile(Exception exception)

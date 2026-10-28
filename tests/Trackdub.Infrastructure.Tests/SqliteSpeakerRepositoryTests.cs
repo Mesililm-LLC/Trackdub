@@ -50,6 +50,93 @@ public sealed class SqliteSpeakerRepositoryTests
             Assert.Contains(speakers, speaker => speaker.Id == speaker3.Id);
             Assert.Equal(2, reloadedTurns.Count);
             Assert.Equal(defaultSpeaker.Id, Assert.Single(reloadedSegments).SpeakerId);
+
+            ProjectSpeaker speaker4 = ProjectSpeaker.Create(project.Id, "Speaker 4", now.AddMilliseconds(3));
+            await speakerRepository.ReplaceDiarizationAsync(project.Id, [speaker4],
+                [SpeakerTurn.Create(project.Id, speaker4.Id, 0d, 5.8d)],
+                TestContext.Current.CancellationToken);
+            speakers = await speakerRepository.ListSpeakersAsync(project.Id, TestContext.Current.CancellationToken);
+            reloadedTurns = await speakerRepository.ListTurnsAsync(project.Id, TestContext.Current.CancellationToken);
+            reloadedSegments = await transcriptRepository.GetSegmentsAsync(revision.Id, TestContext.Current.CancellationToken);
+            Assert.Contains(speakers, speaker => speaker.Id == defaultSpeaker.Id);
+            Assert.Contains(speakers, speaker => speaker.Id == speaker4.Id);
+            Assert.Equal(speaker4.Id, Assert.Single(reloadedTurns).SpeakerId);
+            Assert.Equal(defaultSpeaker.Id, Assert.Single(reloadedSegments).SpeakerId);
+        }
+        finally
+        {
+            if (Directory.Exists(projectRoot))
+            {
+                Directory.Delete(projectRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ReplaceDiarizationAsync_keeps_existing_speakers_when_a_rerun_resupplies_their_ids()
+    {
+        string projectRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"), "Speakers.trackdub");
+        try
+        {
+            var database = new SqliteProjectDatabase(projectRoot);
+            var projectRepository = new SqliteProjectRepository(database);
+            var speakerRepository = new SqliteSpeakerRepository(database);
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            var project = new TrackdubProject(Guid.NewGuid(), "Speakers", now, now);
+
+            await projectRepository.InitializeAsync(project, TestContext.Current.CancellationToken);
+            ProjectSpeaker speaker = ProjectSpeaker.Create(project.Id, "Speaker 1", now);
+            SpeakerTurn[] turns = [SpeakerTurn.Create(project.Id, speaker.Id, 0d, 5.8d, 0.9d, hasOverlap: false)];
+
+            await speakerRepository.ReplaceDiarizationAsync(project.Id, [speaker], turns, TestContext.Current.CancellationToken);
+
+            // A cached rerun or fixture can resupply the same speaker identity.
+            await speakerRepository.ReplaceDiarizationAsync(project.Id, [speaker], turns, TestContext.Current.CancellationToken);
+
+            IReadOnlyList<ProjectSpeaker> speakers = await speakerRepository.ListSpeakersAsync(project.Id, TestContext.Current.CancellationToken);
+            IReadOnlyList<SpeakerTurn> reloadedTurns = await speakerRepository.ListTurnsAsync(project.Id, TestContext.Current.CancellationToken);
+            ProjectSpeaker onlySpeaker = Assert.Single(speakers);
+            Assert.Equal(speaker.Id, onlySpeaker.Id);
+            Assert.Single(reloadedTurns);
+        }
+        finally
+        {
+            if (Directory.Exists(projectRoot))
+            {
+                Directory.Delete(projectRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ReplaceDiarizationAsync_attributes_replayed_merged_speaker_turns_to_the_active_target()
+    {
+        string projectRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"), "Speakers.trackdub");
+        try
+        {
+            var database = new SqliteProjectDatabase(projectRoot);
+            var projectRepository = new SqliteProjectRepository(database);
+            var speakerRepository = new SqliteSpeakerRepository(database);
+            var transcriptRepository = new SqliteTranscriptRepository(database);
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            var project = new TrackdubProject(Guid.NewGuid(), "Speakers", now, now);
+
+            await projectRepository.InitializeAsync(project, TestContext.Current.CancellationToken);
+            ProjectSpeaker source = ProjectSpeaker.Create(project.Id, "Speaker 1", now.AddMilliseconds(1));
+            ProjectSpeaker target = ProjectSpeaker.Create(project.Id, "Speaker 2", now.AddMilliseconds(2));
+            SpeakerTurn[] turns = [SpeakerTurn.Create(project.Id, source.Id, 0d, 5.8d, 0.9d, hasOverlap: false)];
+            await speakerRepository.ReplaceDiarizationAsync(project.Id, [source, target], turns, TestContext.Current.CancellationToken);
+            await transcriptRepository.ReassignAndMergeSpeakersAsync(project.Id, source.Id, target.Id, TestContext.Current.CancellationToken);
+
+            // A replay of the same diarization result must not attach turns to the archived speaker.
+            await speakerRepository.ReplaceDiarizationAsync(project.Id, [source], turns, TestContext.Current.CancellationToken);
+
+            IReadOnlyList<SpeakerTurn> reloadedTurns = await speakerRepository.ListTurnsAsync(project.Id, TestContext.Current.CancellationToken);
+            IReadOnlyList<ProjectSpeaker> speakers = await speakerRepository.ListSpeakersAsync(project.Id, TestContext.Current.CancellationToken);
+            SpeakerTurn turn = Assert.Single(reloadedTurns);
+            Assert.Equal(target.Id, turn.SpeakerId);
+            ProjectSpeaker activeSpeaker = Assert.Single(speakers);
+            Assert.Equal(target.Id, activeSpeaker.Id);
         }
         finally
         {

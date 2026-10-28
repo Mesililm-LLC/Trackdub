@@ -1,5 +1,14 @@
 namespace Trackdub.Domain.Transcript;
 
+/// <summary>Origin of a segment's speaker assignment.</summary>
+public enum SpeakerAssignmentOrigin
+{
+    // Existing projects do not record origin. Preserve their assignments on identification reruns.
+    Unknown = 0,
+    Automatic = 1,
+    Manual = 2,
+}
+
 public sealed record TranscriptSegment
 {
     public TranscriptSegment(
@@ -11,7 +20,8 @@ public sealed record TranscriptSegment
         string text,
         Guid? speakerId = null,
         string? detectedLanguage = null,
-        IReadOnlyList<TranscriptWord>? words = null)
+        IReadOnlyList<TranscriptWord>? words = null,
+        SpeakerAssignmentOrigin speakerAssignmentOrigin = SpeakerAssignmentOrigin.Unknown)
     {
         Id = id;
         TranscriptRevisionId = transcriptRevisionId;
@@ -20,6 +30,7 @@ public sealed record TranscriptSegment
         EndSeconds = endSeconds;
         Text = text;
         SpeakerId = speakerId;
+        SpeakerAssignmentOrigin = speakerAssignmentOrigin;
         DetectedLanguage = NormalizeLanguageCode(detectedLanguage);
         Words = NormalizeWords(words);
     }
@@ -38,6 +49,8 @@ public sealed record TranscriptSegment
 
     public Guid? SpeakerId { get; init; }
 
+    public SpeakerAssignmentOrigin SpeakerAssignmentOrigin { get; init; }
+
     public string? DetectedLanguage { get; init; }
 
     public IReadOnlyList<TranscriptWord> Words { get; init; }
@@ -50,7 +63,8 @@ public sealed record TranscriptSegment
         string text,
         Guid? speakerId = null,
         string? detectedLanguage = null,
-        IReadOnlyList<TranscriptWord>? words = null)
+        IReadOnlyList<TranscriptWord>? words = null,
+        SpeakerAssignmentOrigin speakerAssignmentOrigin = SpeakerAssignmentOrigin.Unknown)
     {
         if (transcriptRevisionId == Guid.Empty)
         {
@@ -86,7 +100,8 @@ public sealed record TranscriptSegment
             text.Trim(),
             speakerId,
             NormalizeLanguageCode(detectedLanguage),
-            words);
+            words,
+            speakerAssignmentOrigin);
     }
 
     private static string? NormalizeLanguageCode(string? languageCode) =>
