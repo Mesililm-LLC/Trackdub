@@ -4,6 +4,7 @@ public static class ProjectArtifactPaths
 {
     public const string DatabaseFileName = "trackdub.db";
     public const string ManifestRelativePath = "manifest.json";
+    public const string SequenceRelativePath = "sequence.json";
     public const string VoiceCloneAuditRelativePath = "voice_clone_audit.jsonl";
     public const string SourceReferenceRelativePath = "media/source-reference.json";
     public const string NormalizedAudioRelativePath = "media/normalized_audio.wav";
