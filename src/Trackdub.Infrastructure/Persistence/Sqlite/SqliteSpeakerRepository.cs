@@ -140,6 +140,8 @@ public sealed class SqliteSpeakerRepository(
                          SELECT id FROM transcript_revisions WHERE project_id = $projectId)) +
                     (SELECT COUNT(*) FROM voice_assignments
                      WHERE project_id = $projectId AND speaker_id = $speakerId) +
+                    (SELECT COUNT(*) FROM voice_clone_consents
+                     WHERE project_id = $projectId AND speaker_id = $speakerId) +
                     (SELECT COUNT(*) FROM speakers
                      WHERE project_id = $projectId AND merged_into_speaker_id = $speakerId);
                 """;
@@ -148,7 +150,7 @@ public sealed class SqliteSpeakerRepository(
             long references = Convert.ToInt64(await guard.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture);
             if (references > 0)
             {
-                throw new InvalidOperationException("Only speakers with no turns, segments, voice assignments, or archived merge history can be removed.");
+                throw new InvalidOperationException("Only speakers with no turns, segments, voice assignments, voice clone consents, or archived merge history can be removed.");
             }
         }
 

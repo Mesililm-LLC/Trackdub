@@ -149,6 +149,31 @@ public sealed class SqliteSpeakerRepositoryTests
         Assert.Single(await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeleteEmptySpeakerAsync_refuses_a_speaker_with_only_consent(bool revokeConsent)
+    {
+        using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
+        ProjectSpeaker speaker = await db.Speakers.CreateSpeakerAsync(db.Project.Id, TestContext.Current.CancellationToken);
+        var consents = new SqliteSpeakerConsentService(db.Database);
+        VoiceCloneConsentRecord consent = await consents.RecordConsentAsync(
+            db.Project.Id, speaker.Id, isThirdPartyConsent: false, notes: null, TestContext.Current.CancellationToken);
+        if (revokeConsent)
+        {
+            await consents.RevokeConsentAsync(speaker.Id, TestContext.Current.CancellationToken);
+        }
+
+        Assert.Null(await db.VoiceAssignments.GetAsync(db.Project.Id, speaker.Id, TestContext.Current.CancellationToken));
+
+        await AssertDeleteRefused(db, speaker.Id);
+
+        Assert.Equal(speaker.Id, Assert.Single(await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken)).Id);
+        VoiceCloneConsentRecord? retained = await consents.GetConsentAsync(speaker.Id, TestContext.Current.CancellationToken);
+        Assert.NotNull(retained);
+        Assert.Equal(consent.Id, retained.Id);
+    }
+
     [Fact]
     public async Task DeleteEmptySpeakerAsync_refuses_a_merged_speaker()
     {
