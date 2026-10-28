@@ -80,6 +80,18 @@ public sealed class FakeSpeakerRepository : ISpeakerRepository
 
     public Task DeleteEmptySpeakerAsync(Guid projectId, Guid speakerId, CancellationToken cancellationToken)
     {
+        EnsureDeletable(projectId, speakerId);
+        speakers.RemoveAll(s => s.ProjectId == projectId && s.Id == speakerId);
+        return Task.CompletedTask;
+    }
+
+    private void EnsureDeletable(Guid projectId, Guid speakerId)
+    {
+        if (!speakers.Exists(s => s.ProjectId == projectId && s.Id == speakerId))
+        {
+            throw new InvalidOperationException("The selected speaker was not found.");
+        }
+
         if (mergedTargets.ContainsKey(speakerId))
         {
             throw new InvalidOperationException("Merged speakers are retained as history and cannot be deleted.");
@@ -92,13 +104,6 @@ public sealed class FakeSpeakerRepository : ISpeakerRepository
         {
             throw new InvalidOperationException("Only speakers with no turns, segments, voice assignments, or archived merge history can be removed.");
         }
-
-        if (speakers.RemoveAll(s => s.ProjectId == projectId && s.Id == speakerId) == 0)
-        {
-            throw new InvalidOperationException("The selected speaker was not found.");
-        }
-
-        return Task.CompletedTask;
     }
 
     public Task<IReadOnlyList<SpeakerTurn>> ListTurnsAsync(Guid projectId, CancellationToken cancellationToken)

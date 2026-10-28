@@ -835,19 +835,24 @@ public sealed partial class TranscriptProjectServiceTests : IDisposable
 
         public Task DeleteEmptySpeakerAsync(Guid projectId, Guid speakerId, CancellationToken cancellationToken)
         {
+            EnsureDeletable(projectId, speakerId);
+            Speakers.RemoveAll(speaker => speaker.ProjectId == projectId && speaker.Id == speakerId);
+            return Task.CompletedTask;
+        }
+
+        private void EnsureDeletable(Guid projectId, Guid speakerId)
+        {
+            if (!Speakers.Exists(speaker => speaker.ProjectId == projectId && speaker.Id == speakerId))
+            {
+                throw new InvalidOperationException("The selected speaker was not found.");
+            }
+
             if (Turns.Exists(turn => turn.ProjectId == projectId && turn.SpeakerId == speakerId) ||
                 SegmentSpeakerIds.Contains(speakerId) ||
                 VoiceAssignmentSpeakerIds.Contains(speakerId))
             {
                 throw new InvalidOperationException("Only speakers with no turns, segments, voice assignments, or archived merge history can be removed.");
             }
-
-            if (Speakers.RemoveAll(speaker => speaker.ProjectId == projectId && speaker.Id == speakerId) == 0)
-            {
-                throw new InvalidOperationException("The selected speaker was not found.");
-            }
-
-            return Task.CompletedTask;
         }
 
         public Task<IReadOnlyList<SpeakerTurn>> ListTurnsAsync(Guid projectId, CancellationToken cancellationToken) =>

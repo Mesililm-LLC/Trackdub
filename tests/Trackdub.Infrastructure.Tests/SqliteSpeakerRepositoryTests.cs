@@ -11,406 +11,254 @@ public sealed class SqliteSpeakerRepositoryTests
     [Fact]
     public async Task ReplaceDiarizationAsync_preserves_assigned_default_speaker_when_retrying_no_turn_diarization()
     {
-        string projectRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"), "Speakers.trackdub");
-        try
-        {
-            var database = new SqliteProjectDatabase(projectRoot);
-            var projectRepository = new SqliteProjectRepository(database);
-            var speakerRepository = new SqliteSpeakerRepository(database);
-            var transcriptRepository = new SqliteTranscriptRepository(database);
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-            var project = new TrackdubProject(Guid.NewGuid(), "Speakers", now, now);
+        using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
+        ProjectSpeaker defaultSpeaker = await db.Speakers.EnsureDefaultSpeakerAsync(db.Project.Id, TestContext.Current.CancellationToken);
 
-            await projectRepository.InitializeAsync(project, TestContext.Current.CancellationToken);
-            ProjectSpeaker defaultSpeaker = await speakerRepository.EnsureDefaultSpeakerAsync(project.Id, TestContext.Current.CancellationToken);
+        TranscriptRevision revision = TranscriptRevision.Create(db.Project.Id, stageRunId: null, revisionNumber: 1, db.Now);
+        TranscriptSegment[] segments =
+        [
+            TranscriptSegment.Create(revision.Id, 0, 0d, 5.8d, "Hello", defaultSpeaker.Id)
+        ];
+        await db.Transcripts.SaveRevisionAsync(revision, segments, TestContext.Current.CancellationToken);
 
-            TranscriptRevision revision = TranscriptRevision.Create(project.Id, stageRunId: null, revisionNumber: 1, now);
-            TranscriptSegment[] segments =
-            [
-                TranscriptSegment.Create(revision.Id, 0, 0d, 5.8d, "Hello", defaultSpeaker.Id)
-            ];
-            await transcriptRepository.SaveRevisionAsync(revision, segments, TestContext.Current.CancellationToken);
+        ProjectSpeaker speaker2 = ProjectSpeaker.Create(db.Project.Id, "Speaker 2", db.Now.AddMilliseconds(1));
+        ProjectSpeaker speaker3 = ProjectSpeaker.Create(db.Project.Id, "Speaker 3", db.Now.AddMilliseconds(2));
+        SpeakerTurn[] turns =
+        [
+            SpeakerTurn.Create(db.Project.Id, speaker2.Id, 0d, 5.8d, 0.9d, hasOverlap: false),
+            SpeakerTurn.Create(db.Project.Id, speaker3.Id, 6d, 11.8d, 0.8d, hasOverlap: false)
+        ];
 
-            ProjectSpeaker speaker2 = ProjectSpeaker.Create(project.Id, "Speaker 2", now.AddMilliseconds(1));
-            ProjectSpeaker speaker3 = ProjectSpeaker.Create(project.Id, "Speaker 3", now.AddMilliseconds(2));
-            SpeakerTurn[] turns =
-            [
-                SpeakerTurn.Create(project.Id, speaker2.Id, 0d, 5.8d, 0.9d, hasOverlap: false),
-                SpeakerTurn.Create(project.Id, speaker3.Id, 6d, 11.8d, 0.8d, hasOverlap: false)
-            ];
+        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [speaker2, speaker3], turns, TestContext.Current.CancellationToken);
 
-            await speakerRepository.ReplaceDiarizationAsync(project.Id, [speaker2, speaker3], turns, TestContext.Current.CancellationToken);
+        IReadOnlyList<ProjectSpeaker> speakers = await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken);
+        IReadOnlyList<SpeakerTurn> reloadedTurns = await db.Speakers.ListTurnsAsync(db.Project.Id, TestContext.Current.CancellationToken);
+        IReadOnlyList<TranscriptSegment> reloadedSegments = await db.Transcripts.GetSegmentsAsync(revision.Id, TestContext.Current.CancellationToken);
 
-            IReadOnlyList<ProjectSpeaker> speakers = await speakerRepository.ListSpeakersAsync(project.Id, TestContext.Current.CancellationToken);
-            IReadOnlyList<SpeakerTurn> reloadedTurns = await speakerRepository.ListTurnsAsync(project.Id, TestContext.Current.CancellationToken);
-            IReadOnlyList<TranscriptSegment> reloadedSegments = await transcriptRepository.GetSegmentsAsync(revision.Id, TestContext.Current.CancellationToken);
+        Assert.Equal(3, speakers.Count);
+        Assert.Contains(speakers, speaker => speaker.Id == defaultSpeaker.Id);
+        Assert.Contains(speakers, speaker => speaker.Id == speaker2.Id);
+        Assert.Contains(speakers, speaker => speaker.Id == speaker3.Id);
+        Assert.Equal(2, reloadedTurns.Count);
+        Assert.Equal(defaultSpeaker.Id, Assert.Single(reloadedSegments).SpeakerId);
 
-            Assert.Equal(3, speakers.Count);
-            Assert.Contains(speakers, speaker => speaker.Id == defaultSpeaker.Id);
-            Assert.Contains(speakers, speaker => speaker.Id == speaker2.Id);
-            Assert.Contains(speakers, speaker => speaker.Id == speaker3.Id);
-            Assert.Equal(2, reloadedTurns.Count);
-            Assert.Equal(defaultSpeaker.Id, Assert.Single(reloadedSegments).SpeakerId);
-
-            ProjectSpeaker speaker4 = ProjectSpeaker.Create(project.Id, "Speaker 4", now.AddMilliseconds(3));
-            await speakerRepository.ReplaceDiarizationAsync(project.Id, [speaker4],
-                [SpeakerTurn.Create(project.Id, speaker4.Id, 0d, 5.8d)],
-                TestContext.Current.CancellationToken);
-            speakers = await speakerRepository.ListSpeakersAsync(project.Id, TestContext.Current.CancellationToken);
-            reloadedTurns = await speakerRepository.ListTurnsAsync(project.Id, TestContext.Current.CancellationToken);
-            reloadedSegments = await transcriptRepository.GetSegmentsAsync(revision.Id, TestContext.Current.CancellationToken);
-            Assert.Contains(speakers, speaker => speaker.Id == defaultSpeaker.Id);
-            Assert.Contains(speakers, speaker => speaker.Id == speaker4.Id);
-            Assert.Equal(speaker4.Id, Assert.Single(reloadedTurns).SpeakerId);
-            Assert.Equal(defaultSpeaker.Id, Assert.Single(reloadedSegments).SpeakerId);
-        }
-        finally
-        {
-            if (Directory.Exists(projectRoot))
-            {
-                Directory.Delete(projectRoot, recursive: true);
-            }
-        }
+        ProjectSpeaker speaker4 = ProjectSpeaker.Create(db.Project.Id, "Speaker 4", db.Now.AddMilliseconds(3));
+        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [speaker4],
+            [SpeakerTurn.Create(db.Project.Id, speaker4.Id, 0d, 5.8d)],
+            TestContext.Current.CancellationToken);
+        speakers = await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken);
+        reloadedTurns = await db.Speakers.ListTurnsAsync(db.Project.Id, TestContext.Current.CancellationToken);
+        reloadedSegments = await db.Transcripts.GetSegmentsAsync(revision.Id, TestContext.Current.CancellationToken);
+        Assert.Contains(speakers, speaker => speaker.Id == defaultSpeaker.Id);
+        Assert.Contains(speakers, speaker => speaker.Id == speaker4.Id);
+        Assert.Equal(speaker4.Id, Assert.Single(reloadedTurns).SpeakerId);
+        Assert.Equal(defaultSpeaker.Id, Assert.Single(reloadedSegments).SpeakerId);
     }
 
     [Fact]
     public async Task ReplaceDiarizationAsync_keeps_existing_speakers_when_a_rerun_resupplies_their_ids()
     {
-        string projectRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"), "Speakers.trackdub");
-        try
-        {
-            var database = new SqliteProjectDatabase(projectRoot);
-            var projectRepository = new SqliteProjectRepository(database);
-            var speakerRepository = new SqliteSpeakerRepository(database);
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-            var project = new TrackdubProject(Guid.NewGuid(), "Speakers", now, now);
+        using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
+        ProjectSpeaker speaker = ProjectSpeaker.Create(db.Project.Id, "Speaker 1", db.Now);
+        SpeakerTurn[] turns = [SpeakerTurn.Create(db.Project.Id, speaker.Id, 0d, 5.8d, 0.9d, hasOverlap: false)];
 
-            await projectRepository.InitializeAsync(project, TestContext.Current.CancellationToken);
-            ProjectSpeaker speaker = ProjectSpeaker.Create(project.Id, "Speaker 1", now);
-            SpeakerTurn[] turns = [SpeakerTurn.Create(project.Id, speaker.Id, 0d, 5.8d, 0.9d, hasOverlap: false)];
+        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [speaker], turns, TestContext.Current.CancellationToken);
 
-            await speakerRepository.ReplaceDiarizationAsync(project.Id, [speaker], turns, TestContext.Current.CancellationToken);
+        // A cached rerun or fixture can resupply the same speaker identity.
+        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [speaker], turns, TestContext.Current.CancellationToken);
 
-            // A cached rerun or fixture can resupply the same speaker identity.
-            await speakerRepository.ReplaceDiarizationAsync(project.Id, [speaker], turns, TestContext.Current.CancellationToken);
-
-            IReadOnlyList<ProjectSpeaker> speakers = await speakerRepository.ListSpeakersAsync(project.Id, TestContext.Current.CancellationToken);
-            IReadOnlyList<SpeakerTurn> reloadedTurns = await speakerRepository.ListTurnsAsync(project.Id, TestContext.Current.CancellationToken);
-            ProjectSpeaker onlySpeaker = Assert.Single(speakers);
-            Assert.Equal(speaker.Id, onlySpeaker.Id);
-            Assert.Single(reloadedTurns);
-        }
-        finally
-        {
-            if (Directory.Exists(projectRoot))
-            {
-                Directory.Delete(projectRoot, recursive: true);
-            }
-        }
+        IReadOnlyList<ProjectSpeaker> speakers = await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken);
+        IReadOnlyList<SpeakerTurn> reloadedTurns = await db.Speakers.ListTurnsAsync(db.Project.Id, TestContext.Current.CancellationToken);
+        ProjectSpeaker onlySpeaker = Assert.Single(speakers);
+        Assert.Equal(speaker.Id, onlySpeaker.Id);
+        Assert.Single(reloadedTurns);
     }
 
     [Fact]
     public async Task ReplaceDiarizationAsync_attributes_replayed_merged_speaker_turns_to_the_active_target()
     {
-        string projectRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"), "Speakers.trackdub");
-        try
-        {
-            var database = new SqliteProjectDatabase(projectRoot);
-            var projectRepository = new SqliteProjectRepository(database);
-            var speakerRepository = new SqliteSpeakerRepository(database);
-            var transcriptRepository = new SqliteTranscriptRepository(database);
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-            var project = new TrackdubProject(Guid.NewGuid(), "Speakers", now, now);
+        using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
+        ProjectSpeaker source = ProjectSpeaker.Create(db.Project.Id, "Speaker 1", db.Now.AddMilliseconds(1));
+        ProjectSpeaker target = ProjectSpeaker.Create(db.Project.Id, "Speaker 2", db.Now.AddMilliseconds(2));
+        SpeakerTurn[] turns = [SpeakerTurn.Create(db.Project.Id, source.Id, 0d, 5.8d, 0.9d, hasOverlap: false)];
+        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [source, target], turns, TestContext.Current.CancellationToken);
+        await db.Transcripts.ReassignAndMergeSpeakersAsync(db.Project.Id, source.Id, target.Id, TestContext.Current.CancellationToken);
 
-            await projectRepository.InitializeAsync(project, TestContext.Current.CancellationToken);
-            ProjectSpeaker source = ProjectSpeaker.Create(project.Id, "Speaker 1", now.AddMilliseconds(1));
-            ProjectSpeaker target = ProjectSpeaker.Create(project.Id, "Speaker 2", now.AddMilliseconds(2));
-            SpeakerTurn[] turns = [SpeakerTurn.Create(project.Id, source.Id, 0d, 5.8d, 0.9d, hasOverlap: false)];
-            await speakerRepository.ReplaceDiarizationAsync(project.Id, [source, target], turns, TestContext.Current.CancellationToken);
-            await transcriptRepository.ReassignAndMergeSpeakersAsync(project.Id, source.Id, target.Id, TestContext.Current.CancellationToken);
+        // A replay of the same diarization result must not attach turns to the archived speaker.
+        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [source], turns, TestContext.Current.CancellationToken);
 
-            // A replay of the same diarization result must not attach turns to the archived speaker.
-            await speakerRepository.ReplaceDiarizationAsync(project.Id, [source], turns, TestContext.Current.CancellationToken);
-
-            IReadOnlyList<SpeakerTurn> reloadedTurns = await speakerRepository.ListTurnsAsync(project.Id, TestContext.Current.CancellationToken);
-            IReadOnlyList<ProjectSpeaker> speakers = await speakerRepository.ListSpeakersAsync(project.Id, TestContext.Current.CancellationToken);
-            SpeakerTurn turn = Assert.Single(reloadedTurns);
-            Assert.Equal(target.Id, turn.SpeakerId);
-            ProjectSpeaker activeSpeaker = Assert.Single(speakers);
-            Assert.Equal(target.Id, activeSpeaker.Id);
-        }
-        finally
-        {
-            if (Directory.Exists(projectRoot))
-            {
-                Directory.Delete(projectRoot, recursive: true);
-            }
-        }
+        IReadOnlyList<SpeakerTurn> reloadedTurns = await db.Speakers.ListTurnsAsync(db.Project.Id, TestContext.Current.CancellationToken);
+        IReadOnlyList<ProjectSpeaker> speakers = await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken);
+        SpeakerTurn turn = Assert.Single(reloadedTurns);
+        Assert.Equal(target.Id, turn.SpeakerId);
+        ProjectSpeaker activeSpeaker = Assert.Single(speakers);
+        Assert.Equal(target.Id, activeSpeaker.Id);
     }
 
     [Fact]
     public async Task ListMergedSpeakersAsync_returns_archived_speakers_with_their_merge_target()
     {
-        string projectRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"), "Speakers.trackdub");
-        try
-        {
-            var database = new SqliteProjectDatabase(projectRoot);
-            var projectRepository = new SqliteProjectRepository(database);
-            var speakerRepository = new SqliteSpeakerRepository(database);
-            var transcriptRepository = new SqliteTranscriptRepository(database);
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-            var project = new TrackdubProject(Guid.NewGuid(), "Speakers", now, now);
+        using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
+        ProjectSpeaker source = ProjectSpeaker.Create(db.Project.Id, "Speaker 1", db.Now.AddMilliseconds(1));
+        ProjectSpeaker target = ProjectSpeaker.Create(db.Project.Id, "Speaker 2", db.Now.AddMilliseconds(2));
+        SpeakerTurn[] turns = [SpeakerTurn.Create(db.Project.Id, source.Id, 0d, 5.8d, 0.9d, hasOverlap: false)];
+        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [source, target], turns, TestContext.Current.CancellationToken);
+        await db.Transcripts.ReassignAndMergeSpeakersAsync(db.Project.Id, source.Id, target.Id, TestContext.Current.CancellationToken);
 
-            await projectRepository.InitializeAsync(project, TestContext.Current.CancellationToken);
-            ProjectSpeaker source = ProjectSpeaker.Create(project.Id, "Speaker 1", now.AddMilliseconds(1));
-            ProjectSpeaker target = ProjectSpeaker.Create(project.Id, "Speaker 2", now.AddMilliseconds(2));
-            SpeakerTurn[] turns = [SpeakerTurn.Create(project.Id, source.Id, 0d, 5.8d, 0.9d, hasOverlap: false)];
-            await speakerRepository.ReplaceDiarizationAsync(project.Id, [source, target], turns, TestContext.Current.CancellationToken);
-            await transcriptRepository.ReassignAndMergeSpeakersAsync(project.Id, source.Id, target.Id, TestContext.Current.CancellationToken);
+        IReadOnlyList<MergedSpeakerEntry> merged = await db.Speakers.ListMergedSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken);
+        IReadOnlyList<ProjectSpeaker> active = await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken);
 
-            IReadOnlyList<MergedSpeakerEntry> merged = await speakerRepository.ListMergedSpeakersAsync(project.Id, TestContext.Current.CancellationToken);
-            IReadOnlyList<ProjectSpeaker> active = await speakerRepository.ListSpeakersAsync(project.Id, TestContext.Current.CancellationToken);
-
-            MergedSpeakerEntry entry = Assert.Single(merged);
-            Assert.Equal(source.Id, entry.Speaker.Id);
-            Assert.Equal("Speaker 1", entry.Speaker.DisplayName);
-            Assert.Equal(target.Id, entry.MergedIntoSpeakerId);
-            Assert.DoesNotContain(active, speaker => speaker.Id == source.Id);
-        }
-        finally
-        {
-            if (Directory.Exists(projectRoot))
-            {
-                Directory.Delete(projectRoot, recursive: true);
-            }
-        }
+        MergedSpeakerEntry entry = Assert.Single(merged);
+        Assert.Equal(source.Id, entry.Speaker.Id);
+        Assert.Equal("Speaker 1", entry.Speaker.DisplayName);
+        Assert.Equal(target.Id, entry.MergedIntoSpeakerId);
+        Assert.DoesNotContain(active, speaker => speaker.Id == source.Id);
     }
 
     [Fact]
     public async Task DeleteEmptySpeakerAsync_removes_a_speaker_with_no_references()
     {
-        string projectRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"), "Speakers.trackdub");
-        try
-        {
-            var database = new SqliteProjectDatabase(projectRoot);
-            var projectRepository = new SqliteProjectRepository(database);
-            var speakerRepository = new SqliteSpeakerRepository(database);
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-            var project = new TrackdubProject(Guid.NewGuid(), "Speakers", now, now);
+        using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
+        ProjectSpeaker speaker = await db.Speakers.CreateSpeakerAsync(db.Project.Id, TestContext.Current.CancellationToken);
 
-            await projectRepository.InitializeAsync(project, TestContext.Current.CancellationToken);
-            ProjectSpeaker speaker = await speakerRepository.CreateSpeakerAsync(project.Id, TestContext.Current.CancellationToken);
+        await db.Speakers.DeleteEmptySpeakerAsync(db.Project.Id, speaker.Id, TestContext.Current.CancellationToken);
 
-            await speakerRepository.DeleteEmptySpeakerAsync(project.Id, speaker.Id, TestContext.Current.CancellationToken);
-
-            Assert.Empty(await speakerRepository.ListSpeakersAsync(project.Id, TestContext.Current.CancellationToken));
-        }
-        finally
-        {
-            if (Directory.Exists(projectRoot))
-            {
-                Directory.Delete(projectRoot, recursive: true);
-            }
-        }
+        Assert.Empty(await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken));
     }
 
     [Fact]
     public async Task DeleteEmptySpeakerAsync_refuses_a_speaker_with_turns()
     {
-        string projectRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"), "Speakers.trackdub");
-        try
-        {
-            var database = new SqliteProjectDatabase(projectRoot);
-            var projectRepository = new SqliteProjectRepository(database);
-            var speakerRepository = new SqliteSpeakerRepository(database);
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-            var project = new TrackdubProject(Guid.NewGuid(), "Speakers", now, now);
+        using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
+        ProjectSpeaker speaker = ProjectSpeaker.Create(db.Project.Id, "Speaker 1", db.Now);
+        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [speaker],
+            [SpeakerTurn.Create(db.Project.Id, speaker.Id, 0d, 5.8d)],
+            TestContext.Current.CancellationToken);
 
-            await projectRepository.InitializeAsync(project, TestContext.Current.CancellationToken);
-            ProjectSpeaker speaker = ProjectSpeaker.Create(project.Id, "Speaker 1", now);
-            await speakerRepository.ReplaceDiarizationAsync(project.Id, [speaker],
-                [SpeakerTurn.Create(project.Id, speaker.Id, 0d, 5.8d)],
-                TestContext.Current.CancellationToken);
-
-            await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                speakerRepository.DeleteEmptySpeakerAsync(project.Id, speaker.Id, TestContext.Current.CancellationToken));
-            Assert.Single(await speakerRepository.ListSpeakersAsync(project.Id, TestContext.Current.CancellationToken));
-        }
-        finally
-        {
-            if (Directory.Exists(projectRoot))
-            {
-                Directory.Delete(projectRoot, recursive: true);
-            }
-        }
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            db.Speakers.DeleteEmptySpeakerAsync(db.Project.Id, speaker.Id, TestContext.Current.CancellationToken));
+        Assert.Single(await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken));
     }
 
     [Fact]
     public async Task DeleteEmptySpeakerAsync_refuses_a_speaker_with_a_voice_assignment()
     {
-        string projectRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"), "Speakers.trackdub");
-        try
-        {
-            var database = new SqliteProjectDatabase(projectRoot);
-            var projectRepository = new SqliteProjectRepository(database);
-            var speakerRepository = new SqliteSpeakerRepository(database);
-            var voiceAssignmentRepository = new SqliteVoiceAssignmentRepository(database);
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-            var project = new TrackdubProject(Guid.NewGuid(), "Speakers", now, now);
+        using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
+        ProjectSpeaker speaker = await db.Speakers.CreateSpeakerAsync(db.Project.Id, TestContext.Current.CancellationToken);
+        await db.VoiceAssignments.SaveAsync(
+            VoiceAssignment.Create(db.Project.Id, speaker.Id, "kokoro-onnx"),
+            TestContext.Current.CancellationToken);
 
-            await projectRepository.InitializeAsync(project, TestContext.Current.CancellationToken);
-            ProjectSpeaker speaker = await speakerRepository.CreateSpeakerAsync(project.Id, TestContext.Current.CancellationToken);
-            await voiceAssignmentRepository.SaveAsync(
-                VoiceAssignment.Create(project.Id, speaker.Id, "kokoro-onnx"),
-                TestContext.Current.CancellationToken);
-
-            await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                speakerRepository.DeleteEmptySpeakerAsync(project.Id, speaker.Id, TestContext.Current.CancellationToken));
-            Assert.Single(await speakerRepository.ListSpeakersAsync(project.Id, TestContext.Current.CancellationToken));
-        }
-        finally
-        {
-            if (Directory.Exists(projectRoot))
-            {
-                Directory.Delete(projectRoot, recursive: true);
-            }
-        }
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            db.Speakers.DeleteEmptySpeakerAsync(db.Project.Id, speaker.Id, TestContext.Current.CancellationToken));
+        Assert.Single(await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken));
     }
 
     [Fact]
     public async Task DeleteEmptySpeakerAsync_refuses_a_merged_speaker()
     {
-        string projectRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"), "Speakers.trackdub");
-        try
-        {
-            var database = new SqliteProjectDatabase(projectRoot);
-            var projectRepository = new SqliteProjectRepository(database);
-            var speakerRepository = new SqliteSpeakerRepository(database);
-            var transcriptRepository = new SqliteTranscriptRepository(database);
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-            var project = new TrackdubProject(Guid.NewGuid(), "Speakers", now, now);
+        using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
+        (ProjectSpeaker source, ProjectSpeaker target) = await db.MergeTwoSpeakersAsync();
 
-            await projectRepository.InitializeAsync(project, TestContext.Current.CancellationToken);
-            ProjectSpeaker source = ProjectSpeaker.Create(project.Id, "Speaker 1", now.AddMilliseconds(1));
-            ProjectSpeaker target = ProjectSpeaker.Create(project.Id, "Speaker 2", now.AddMilliseconds(2));
-            await speakerRepository.ReplaceDiarizationAsync(project.Id, [source, target], [], TestContext.Current.CancellationToken);
-            await transcriptRepository.ReassignAndMergeSpeakersAsync(project.Id, source.Id, target.Id, TestContext.Current.CancellationToken);
-
-            await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                speakerRepository.DeleteEmptySpeakerAsync(project.Id, source.Id, TestContext.Current.CancellationToken));
-            Assert.Single(await speakerRepository.ListMergedSpeakersAsync(project.Id, TestContext.Current.CancellationToken));
-        }
-        finally
-        {
-            if (Directory.Exists(projectRoot))
-            {
-                Directory.Delete(projectRoot, recursive: true);
-            }
-        }
-    }
-
-    [Fact]
-    public async Task GetForSpeakerIncludingMergedAsync_returns_the_assignment_of_an_archived_speaker()
-    {
-        string projectRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"), "Speakers.trackdub");
-        try
-        {
-            var database = new SqliteProjectDatabase(projectRoot);
-            var projectRepository = new SqliteProjectRepository(database);
-            var speakerRepository = new SqliteSpeakerRepository(database);
-            var transcriptRepository = new SqliteTranscriptRepository(database);
-            var voiceAssignmentRepository = new SqliteVoiceAssignmentRepository(database);
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-            var project = new TrackdubProject(Guid.NewGuid(), "Speakers", now, now);
-
-            await projectRepository.InitializeAsync(project, TestContext.Current.CancellationToken);
-            ProjectSpeaker source = ProjectSpeaker.Create(project.Id, "Speaker 1", now.AddMilliseconds(1));
-            ProjectSpeaker target = ProjectSpeaker.Create(project.Id, "Speaker 2", now.AddMilliseconds(2));
-            await speakerRepository.ReplaceDiarizationAsync(project.Id, [source, target], [], TestContext.Current.CancellationToken);
-            VoiceAssignment assignment = VoiceAssignment.Create(project.Id, source.Id, "kokoro-onnx", "af-heart");
-            await voiceAssignmentRepository.SaveAsync(assignment, TestContext.Current.CancellationToken);
-            await transcriptRepository.ReassignAndMergeSpeakersAsync(project.Id, source.Id, target.Id, TestContext.Current.CancellationToken);
-
-            Assert.Null(await voiceAssignmentRepository.GetAsync(project.Id, source.Id, TestContext.Current.CancellationToken));
-            VoiceAssignment? history = await voiceAssignmentRepository.GetForSpeakerIncludingMergedAsync(project.Id, source.Id, TestContext.Current.CancellationToken);
-
-            Assert.NotNull(history);
-            Assert.Equal(assignment.Id, history.Id);
-            Assert.Equal(source.Id, history.SpeakerId);
-            Assert.Equal("af-heart", history.VoiceVariant);
-        }
-        finally
-        {
-            if (Directory.Exists(projectRoot))
-            {
-                Directory.Delete(projectRoot, recursive: true);
-            }
-        }
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            db.Speakers.DeleteEmptySpeakerAsync(db.Project.Id, source.Id, TestContext.Current.CancellationToken));
+        Assert.Single(await db.Speakers.ListMergedSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken));
     }
 
     [Fact]
     public async Task DeleteEmptySpeakerAsync_refuses_a_speaker_that_is_a_merge_target()
     {
-        string projectRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"), "Speakers.trackdub");
-        try
-        {
-            var database = new SqliteProjectDatabase(projectRoot);
-            var projectRepository = new SqliteProjectRepository(database);
-            var speakerRepository = new SqliteSpeakerRepository(database);
-            var transcriptRepository = new SqliteTranscriptRepository(database);
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-            var project = new TrackdubProject(Guid.NewGuid(), "Speakers", now, now);
+        using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
+        (ProjectSpeaker _, ProjectSpeaker target) = await db.MergeTwoSpeakersAsync();
 
-            await projectRepository.InitializeAsync(project, TestContext.Current.CancellationToken);
-            ProjectSpeaker source = ProjectSpeaker.Create(project.Id, "Speaker 1", now.AddMilliseconds(1));
-            ProjectSpeaker target = ProjectSpeaker.Create(project.Id, "Speaker 2", now.AddMilliseconds(2));
-            await speakerRepository.ReplaceDiarizationAsync(project.Id, [source, target], [], TestContext.Current.CancellationToken);
-            await transcriptRepository.ReassignAndMergeSpeakersAsync(project.Id, source.Id, target.Id, TestContext.Current.CancellationToken);
-
-            // The target has no turns, segments, or voice assignments of its own, but deleting it
-            // would leave the archived source pointing at a missing speaker.
-            await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                speakerRepository.DeleteEmptySpeakerAsync(project.Id, target.Id, TestContext.Current.CancellationToken));
-            Assert.Contains(
-                await speakerRepository.ListSpeakersAsync(project.Id, TestContext.Current.CancellationToken),
-                speaker => speaker.Id == target.Id);
-        }
-        finally
-        {
-            if (Directory.Exists(projectRoot))
-            {
-                Directory.Delete(projectRoot, recursive: true);
-            }
-        }
+        // The target has no turns, segments, or voice assignments of its own, but deleting it
+        // would leave the archived source pointing at a missing speaker.
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            db.Speakers.DeleteEmptySpeakerAsync(db.Project.Id, target.Id, TestContext.Current.CancellationToken));
+        Assert.Contains(
+            await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken),
+            speaker => speaker.Id == target.Id);
     }
 
     [Fact]
     public async Task ListMergedSpeakersAsync_resolves_merge_chains_to_the_surviving_target()
     {
-        string projectRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"), "Speakers.trackdub");
-        try
+        using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
+        ProjectSpeaker first = ProjectSpeaker.Create(db.Project.Id, "Speaker 1", db.Now.AddMilliseconds(1));
+        ProjectSpeaker second = ProjectSpeaker.Create(db.Project.Id, "Speaker 2", db.Now.AddMilliseconds(2));
+        ProjectSpeaker third = ProjectSpeaker.Create(db.Project.Id, "Speaker 3", db.Now.AddMilliseconds(3));
+        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [first, second, third], [], TestContext.Current.CancellationToken);
+        await db.Transcripts.ReassignAndMergeSpeakersAsync(db.Project.Id, first.Id, second.Id, TestContext.Current.CancellationToken);
+        await db.Transcripts.ReassignAndMergeSpeakersAsync(db.Project.Id, second.Id, third.Id, TestContext.Current.CancellationToken);
+
+        IReadOnlyList<MergedSpeakerEntry> merged = await db.Speakers.ListMergedSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, merged.Count);
+        Assert.All(merged, entry => Assert.Equal(third.Id, entry.MergedIntoSpeakerId));
+    }
+
+    [Fact]
+    public async Task GetForSpeakerIncludingMergedAsync_returns_the_assignment_of_an_archived_speaker()
+    {
+        using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
+        ProjectSpeaker source = ProjectSpeaker.Create(db.Project.Id, "Speaker 1", db.Now.AddMilliseconds(1));
+        ProjectSpeaker target = ProjectSpeaker.Create(db.Project.Id, "Speaker 2", db.Now.AddMilliseconds(2));
+        await db.Speakers.ReplaceDiarizationAsync(db.Project.Id, [source, target], [], TestContext.Current.CancellationToken);
+        VoiceAssignment assignment = VoiceAssignment.Create(db.Project.Id, source.Id, "kokoro-onnx", "af-heart");
+        await db.VoiceAssignments.SaveAsync(assignment, TestContext.Current.CancellationToken);
+        await db.Transcripts.ReassignAndMergeSpeakersAsync(db.Project.Id, source.Id, target.Id, TestContext.Current.CancellationToken);
+
+        Assert.Null(await db.VoiceAssignments.GetAsync(db.Project.Id, source.Id, TestContext.Current.CancellationToken));
+        VoiceAssignment? history = await db.VoiceAssignments.GetForSpeakerIncludingMergedAsync(db.Project.Id, source.Id, TestContext.Current.CancellationToken);
+
+        Assert.NotNull(history);
+        Assert.Equal(assignment.Id, history.Id);
+        Assert.Equal(source.Id, history.SpeakerId);
+        Assert.Equal("af-heart", history.VoiceVariant);
+    }
+
+    private sealed class SpeakerDb : IDisposable
+    {
+        private readonly string projectRoot;
+
+        private SpeakerDb(string projectRoot)
         {
-            var database = new SqliteProjectDatabase(projectRoot);
-            var projectRepository = new SqliteProjectRepository(database);
-            var speakerRepository = new SqliteSpeakerRepository(database);
-            var transcriptRepository = new SqliteTranscriptRepository(database);
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-            var project = new TrackdubProject(Guid.NewGuid(), "Speakers", now, now);
-
-            await projectRepository.InitializeAsync(project, TestContext.Current.CancellationToken);
-            ProjectSpeaker first = ProjectSpeaker.Create(project.Id, "Speaker 1", now.AddMilliseconds(1));
-            ProjectSpeaker second = ProjectSpeaker.Create(project.Id, "Speaker 2", now.AddMilliseconds(2));
-            ProjectSpeaker third = ProjectSpeaker.Create(project.Id, "Speaker 3", now.AddMilliseconds(3));
-            await speakerRepository.ReplaceDiarizationAsync(project.Id, [first, second, third], [], TestContext.Current.CancellationToken);
-            await transcriptRepository.ReassignAndMergeSpeakersAsync(project.Id, first.Id, second.Id, TestContext.Current.CancellationToken);
-            await transcriptRepository.ReassignAndMergeSpeakersAsync(project.Id, second.Id, third.Id, TestContext.Current.CancellationToken);
-
-            IReadOnlyList<MergedSpeakerEntry> merged = await speakerRepository.ListMergedSpeakersAsync(project.Id, TestContext.Current.CancellationToken);
-
-            Assert.Equal(2, merged.Count);
-            Assert.All(merged, entry => Assert.Equal(third.Id, entry.MergedIntoSpeakerId));
+            this.projectRoot = projectRoot;
+            Database = new SqliteProjectDatabase(projectRoot);
+            Projects = new SqliteProjectRepository(Database);
+            Speakers = new SqliteSpeakerRepository(Database);
+            Transcripts = new SqliteTranscriptRepository(Database);
+            VoiceAssignments = new SqliteVoiceAssignmentRepository(Database);
         }
-        finally
+
+        public SqliteProjectDatabase Database { get; }
+        public SqliteProjectRepository Projects { get; }
+        public SqliteSpeakerRepository Speakers { get; }
+        public SqliteTranscriptRepository Transcripts { get; }
+        public SqliteVoiceAssignmentRepository VoiceAssignments { get; }
+        public TrackdubProject Project { get; private set; } = null!;
+        public DateTimeOffset Now { get; } = DateTimeOffset.UtcNow;
+
+        public static async Task<SpeakerDb> CreateAsync(CancellationToken cancellationToken)
+        {
+            string projectRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"), "Speakers.trackdub");
+            var db = new SpeakerDb(projectRoot);
+            DateTimeOffset now = db.Now;
+            db.Project = new TrackdubProject(Guid.NewGuid(), "Speakers", now, now);
+            await db.Projects.InitializeAsync(db.Project, cancellationToken);
+            return db;
+        }
+
+        public async Task<(ProjectSpeaker Source, ProjectSpeaker Target)> MergeTwoSpeakersAsync()
+        {
+            ProjectSpeaker source = ProjectSpeaker.Create(Project.Id, "Speaker 1", Now.AddMilliseconds(1));
+            ProjectSpeaker target = ProjectSpeaker.Create(Project.Id, "Speaker 2", Now.AddMilliseconds(2));
+            await Speakers.ReplaceDiarizationAsync(Project.Id, [source, target], [], TestContext.Current.CancellationToken);
+            await Transcripts.ReassignAndMergeSpeakersAsync(Project.Id, source.Id, target.Id, TestContext.Current.CancellationToken);
+            return (source, target);
+        }
+
+        public void Dispose()
         {
             if (Directory.Exists(projectRoot))
             {
