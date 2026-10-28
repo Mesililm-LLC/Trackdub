@@ -302,7 +302,7 @@ public sealed class SqliteTranscriptRepository(
         command.CommandText =
             """
             UPDATE transcript_segments
-            SET speaker_id = $targetSpeakerId, speaker_assignment_origin = 2
+            SET speaker_id = $targetSpeakerId, speaker_assignment_origin = $manualOrigin
             WHERE speaker_id = $sourceSpeakerId
               AND transcript_revision_id IN (
                   SELECT id
@@ -312,6 +312,7 @@ public sealed class SqliteTranscriptRepository(
         command.Parameters.AddWithValue("$projectId", projectId.ToString("D"));
         command.Parameters.AddWithValue("$sourceSpeakerId", sourceSpeakerId.ToString("D"));
         command.Parameters.AddWithValue("$targetSpeakerId", targetSpeakerId.ToString("D"));
+        command.Parameters.AddWithValue("$manualOrigin", (int)SpeakerAssignmentOrigin.Manual);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -353,7 +354,7 @@ public sealed class SqliteTranscriptRepository(
             reassignSegments.CommandText =
                 """
                 UPDATE transcript_segments
-                SET speaker_id = $targetSpeakerId, speaker_assignment_origin = 2
+                SET speaker_id = $targetSpeakerId, speaker_assignment_origin = $manualOrigin
                 WHERE speaker_id = $sourceSpeakerId
                   AND transcript_revision_id IN (
                       SELECT id
@@ -363,6 +364,7 @@ public sealed class SqliteTranscriptRepository(
             reassignSegments.Parameters.AddWithValue("$projectId", projectId.ToString("D"));
             reassignSegments.Parameters.AddWithValue("$sourceSpeakerId", sourceSpeakerId.ToString("D"));
             reassignSegments.Parameters.AddWithValue("$targetSpeakerId", targetSpeakerId.ToString("D"));
+            reassignSegments.Parameters.AddWithValue("$manualOrigin", (int)SpeakerAssignmentOrigin.Manual);
             await reassignSegments.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 

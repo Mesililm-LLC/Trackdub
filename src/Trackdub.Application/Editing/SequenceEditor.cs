@@ -196,14 +196,27 @@ public static class SequenceEditor
         }
     }
 
+    private static readonly HashSet<string> ReservedWindowsFileNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    };
+
     private static bool IsSafeRelativePath(string path)
     {
-        if (string.IsNullOrWhiteSpace(path) || path.Contains(':') || path.StartsWith('/') || path.StartsWith('\\'))
+        if (string.IsNullOrWhiteSpace(path) || path.Contains(':') || path.StartsWith('/') || path.StartsWith('\\') ||
+            path.Any(static character => char.IsControl(character)))
         {
             return false;
         }
-        return path.Split(['/', '\\']).All(static part => part.Length > 0 && part is not ("." or ".."));
+        return path.Split(['/', '\\']).All(static part =>
+            part.Length > 0 && part is not ("." or "..") && !IsReservedWindowsFileName(part));
     }
+
+    /// <summary>Windows maps device names such as CON or COM1 to devices even when an extension follows the name.</summary>
+    private static bool IsReservedWindowsFileName(string segment) =>
+        ReservedWindowsFileNames.Contains(segment.Split('.')[0]);
 
     private static SequenceDocument Replace(SequenceDocument document, Guid placementId, Func<SequencePlacement, SequencePlacement> replace)
     {

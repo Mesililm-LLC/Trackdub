@@ -71,4 +71,40 @@ public sealed class SqliteSpeakerRepositoryTests
             }
         }
     }
+
+    [Fact]
+    public async Task ReplaceDiarizationAsync_keeps_existing_speakers_when_a_rerun_resupplies_their_ids()
+    {
+        string projectRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"), "Speakers.trackdub");
+        try
+        {
+            var database = new SqliteProjectDatabase(projectRoot);
+            var projectRepository = new SqliteProjectRepository(database);
+            var speakerRepository = new SqliteSpeakerRepository(database);
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            var project = new TrackdubProject(Guid.NewGuid(), "Speakers", now, now);
+
+            await projectRepository.InitializeAsync(project, TestContext.Current.CancellationToken);
+            ProjectSpeaker speaker = ProjectSpeaker.Create(project.Id, "Speaker 1", now);
+            SpeakerTurn[] turns = [SpeakerTurn.Create(project.Id, speaker.Id, 0d, 5.8d, 0.9d, hasOverlap: false)];
+
+            await speakerRepository.ReplaceDiarizationAsync(project.Id, [speaker], turns, TestContext.Current.CancellationToken);
+
+            // A cached rerun or fixture can resupply the same speaker identity.
+            await speakerRepository.ReplaceDiarizationAsync(project.Id, [speaker], turns, TestContext.Current.CancellationToken);
+
+            IReadOnlyList<ProjectSpeaker> speakers = await speakerRepository.ListSpeakersAsync(project.Id, TestContext.Current.CancellationToken);
+            IReadOnlyList<SpeakerTurn> reloadedTurns = await speakerRepository.ListTurnsAsync(project.Id, TestContext.Current.CancellationToken);
+            ProjectSpeaker onlySpeaker = Assert.Single(speakers);
+            Assert.Equal(speaker.Id, onlySpeaker.Id);
+            Assert.Single(reloadedTurns);
+        }
+        finally
+        {
+            if (Directory.Exists(projectRoot))
+            {
+                Directory.Delete(projectRoot, recursive: true);
+            }
+        }
+    }
 }

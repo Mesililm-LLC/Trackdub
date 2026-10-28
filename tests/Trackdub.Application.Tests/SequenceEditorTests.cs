@@ -94,6 +94,10 @@ public sealed class SequenceEditorTests
         Assert.Throws<InvalidDataException>(() => SequenceEditor.AddSource(document, source));
         Assert.Throws<InvalidDataException>(() => SequenceEditor.AddSource(document,
             source with { Id = Guid.NewGuid(), ProjectId = Guid.NewGuid(), WorkspaceRelativePath = "../outside" }));
+        Assert.Throws<InvalidDataException>(() => SequenceEditor.AddSource(document,
+            source with { Id = Guid.NewGuid(), ProjectId = Guid.NewGuid(), WorkspaceRelativePath = "sources/CON.trackdub" }));
+        Assert.Throws<InvalidDataException>(() => SequenceEditor.AddSource(document,
+            source with { Id = Guid.NewGuid(), ProjectId = Guid.NewGuid(), WorkspaceRelativePath = "sources/chi\0ld.trackdub" }));
         Assert.Throws<InvalidDataException>(() => SequenceEditor.AddPlacement(document,
             new SequencePlacement(Guid.NewGuid(), source.Id, 0, 11, new SequenceCrop())));
         Assert.Throws<InvalidDataException>(() => SequenceEditor.AddPlacement(document,

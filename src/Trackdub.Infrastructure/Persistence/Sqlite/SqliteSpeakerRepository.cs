@@ -199,7 +199,7 @@ public sealed class SqliteSpeakerRepository(
             insertSpeaker.Transaction = transaction;
             insertSpeaker.CommandText =
                 """
-                INSERT INTO speakers (
+                INSERT OR IGNORE INTO speakers (
                     id,
                     project_id,
                     display_name,
