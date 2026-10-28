@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Trackdub.Contracts;
 
@@ -12,9 +13,9 @@ namespace Trackdub.TestDoubles;
 /// </summary>
 public sealed class FakeArtifactStore(string? rootDirectory = null) : IArtifactStore
 {
-    private readonly Dictionary<string, byte[]> blobs = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, string> paths = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, string> pendingCommits = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, byte[]> blobs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, string> paths = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, string> pendingCommits = new(StringComparer.OrdinalIgnoreCase);
     private readonly string? rootDirectory = string.IsNullOrWhiteSpace(rootDirectory)
         ? null
         : Path.GetFullPath(rootDirectory);
@@ -88,7 +89,7 @@ public sealed class FakeArtifactStore(string? rootDirectory = null) : IArtifactS
             blobs.TryAdd(handle.RelativePath, []);
         }
 
-        pendingCommits.Remove(handle.TemporaryPath);
+        pendingCommits.Remove(handle.TemporaryPath, out _);
     }
 
     public async Task CommitNewAsync(ArtifactWriteHandle handle, Trackdub.Contracts.Transcripts.ArtifactPromotionReceipt receipt, CancellationToken cancellationToken)
