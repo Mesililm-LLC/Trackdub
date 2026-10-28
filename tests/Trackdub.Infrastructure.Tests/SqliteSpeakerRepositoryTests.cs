@@ -26,17 +26,26 @@ public sealed class SqliteSpeakerRepositoryTests
         await db.ReplaceAsync([speaker2, speaker3], [db.NewTurn(speaker2, 0d), db.NewTurn(speaker3, 6d)]);
 
         ReloadedState initial = await db.ReloadAsync(revision.Id);
+        AssertInitialReload(initial, defaultSpeaker, speaker2, speaker3);
+
+        ProjectSpeaker speaker4 = db.NewSpeaker(4);
+        await db.ReplaceAsync([speaker4], [db.NewTurn(speaker4, 0d)]);
+        ReloadedState rerun = await db.ReloadAsync(revision.Id);
+        AssertRerunKeptDefaultSpeaker(rerun, defaultSpeaker, speaker4);
+    }
+
+    private static void AssertInitialReload(
+        ReloadedState initial,
+        ProjectSpeaker defaultSpeaker,
+        ProjectSpeaker speaker2,
+        ProjectSpeaker speaker3)
+    {
         Assert.Equal(3, initial.Speakers.Count);
         Assert.Contains(initial.Speakers, speaker => speaker.Id == defaultSpeaker.Id);
         Assert.Contains(initial.Speakers, speaker => speaker.Id == speaker2.Id);
         Assert.Contains(initial.Speakers, speaker => speaker.Id == speaker3.Id);
         Assert.Equal(2, initial.Turns.Count);
         Assert.Equal(defaultSpeaker.Id, Assert.Single(initial.Segments).SpeakerId);
-
-        ProjectSpeaker speaker4 = db.NewSpeaker(4);
-        await db.ReplaceAsync([speaker4], [db.NewTurn(speaker4, 0d)]);
-        ReloadedState rerun = await db.ReloadAsync(revision.Id);
-        AssertRerunKeptDefaultSpeaker(rerun, defaultSpeaker, speaker4);
     }
 
     private static void AssertRerunKeptDefaultSpeaker(
