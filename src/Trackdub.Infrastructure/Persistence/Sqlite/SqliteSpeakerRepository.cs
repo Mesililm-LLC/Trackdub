@@ -84,7 +84,17 @@ public sealed class SqliteSpeakerRepository(
                 Guid.Parse(reader.GetString(4))));
         }
 
-        return entries;
+        // Merge chains are legal (S -> T1, then T1 -> T2 leaves S pointing at the archived T1),
+        // so resolve every entry to the surviving active target like diarization replay does.
+        var targets = new Dictionary<Guid, Guid>();
+        foreach (MergedSpeakerEntry entry in entries)
+        {
+            targets[entry.Speaker.Id] = entry.MergedIntoSpeakerId;
+        }
+
+        return entries
+            .Select(entry => entry with { MergedIntoSpeakerId = ResolveActiveSpeaker(targets, entry.MergedIntoSpeakerId) })
+            .ToArray();
     }
 
     public async Task DeleteEmptySpeakerAsync(Guid projectId, Guid speakerId, CancellationToken cancellationToken)
@@ -129,14 +139,16 @@ public sealed class SqliteSpeakerRepository(
                      WHERE speaker_id = $speakerId AND transcript_revision_id IN (
                          SELECT id FROM transcript_revisions WHERE project_id = $projectId)) +
                     (SELECT COUNT(*) FROM voice_assignments
-                     WHERE project_id = $projectId AND speaker_id = $speakerId);
+                     WHERE project_id = $projectId AND speaker_id = $speakerId) +
+                    (SELECT COUNT(*) FROM speakers
+                     WHERE project_id = $projectId AND merged_into_speaker_id = $speakerId);
                 """;
             guard.Parameters.AddWithValue("$projectId", projectId.ToString("D"));
             guard.Parameters.AddWithValue("$speakerId", speakerId.ToString("D"));
             long references = Convert.ToInt64(await guard.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture);
             if (references > 0)
             {
-                throw new InvalidOperationException("Only speakers with no turns, segments, or voice assignments can be removed.");
+                throw new InvalidOperationException("Only speakers with no turns, segments, voice assignments, or archived merge history can be removed.");
             }
         }
 

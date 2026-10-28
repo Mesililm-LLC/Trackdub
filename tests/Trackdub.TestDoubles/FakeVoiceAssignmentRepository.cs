@@ -6,10 +6,17 @@ namespace Trackdub.TestDoubles;
 public sealed class FakeVoiceAssignmentRepository : IVoiceAssignmentRepository
 {
     private readonly List<VoiceAssignment> assignments = [];
+    private readonly HashSet<Guid> mergedSpeakerIds = [];
 
     public IReadOnlyList<VoiceAssignment> All => assignments;
 
     public void Seed(VoiceAssignment assignment) => assignments.Add(assignment);
+
+    /// <summary>
+    /// Mirrors the real repository's merge filter: <see cref="GetAsync"/> hides assignments whose
+    /// speaker is archived, <see cref="GetForSpeakerIncludingMergedAsync"/> still reaches them.
+    /// </summary>
+    public void SeedMergedSpeakers(IEnumerable<Guid> speakerIds) => mergedSpeakerIds.UnionWith(speakerIds);
 
     public Task<VoiceAssignment?> GetByIdAsync(Guid projectId, Guid id, CancellationToken cancellationToken) =>
         Task.FromResult(assignments.FirstOrDefault(a => a.ProjectId == projectId && a.Id == id));
@@ -17,17 +24,22 @@ public sealed class FakeVoiceAssignmentRepository : IVoiceAssignmentRepository
     public Task<VoiceAssignment?> GetAsync(Guid projectId, Guid speakerId, CancellationToken cancellationToken)
     {
         VoiceAssignment? assignment = assignments.FirstOrDefault(
+            a => a.ProjectId == projectId && a.SpeakerId == speakerId && !a.IsFallback &&
+                 !mergedSpeakerIds.Contains(a.SpeakerId));
+        return Task.FromResult(assignment);
+    }
+
+    public Task<VoiceAssignment?> GetForSpeakerIncludingMergedAsync(Guid projectId, Guid speakerId, CancellationToken cancellationToken)
+    {
+        VoiceAssignment? assignment = assignments.FirstOrDefault(
             a => a.ProjectId == projectId && a.SpeakerId == speakerId && !a.IsFallback);
         return Task.FromResult(assignment);
     }
 
-    public Task<VoiceAssignment?> GetForSpeakerIncludingMergedAsync(Guid projectId, Guid speakerId, CancellationToken cancellationToken) =>
-        GetAsync(projectId, speakerId, cancellationToken);
-
     public Task<IReadOnlyList<VoiceAssignment>> GetAllAsync(Guid projectId, CancellationToken cancellationToken)
     {
         IReadOnlyList<VoiceAssignment> result = assignments
-            .Where(a => a.ProjectId == projectId && !a.IsFallback)
+            .Where(a => a.ProjectId == projectId && !a.IsFallback && !mergedSpeakerIds.Contains(a.SpeakerId))
             .ToList();
         return Task.FromResult(result);
     }
