@@ -11,6 +11,9 @@ public sealed class FakeVoiceAssignmentRepository : IVoiceAssignmentRepository
 
     public void Seed(VoiceAssignment assignment) => assignments.Add(assignment);
 
+    public Task<VoiceAssignment?> GetByIdAsync(Guid projectId, Guid id, CancellationToken cancellationToken) =>
+        Task.FromResult(assignments.FirstOrDefault(a => a.ProjectId == projectId && a.Id == id));
+
     public Task<VoiceAssignment?> GetAsync(Guid projectId, Guid speakerId, CancellationToken cancellationToken)
     {
         VoiceAssignment? assignment = assignments.FirstOrDefault(

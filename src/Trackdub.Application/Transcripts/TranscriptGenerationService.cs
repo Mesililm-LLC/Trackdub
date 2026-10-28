@@ -912,7 +912,8 @@ public sealed class TranscriptGenerationService(
                 source.Text,
                 source.SpeakerId,
                 source.DetectedLanguage,
-                TranscriptWorkflowUtilities.CloneWords(source.Words));
+                TranscriptWorkflowUtilities.CloneWords(source.Words),
+                source.SpeakerAssignmentOrigin);
         }
 
         (double startSeconds, double endSeconds) = TranscriptWorkflowUtilities.ResolveRecognizedTiming(source, recognized);
@@ -925,7 +926,8 @@ public sealed class TranscriptGenerationService(
             string.IsNullOrWhiteSpace(recognized.Text) ? source.Text : recognized.Text,
             source.SpeakerId,
             recognized.DetectedLanguage ?? source.DetectedLanguage,
-            TranscriptWorkflowUtilities.CreateTranscriptWords(recognized.Words));
+            TranscriptWorkflowUtilities.CreateTranscriptWords(recognized.Words),
+            source.SpeakerAssignmentOrigin);
     }
 
     private static (TranscriptSegment[] Selected, HashSet<Guid> RequestedIds) ValidateAndSelectSegments(

@@ -412,7 +412,8 @@ public sealed class TranscriptArtifactWriter(
                                 word.EndSeconds,
                                 word.Text,
                                 word.Confidence))
-                            .ToArray()))
+                            .ToArray(),
+                        segment.SpeakerAssignmentOrigin))
                     .ToArray());
     }
 
@@ -472,7 +473,8 @@ public sealed class TranscriptArtifactWriter(
         string Text,
         Guid? SpeakerId,
         string? DetectedLanguage,
-        IReadOnlyList<TranscriptWordArtifactDocument> Words);
+        IReadOnlyList<TranscriptWordArtifactDocument> Words,
+        SpeakerAssignmentOrigin SpeakerAssignmentOrigin);
 
     private sealed record TranscriptWordArtifactDocument(
         int WordIndex,

@@ -8,11 +8,25 @@ using Trackdub.Domain.StageRuns;
 using Trackdub.Domain.Media;
 using Trackdub.Domain.Projects;
 using Trackdub.Domain.Tts;
+using Trackdub.Domain.Speakers;
+using Trackdub.Domain.Transcript;
 
 namespace Trackdub.Application.Tests;
 
 public sealed class TranscriptWorkflowUtilitiesTests
 {
+    [Fact]
+    public void Single_speaker_default_does_not_override_a_manual_unassignment()
+    {
+        var speaker = ProjectSpeaker.Create(Guid.NewGuid(), "Speaker 1", DateTimeOffset.UtcNow);
+        var segment = TranscriptSegment.Create(Guid.NewGuid(), 0, 0, 1, "Hello",
+            speakerAssignmentOrigin: SpeakerAssignmentOrigin.Manual);
+
+        var actual = Assert.Single(TranscriptWorkflowUtilities.ApplySingleSpeakerDefaultAssignments([segment], [speaker]));
+        Assert.Null(actual.SpeakerId);
+        Assert.Equal(SpeakerAssignmentOrigin.Manual, actual.SpeakerAssignmentOrigin);
+    }
+
     [Theory]
     [InlineData(StageRunStatus.Completed, true, true, true, true)]
     [InlineData(StageRunStatus.Failed, true, true, true, false)]

@@ -91,6 +91,8 @@ public partial class TranscriptProjectServiceTests
 
         Assert.Equal(2, reassigned.CurrentTranscriptRevision!.RevisionNumber);
         Assert.Equal(targetSpeakerId, reassigned.TranscriptSegments[0].SpeakerId);
+        Assert.Equal(Trackdub.Domain.Transcript.SpeakerAssignmentOrigin.Manual,
+            reassigned.TranscriptSegments[0].SpeakerAssignmentOrigin);
     }
 
     [Fact]

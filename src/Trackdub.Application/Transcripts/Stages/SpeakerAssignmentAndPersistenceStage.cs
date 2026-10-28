@@ -101,7 +101,8 @@ public sealed class SpeakerAssignmentAndPersistenceStage(
                     ? speakerId
                     : null,
                 item.Segment.DetectedLanguage,
-                TranscriptWorkflowUtilities.CreateTranscriptWords(item.Segment.Words)))
+                TranscriptWorkflowUtilities.CreateTranscriptWords(item.Segment.Words),
+                SpeakerAssignmentOrigin.Automatic))
             .ToArray();
 
         int droppedEmptyCount = asrResult.Segments.Count - segments.Length;

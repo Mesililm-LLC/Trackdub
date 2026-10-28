@@ -81,7 +81,11 @@ public sealed class FakeTranscriptRepository : ITranscriptRepository
             {
                 if (segments[i].SpeakerId == sourceSpeakerId)
                 {
-                    segments[i] = segments[i] with { SpeakerId = targetSpeakerId };
+                    segments[i] = segments[i] with
+                    {
+                        SpeakerId = targetSpeakerId,
+                        SpeakerAssignmentOrigin = SpeakerAssignmentOrigin.Manual,
+                    };
                 }
             }
         }

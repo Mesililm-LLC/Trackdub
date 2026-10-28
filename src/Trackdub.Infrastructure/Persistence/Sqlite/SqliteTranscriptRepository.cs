@@ -55,7 +55,8 @@ public sealed class SqliteTranscriptRepository(
                    start_seconds,
                    end_seconds,
                    text,
-                   detected_language
+                   detected_language,
+                   speaker_assignment_origin
             FROM transcript_segments
             WHERE transcript_revision_id = $transcriptRevisionId
             ORDER BY segment_index;
@@ -74,7 +75,10 @@ public sealed class SqliteTranscriptRepository(
                 reader.GetDouble(5),
                 reader.GetString(6),
                 reader.IsDBNull(2) ? null : Guid.Parse(reader.GetString(2)),
-                reader.IsDBNull(7) ? null : reader.GetString(7)));
+                reader.IsDBNull(7) ? null : reader.GetString(7),
+                speakerAssignmentOrigin: Enum.IsDefined(typeof(SpeakerAssignmentOrigin), reader.GetInt32(8))
+                    ? (SpeakerAssignmentOrigin)reader.GetInt32(8)
+                    : SpeakerAssignmentOrigin.Unknown));
         }
 
         if (results.Count == 0)
@@ -166,7 +170,8 @@ public sealed class SqliteTranscriptRepository(
                     start_seconds,
                     end_seconds,
                     text,
-                    detected_language)
+                    detected_language,
+                    speaker_assignment_origin)
                 VALUES (
                     $id,
                     $transcriptRevisionId,
@@ -175,7 +180,8 @@ public sealed class SqliteTranscriptRepository(
                     $startSeconds,
                     $endSeconds,
                     $text,
-                    $detectedLanguage);
+                    $detectedLanguage,
+                    $speakerAssignmentOrigin);
             """;
         SqliteParameter segmentIdParameter = segmentCommand.Parameters.Add("$id", SqliteType.Text);
         SqliteParameter transcriptRevisionIdParameter = segmentCommand.Parameters.Add("$transcriptRevisionId", SqliteType.Text);
@@ -185,6 +191,7 @@ public sealed class SqliteTranscriptRepository(
         SqliteParameter endSecondsParameter = segmentCommand.Parameters.Add("$endSeconds", SqliteType.Real);
         SqliteParameter textParameter = segmentCommand.Parameters.Add("$text", SqliteType.Text);
         SqliteParameter detectedLanguageParameter = segmentCommand.Parameters.Add("$detectedLanguage", SqliteType.Text);
+        SqliteParameter speakerAssignmentOriginParameter = segmentCommand.Parameters.Add("$speakerAssignmentOrigin", SqliteType.Integer);
 
         await using SqliteCommand wordCommand = connection.CreateCommand();
         wordCommand.Transaction = transaction;
@@ -225,6 +232,7 @@ public sealed class SqliteTranscriptRepository(
             endSecondsParameter.Value = segment.EndSeconds;
             textParameter.Value = segment.Text;
             detectedLanguageParameter.Value = segment.DetectedLanguage ?? (object)DBNull.Value;
+            speakerAssignmentOriginParameter.Value = (int)segment.SpeakerAssignmentOrigin;
             await segmentCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
             foreach (TranscriptWord word in segment.Words.OrderBy(static word => word.WordIndex))
@@ -240,6 +248,41 @@ public sealed class SqliteTranscriptRepository(
             }
         }
 
+        // Commit take invalidation with the revision. A speaker, text or timing
+        // change can no longer leave old audio marked current after interruption.
+        await using (SqliteCommand staleTakes = connection.CreateCommand())
+        {
+            staleTakes.Transaction = transaction;
+            staleTakes.CommandText =
+                """
+                UPDATE tts_takes
+                SET is_stale = 1, status = 'Stale',
+                    pre_stretch_duration_seconds = NULL, stretch_ratio_applied = NULL,
+                    stretch_mode = 'None', stretch_engine = 'None'
+                WHERE project_id = $projectId
+                  AND $revisionId = (SELECT id FROM transcript_revisions
+                                     WHERE project_id = $projectId ORDER BY revision_number DESC LIMIT 1)
+                  AND EXISTS (
+                      SELECT 1 FROM transcript_segments previous
+                      WHERE previous.transcript_revision_id = (
+                          SELECT id FROM transcript_revisions
+                          WHERE project_id = $projectId AND id <> $revisionId
+                          ORDER BY revision_number DESC LIMIT 1)
+                        AND previous.segment_index = tts_takes.segment_index
+                        AND NOT EXISTS (
+                            SELECT 1 FROM transcript_segments current
+                            WHERE current.transcript_revision_id = $revisionId
+                              AND current.segment_index = previous.segment_index
+                              AND current.speaker_id IS previous.speaker_id
+                              AND current.start_seconds IS previous.start_seconds
+                              AND current.end_seconds IS previous.end_seconds
+                              AND current.text IS previous.text));
+                """;
+            staleTakes.Parameters.AddWithValue("$projectId", revision.ProjectId.ToString("D"));
+            staleTakes.Parameters.AddWithValue("$revisionId", revision.Id.ToString("D"));
+            await staleTakes.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -252,11 +295,14 @@ public sealed class SqliteTranscriptRepository(
         await database.InitializeAsync(cancellationToken).ConfigureAwait(false);
         await using SqliteConnectionLease connectionLease = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         SqliteConnection connection = connectionLease.Connection;
+        await using SqliteTransaction transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await MarkSpeakerTakesStaleAsync(connection, transaction, projectId, sourceSpeakerId, cancellationToken).ConfigureAwait(false);
         await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText =
             """
             UPDATE transcript_segments
-            SET speaker_id = $targetSpeakerId
+            SET speaker_id = $targetSpeakerId, speaker_assignment_origin = 2
             WHERE speaker_id = $sourceSpeakerId
               AND transcript_revision_id IN (
                   SELECT id
@@ -267,6 +313,7 @@ public sealed class SqliteTranscriptRepository(
         command.Parameters.AddWithValue("$sourceSpeakerId", sourceSpeakerId.ToString("D"));
         command.Parameters.AddWithValue("$targetSpeakerId", targetSpeakerId.ToString("D"));
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async Task ReassignAndMergeSpeakersAsync(
@@ -280,13 +327,33 @@ public sealed class SqliteTranscriptRepository(
         SqliteConnection connection = connectionLease.Connection;
         await using SqliteTransaction transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
+        if (sourceSpeakerId == targetSpeakerId)
+        {
+            throw new InvalidOperationException("Source and target speaker must be different.");
+        }
+
+        await using (SqliteCommand validate = connection.CreateCommand())
+        {
+            validate.Transaction = transaction;
+            validate.CommandText = "SELECT COUNT(*) FROM speakers WHERE project_id = $projectId AND merged_into_speaker_id IS NULL AND id IN ($source, $target);";
+            validate.Parameters.AddWithValue("$projectId", projectId.ToString("D"));
+            validate.Parameters.AddWithValue("$source", sourceSpeakerId.ToString("D"));
+            validate.Parameters.AddWithValue("$target", targetSpeakerId.ToString("D"));
+            if (Convert.ToInt64(await validate.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) != 2)
+            {
+                throw new InvalidOperationException("Both speakers must be active in this project.");
+            }
+        }
+
+        await MarkSpeakerTakesStaleAsync(connection, transaction, projectId, sourceSpeakerId, cancellationToken).ConfigureAwait(false);
+
         await using (SqliteCommand reassignSegments = connection.CreateCommand())
         {
             reassignSegments.Transaction = transaction;
             reassignSegments.CommandText =
                 """
                 UPDATE transcript_segments
-                SET speaker_id = $targetSpeakerId
+                SET speaker_id = $targetSpeakerId, speaker_assignment_origin = 2
                 WHERE speaker_id = $sourceSpeakerId
                   AND transcript_revision_id IN (
                       SELECT id
@@ -315,21 +382,51 @@ public sealed class SqliteTranscriptRepository(
             await updateTurns.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        await using (SqliteCommand deleteSpeaker = connection.CreateCommand())
+        await using (SqliteCommand archiveSpeaker = connection.CreateCommand())
         {
-            deleteSpeaker.Transaction = transaction;
-            deleteSpeaker.CommandText =
+            archiveSpeaker.Transaction = transaction;
+            archiveSpeaker.CommandText =
                 """
-                DELETE FROM speakers
+                UPDATE speakers SET merged_into_speaker_id = $targetSpeakerId
                 WHERE project_id = $projectId
                   AND id = $sourceSpeakerId;
                 """;
-            deleteSpeaker.Parameters.AddWithValue("$projectId", projectId.ToString("D"));
-            deleteSpeaker.Parameters.AddWithValue("$sourceSpeakerId", sourceSpeakerId.ToString("D"));
-            await deleteSpeaker.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            archiveSpeaker.Parameters.AddWithValue("$projectId", projectId.ToString("D"));
+            archiveSpeaker.Parameters.AddWithValue("$sourceSpeakerId", sourceSpeakerId.ToString("D"));
+            archiveSpeaker.Parameters.AddWithValue("$targetSpeakerId", targetSpeakerId.ToString("D"));
+            await archiveSpeaker.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task MarkSpeakerTakesStaleAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid projectId,
+        Guid sourceSpeakerId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            UPDATE tts_takes
+            SET is_stale = 1, status = 'Stale',
+                pre_stretch_duration_seconds = NULL, stretch_ratio_applied = NULL,
+                stretch_mode = 'None', stretch_engine = 'None'
+            WHERE project_id = $projectId AND (
+                voice_assignment_id IN (SELECT id FROM voice_assignments
+                                        WHERE project_id = $projectId AND speaker_id = $sourceSpeakerId)
+                OR segment_index IN (
+                    SELECT segment_index FROM transcript_segments
+                    WHERE speaker_id = $sourceSpeakerId AND transcript_revision_id = (
+                        SELECT id FROM transcript_revisions WHERE project_id = $projectId
+                        ORDER BY revision_number DESC LIMIT 1)));
+            """;
+        command.Parameters.AddWithValue("$projectId", projectId.ToString("D"));
+        command.Parameters.AddWithValue("$sourceSpeakerId", sourceSpeakerId.ToString("D"));
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static TranscriptRevision ReadRevision(SqliteDataReader reader) =>

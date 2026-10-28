@@ -435,7 +435,7 @@ public static class TranscriptWorkflowUtilities
         Guid defaultSpeakerId = speakers[0].Id;
         return segments
             .OrderBy(segment => segment.SegmentIndex)
-            .Select((segment, index) => segment.SpeakerId is Guid
+            .Select((segment, index) => segment.SpeakerId is Guid || segment.SpeakerAssignmentOrigin == SpeakerAssignmentOrigin.Manual
                 ? segment
                 : TranscriptSegment.Create(
                     segment.TranscriptRevisionId,
@@ -445,7 +445,8 @@ public static class TranscriptWorkflowUtilities
                     segment.Text,
                     defaultSpeakerId,
                     segment.DetectedLanguage,
-                    CloneWords(segment.Words)))
+                    CloneWords(segment.Words),
+                    SpeakerAssignmentOrigin.Automatic))
             .ToArray();
     }
 

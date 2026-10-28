@@ -956,6 +956,9 @@ public sealed partial class TranscriptProjectServiceTests : IDisposable
 
         public bool ThrowOnSave { get; set; }
 
+        public Task<VoiceAssignment?> GetByIdAsync(Guid projectId, Guid id, CancellationToken cancellationToken) =>
+            Task.FromResult(Assignments.FirstOrDefault(assignment => assignment.ProjectId == projectId && assignment.Id == id));
+
         public Task<VoiceAssignment?> GetAsync(Guid projectId, Guid speakerId, CancellationToken cancellationToken) =>
             Task.FromResult(Assignments.FirstOrDefault(assignment =>
                 assignment.ProjectId == projectId &&

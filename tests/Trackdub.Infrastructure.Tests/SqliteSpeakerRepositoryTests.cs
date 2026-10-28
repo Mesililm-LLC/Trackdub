@@ -50,6 +50,18 @@ public sealed class SqliteSpeakerRepositoryTests
             Assert.Contains(speakers, speaker => speaker.Id == speaker3.Id);
             Assert.Equal(2, reloadedTurns.Count);
             Assert.Equal(defaultSpeaker.Id, Assert.Single(reloadedSegments).SpeakerId);
+
+            ProjectSpeaker speaker4 = ProjectSpeaker.Create(project.Id, "Speaker 4", now.AddMilliseconds(3));
+            await speakerRepository.ReplaceDiarizationAsync(project.Id, [speaker4],
+                [SpeakerTurn.Create(project.Id, speaker4.Id, 0d, 5.8d)],
+                TestContext.Current.CancellationToken);
+            speakers = await speakerRepository.ListSpeakersAsync(project.Id, TestContext.Current.CancellationToken);
+            reloadedTurns = await speakerRepository.ListTurnsAsync(project.Id, TestContext.Current.CancellationToken);
+            reloadedSegments = await transcriptRepository.GetSegmentsAsync(revision.Id, TestContext.Current.CancellationToken);
+            Assert.Contains(speakers, speaker => speaker.Id == defaultSpeaker.Id);
+            Assert.Contains(speakers, speaker => speaker.Id == speaker4.Id);
+            Assert.Equal(speaker4.Id, Assert.Single(reloadedTurns).SpeakerId);
+            Assert.Equal(defaultSpeaker.Id, Assert.Single(reloadedSegments).SpeakerId);
         }
         finally
         {

@@ -330,6 +330,7 @@ public sealed class SqliteProjectDatabaseMigrationTests
             Assert.Contains("source_segment_hash", await ReadColumnNamesAsync(verificationConnection, "translated_segments"));
             Assert.Contains("speaker_id", await ReadColumnNamesAsync(verificationConnection, "transcript_segments"));
             Assert.Contains("detected_language", await ReadColumnNamesAsync(verificationConnection, "transcript_segments"));
+            Assert.Contains("speaker_assignment_origin", await ReadColumnNamesAsync(verificationConnection, "transcript_segments"));
             Assert.Contains("confidence", await ReadColumnNamesAsync(verificationConnection, "words"));
             Assert.Contains("has_overlap", await ReadColumnNamesAsync(verificationConnection, "speaker_turns"));
             Assert.Contains("is_fallback", await ReadColumnNamesAsync(verificationConnection, "voice_assignments"));

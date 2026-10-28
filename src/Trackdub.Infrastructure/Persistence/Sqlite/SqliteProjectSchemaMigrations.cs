@@ -39,8 +39,14 @@ internal static class SqliteProjectSchemaMigrations
         new(25, "create-lip-sync-segments", CreateLipSyncSegmentsAsync),
         new(26, "create-lip-synthesis-segments", CreateLipSynthesisSegmentsAsync),
         new(27, "rebuild-lip-synthesis-segments-stage-run-key", RebuildLipSynthesisSegmentsStageRunKeyAsync),
-        new(28, "add-translation-model-provenance", AddTranslationModelProvenanceAsync)
+        new(28, "add-translation-model-provenance", AddTranslationModelProvenanceAsync),
+        new(29, "add-speaker-assignment-origin", AddSpeakerAssignmentOriginAsync),
+        new(30, "preserve-merged-speaker-history", PreserveMergedSpeakerHistoryAsync)
     ];
+
+    private static Task PreserveMergedSpeakerHistoryAsync(
+        SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken) =>
+        EnsureColumnAsync(connection, transaction, "speakers", "merged_into_speaker_id", "TEXT NULL", cancellationToken);
 
     public static async Task MigrateAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
@@ -423,6 +429,17 @@ internal static class SqliteProjectSchemaMigrations
             new("speaker_id", "TEXT NULL"),
             new("detected_language", "TEXT NULL"));
     }
+
+    private static Task AddSpeakerAssignmentOriginAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken) =>
+        EnsureColumnsAsync(
+            connection,
+            transaction,
+            "transcript_segments",
+            cancellationToken,
+            new ColumnDefinition("speaker_assignment_origin", "INTEGER NOT NULL DEFAULT 0"));
 
     private static Task EnsureWordsTableAsync(
         SqliteConnection connection,
