@@ -829,14 +829,24 @@ public sealed partial class TranscriptProjectServiceTests : IDisposable
         public Task<IReadOnlyList<MergedSpeakerEntry>> ListMergedSpeakersAsync(Guid projectId, CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<MergedSpeakerEntry>>([]);
 
+        public HashSet<Guid> SegmentSpeakerIds { get; } = [];
+
+        public HashSet<Guid> VoiceAssignmentSpeakerIds { get; } = [];
+
         public Task DeleteEmptySpeakerAsync(Guid projectId, Guid speakerId, CancellationToken cancellationToken)
         {
-            if (Turns.Exists(turn => turn.ProjectId == projectId && turn.SpeakerId == speakerId))
+            if (Turns.Exists(turn => turn.ProjectId == projectId && turn.SpeakerId == speakerId) ||
+                SegmentSpeakerIds.Contains(speakerId) ||
+                VoiceAssignmentSpeakerIds.Contains(speakerId))
             {
-                throw new InvalidOperationException("Only speakers with no turns, segments, or voice assignments can be removed.");
+                throw new InvalidOperationException("Only speakers with no turns, segments, voice assignments, or archived merge history can be removed.");
             }
 
-            Speakers.RemoveAll(speaker => speaker.ProjectId == projectId && speaker.Id == speakerId);
+            if (Speakers.RemoveAll(speaker => speaker.ProjectId == projectId && speaker.Id == speakerId) == 0)
+            {
+                throw new InvalidOperationException("The selected speaker was not found.");
+            }
+
             return Task.CompletedTask;
         }
 
@@ -980,7 +990,10 @@ public sealed partial class TranscriptProjectServiceTests : IDisposable
                 !assignment.IsFallback));
 
         public Task<VoiceAssignment?> GetForSpeakerIncludingMergedAsync(Guid projectId, Guid speakerId, CancellationToken cancellationToken) =>
-            GetAsync(projectId, speakerId, cancellationToken);
+            Task.FromResult(Assignments.FirstOrDefault(assignment =>
+                assignment.ProjectId == projectId &&
+                assignment.SpeakerId == speakerId &&
+                !assignment.IsFallback));
 
         public Task<IReadOnlyList<VoiceAssignment>> GetAllAsync(Guid projectId, CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<VoiceAssignment>>(Assignments

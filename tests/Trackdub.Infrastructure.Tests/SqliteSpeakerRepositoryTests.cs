@@ -347,4 +347,75 @@ public sealed class SqliteSpeakerRepositoryTests
             }
         }
     }
+
+    [Fact]
+    public async Task DeleteEmptySpeakerAsync_refuses_a_speaker_that_is_a_merge_target()
+    {
+        string projectRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"), "Speakers.trackdub");
+        try
+        {
+            var database = new SqliteProjectDatabase(projectRoot);
+            var projectRepository = new SqliteProjectRepository(database);
+            var speakerRepository = new SqliteSpeakerRepository(database);
+            var transcriptRepository = new SqliteTranscriptRepository(database);
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            var project = new TrackdubProject(Guid.NewGuid(), "Speakers", now, now);
+
+            await projectRepository.InitializeAsync(project, TestContext.Current.CancellationToken);
+            ProjectSpeaker source = ProjectSpeaker.Create(project.Id, "Speaker 1", now.AddMilliseconds(1));
+            ProjectSpeaker target = ProjectSpeaker.Create(project.Id, "Speaker 2", now.AddMilliseconds(2));
+            await speakerRepository.ReplaceDiarizationAsync(project.Id, [source, target], [], TestContext.Current.CancellationToken);
+            await transcriptRepository.ReassignAndMergeSpeakersAsync(project.Id, source.Id, target.Id, TestContext.Current.CancellationToken);
+
+            // The target has no turns, segments, or voice assignments of its own, but deleting it
+            // would leave the archived source pointing at a missing speaker.
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                speakerRepository.DeleteEmptySpeakerAsync(project.Id, target.Id, TestContext.Current.CancellationToken));
+            Assert.Contains(
+                await speakerRepository.ListSpeakersAsync(project.Id, TestContext.Current.CancellationToken),
+                speaker => speaker.Id == target.Id);
+        }
+        finally
+        {
+            if (Directory.Exists(projectRoot))
+            {
+                Directory.Delete(projectRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ListMergedSpeakersAsync_resolves_merge_chains_to_the_surviving_target()
+    {
+        string projectRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"), "Speakers.trackdub");
+        try
+        {
+            var database = new SqliteProjectDatabase(projectRoot);
+            var projectRepository = new SqliteProjectRepository(database);
+            var speakerRepository = new SqliteSpeakerRepository(database);
+            var transcriptRepository = new SqliteTranscriptRepository(database);
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            var project = new TrackdubProject(Guid.NewGuid(), "Speakers", now, now);
+
+            await projectRepository.InitializeAsync(project, TestContext.Current.CancellationToken);
+            ProjectSpeaker first = ProjectSpeaker.Create(project.Id, "Speaker 1", now.AddMilliseconds(1));
+            ProjectSpeaker second = ProjectSpeaker.Create(project.Id, "Speaker 2", now.AddMilliseconds(2));
+            ProjectSpeaker third = ProjectSpeaker.Create(project.Id, "Speaker 3", now.AddMilliseconds(3));
+            await speakerRepository.ReplaceDiarizationAsync(project.Id, [first, second, third], [], TestContext.Current.CancellationToken);
+            await transcriptRepository.ReassignAndMergeSpeakersAsync(project.Id, first.Id, second.Id, TestContext.Current.CancellationToken);
+            await transcriptRepository.ReassignAndMergeSpeakersAsync(project.Id, second.Id, third.Id, TestContext.Current.CancellationToken);
+
+            IReadOnlyList<MergedSpeakerEntry> merged = await speakerRepository.ListMergedSpeakersAsync(project.Id, TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, merged.Count);
+            Assert.All(merged, entry => Assert.Equal(third.Id, entry.MergedIntoSpeakerId));
+        }
+        finally
+        {
+            if (Directory.Exists(projectRoot))
+            {
+                Directory.Delete(projectRoot, recursive: true);
+            }
+        }
+    }
 }

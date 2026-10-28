@@ -7,6 +7,9 @@ public sealed class FakeSpeakerRepository : ISpeakerRepository
 {
     private readonly List<ProjectSpeaker> speakers = [];
     private readonly List<SpeakerTurn> turns = [];
+    private readonly HashSet<Guid> segmentSpeakerIds = [];
+    private readonly HashSet<Guid> voiceAssignmentSpeakerIds = [];
+    private readonly Dictionary<Guid, Guid> mergedTargets = [];
 
     public IReadOnlyList<ProjectSpeaker> Speakers => speakers;
     public IReadOnlyList<SpeakerTurn> Turns => turns;
@@ -21,25 +24,80 @@ public sealed class FakeSpeakerRepository : ISpeakerRepository
         }
     }
 
+    /// <summary>
+    /// Mirrors the real repository's delete guards: speakers referenced by transcript segments
+    /// or voice assignments, archived as a merge source, or named as another speaker's merge
+    /// target cannot be removed.
+    /// </summary>
+    public void SeedReferences(
+        IEnumerable<Guid>? segmentSpeakerIds = null,
+        IEnumerable<Guid>? voiceAssignmentSpeakerIds = null,
+        IReadOnlyDictionary<Guid, Guid>? mergedSpeakerTargets = null)
+    {
+        if (segmentSpeakerIds is not null)
+        {
+            this.segmentSpeakerIds.UnionWith(segmentSpeakerIds);
+        }
+
+        if (voiceAssignmentSpeakerIds is not null)
+        {
+            this.voiceAssignmentSpeakerIds.UnionWith(voiceAssignmentSpeakerIds);
+        }
+
+        if (mergedSpeakerTargets is not null)
+        {
+            foreach ((Guid source, Guid target) in mergedSpeakerTargets)
+            {
+                mergedTargets[source] = target;
+            }
+        }
+    }
+
     public Task<IReadOnlyList<ProjectSpeaker>> ListSpeakersAsync(Guid projectId, CancellationToken cancellationToken)
     {
         IReadOnlyList<ProjectSpeaker> result = speakers
-            .Where(s => s.ProjectId == projectId)
+            .Where(s => s.ProjectId == projectId && !mergedTargets.ContainsKey(s.Id))
             .ToList();
         return Task.FromResult(result);
     }
 
     public Task<IReadOnlyList<MergedSpeakerEntry>> ListMergedSpeakersAsync(Guid projectId, CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyList<MergedSpeakerEntry>>([]);
+        Task.FromResult<IReadOnlyList<MergedSpeakerEntry>>(speakers
+            .Where(s => s.ProjectId == projectId && mergedTargets.ContainsKey(s.Id))
+            .Select(s => new MergedSpeakerEntry(s, ResolveActiveTarget(mergedTargets[s.Id])))
+            .ToList());
+
+    private Guid ResolveActiveTarget(Guid speakerId)
+    {
+        Guid resolved = speakerId;
+        for (int hop = 0; mergedTargets.TryGetValue(resolved, out Guid target) && hop < mergedTargets.Count; hop++)
+        {
+            resolved = target;
+        }
+
+        return resolved;
+    }
 
     public Task DeleteEmptySpeakerAsync(Guid projectId, Guid speakerId, CancellationToken cancellationToken)
     {
-        if (turns.Exists(t => t.ProjectId == projectId && t.SpeakerId == speakerId))
+        if (mergedTargets.ContainsKey(speakerId))
         {
-            throw new InvalidOperationException("Only speakers with no turns, segments, or voice assignments can be removed.");
+            throw new InvalidOperationException("Merged speakers are retained as history and cannot be deleted.");
         }
 
-        speakers.RemoveAll(s => s.ProjectId == projectId && s.Id == speakerId);
+        if (turns.Exists(t => t.ProjectId == projectId && t.SpeakerId == speakerId) ||
+            segmentSpeakerIds.Contains(speakerId) ||
+            voiceAssignmentSpeakerIds.Contains(speakerId) ||
+            mergedTargets.Values.Contains(speakerId))
+        {
+            throw new InvalidOperationException("Only speakers with no turns, segments, voice assignments, or archived merge history can be removed.");
+        }
+
+        if (speakers.RemoveAll(s => s.ProjectId == projectId && s.Id == speakerId) == 0)
+        {
+            throw new InvalidOperationException("The selected speaker was not found.");
+        }
+
         return Task.CompletedTask;
     }
 
