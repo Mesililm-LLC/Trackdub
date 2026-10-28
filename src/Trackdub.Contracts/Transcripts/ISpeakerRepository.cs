@@ -13,8 +13,10 @@ public interface ISpeakerRepository
 
     /// <summary>
     /// Deletes an active speaker only when nothing references it: no turns, no transcript
-    /// segments in any revision, no voice assignments and no takes. Merged (archived)
-    /// speakers are history and are never deleted.
+    /// segments in any revision, no voice assignments (takes are retained through their
+    /// voice assignment), and no voice clone consents. A speaker named as another speaker's
+    /// merge target is also protected so archived history never points at a deleted row.
+    /// Merged (archived) speakers are history and are never deleted.
     /// </summary>
     Task DeleteEmptySpeakerAsync(Guid projectId, Guid speakerId, CancellationToken cancellationToken);
 
