@@ -13,9 +13,10 @@ model = [
     "torch==2.11.*",
     "torchaudio==2.11.*",
     "chatterbox-tts==0.1.7",
-    # resemble-perth 1.0.1 imports pkg_resources, removed in setuptools 82;
-    # cap setuptools so ChatterboxTTS model load keeps working.
-    "setuptools>=80,<82",
+    # resemble-perth 1.0.1 imports pkg_resources, deprecated and removed in
+    # setuptools 81+; cap below 81 so ChatterboxTTS model load keeps working
+    # (verified live run: tools/sidecar-evidence/live-run.txt).
+    "setuptools>=80,<81",
 ]
 
 # Conformance tests (`python -m pytest tests/ -q`) are stdlib-only, but the
@@ -59,7 +60,7 @@ override-dependencies = [
     "transformers>=5.10.0",
     # setuptools is deliberately NOT raised: resemble-perth 1.0.1 (chatterbox's
     # watermarker, constructed unconditionally in ChatterboxTTS.__init__) imports
-    # pkg_resources, which setuptools removed in 82. The Dependabot patch floors
+    # pkg_resources, which setuptools removed in 81+. The Dependabot patch floors
     # (83.0.0/84.1.0) all break model load, so those two low/medium alerts stay
     # open until Perth ships a pkg_resources-free release.
 ]
