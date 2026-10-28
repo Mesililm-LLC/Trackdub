@@ -103,10 +103,15 @@ public sealed class SqliteSpeakerRepositoryTests
         IReadOnlyList<ProjectSpeaker> active = await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken);
 
         MergedSpeakerEntry entry = Assert.Single(merged);
+        AssertMergedEntry(entry, source, target);
+        Assert.DoesNotContain(active, speaker => speaker.Id == source.Id);
+    }
+
+    private static void AssertMergedEntry(MergedSpeakerEntry entry, ProjectSpeaker source, ProjectSpeaker target)
+    {
         Assert.Equal(source.Id, entry.Speaker.Id);
         Assert.Equal("Speaker 1", entry.Speaker.DisplayName);
         Assert.Equal(target.Id, entry.MergedIntoSpeakerId);
-        Assert.DoesNotContain(active, speaker => speaker.Id == source.Id);
     }
 
     [Fact]
@@ -203,9 +208,14 @@ public sealed class SqliteSpeakerRepositoryTests
         Assert.Null(await db.VoiceAssignments.GetAsync(db.Project.Id, source.Id, TestContext.Current.CancellationToken));
         VoiceAssignment? history = await db.VoiceAssignments.GetForSpeakerIncludingMergedAsync(db.Project.Id, source.Id, TestContext.Current.CancellationToken);
 
+        AssertHistoryMatches(history, assignment, source.Id);
+    }
+
+    private static void AssertHistoryMatches(VoiceAssignment? history, VoiceAssignment assignment, Guid sourceSpeakerId)
+    {
         Assert.NotNull(history);
         Assert.Equal(assignment.Id, history.Id);
-        Assert.Equal(source.Id, history.SpeakerId);
+        Assert.Equal(sourceSpeakerId, history.SpeakerId);
         Assert.Equal("af-heart", history.VoiceVariant);
     }
 
