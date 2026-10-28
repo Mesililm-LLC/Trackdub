@@ -847,12 +847,23 @@ public sealed partial class TranscriptProjectServiceTests : IDisposable
                 throw new InvalidOperationException("The selected speaker was not found.");
             }
 
-            if (Turns.Exists(turn => turn.ProjectId == projectId && turn.SpeakerId == speakerId) ||
-                SegmentSpeakerIds.Contains(speakerId) ||
-                VoiceAssignmentSpeakerIds.Contains(speakerId))
+            if (Turns.Exists(turn => turn.ProjectId == projectId && turn.SpeakerId == speakerId))
             {
-                throw new InvalidOperationException("Only speakers with no turns, segments, voice assignments, or archived merge history can be removed.");
+                throw NotEmpty();
             }
+
+            if (SegmentSpeakerIds.Contains(speakerId))
+            {
+                throw NotEmpty();
+            }
+
+            if (VoiceAssignmentSpeakerIds.Contains(speakerId))
+            {
+                throw NotEmpty();
+            }
+
+            static InvalidOperationException NotEmpty() =>
+                new("Only speakers with no turns, segments, voice assignments, or archived merge history can be removed.");
         }
 
         public Task<IReadOnlyList<SpeakerTurn>> ListTurnsAsync(Guid projectId, CancellationToken cancellationToken) =>

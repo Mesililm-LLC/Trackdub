@@ -49,10 +49,20 @@ public sealed class SqliteSpeakerRepositoryTests
         speakers = await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken);
         reloadedTurns = await db.Speakers.ListTurnsAsync(db.Project.Id, TestContext.Current.CancellationToken);
         reloadedSegments = await db.Transcripts.GetSegmentsAsync(revision.Id, TestContext.Current.CancellationToken);
+        AssertRerunKeptDefaultSpeaker(speakers, reloadedTurns, reloadedSegments, defaultSpeaker, speaker4);
+    }
+
+    private static void AssertRerunKeptDefaultSpeaker(
+        IReadOnlyList<ProjectSpeaker> speakers,
+        IReadOnlyList<SpeakerTurn> turns,
+        IReadOnlyList<TranscriptSegment> segments,
+        ProjectSpeaker defaultSpeaker,
+        ProjectSpeaker rerunSpeaker)
+    {
         Assert.Contains(speakers, speaker => speaker.Id == defaultSpeaker.Id);
-        Assert.Contains(speakers, speaker => speaker.Id == speaker4.Id);
-        Assert.Equal(speaker4.Id, Assert.Single(reloadedTurns).SpeakerId);
-        Assert.Equal(defaultSpeaker.Id, Assert.Single(reloadedSegments).SpeakerId);
+        Assert.Contains(speakers, speaker => speaker.Id == rerunSpeaker.Id);
+        Assert.Equal(rerunSpeaker.Id, Assert.Single(turns).SpeakerId);
+        Assert.Equal(defaultSpeaker.Id, Assert.Single(segments).SpeakerId);
     }
 
     [Fact]
