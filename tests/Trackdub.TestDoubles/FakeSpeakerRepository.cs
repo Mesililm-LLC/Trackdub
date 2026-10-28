@@ -88,7 +88,7 @@ public sealed class FakeSpeakerRepository : ISpeakerRepository
         if (turns.Exists(t => t.ProjectId == projectId && t.SpeakerId == speakerId) ||
             segmentSpeakerIds.Contains(speakerId) ||
             voiceAssignmentSpeakerIds.Contains(speakerId) ||
-            mergedTargets.Values.Contains(speakerId))
+            mergedTargets.ContainsValue(speakerId))
         {
             throw new InvalidOperationException("Only speakers with no turns, segments, voice assignments, or archived merge history can be removed.");
         }
