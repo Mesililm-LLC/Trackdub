@@ -150,6 +150,22 @@ public sealed class SqliteSpeakerRepositoryTests
     }
 
     [Fact]
+    public async Task DeleteEmptySpeakerAsync_refuses_a_speaker_with_transcript_segments()
+    {
+        using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
+        ProjectSpeaker speaker = await db.Speakers.CreateSpeakerAsync(db.Project.Id, TestContext.Current.CancellationToken);
+        TranscriptRevision revision = TranscriptRevision.Create(db.Project.Id, stageRunId: null, revisionNumber: 1, db.Now);
+        TranscriptSegment[] segments =
+        [
+            TranscriptSegment.Create(revision.Id, 0, 0d, 5.8d, "Hello", speaker.Id)
+        ];
+        await db.Transcripts.SaveRevisionAsync(revision, segments, TestContext.Current.CancellationToken);
+
+        await AssertDeleteRefused(db, speaker.Id);
+        Assert.Single(await db.Speakers.ListSpeakersAsync(db.Project.Id, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task DeleteEmptySpeakerAsync_refuses_a_merged_speaker()
     {
         using SpeakerDb db = await SpeakerDb.CreateAsync(TestContext.Current.CancellationToken);
