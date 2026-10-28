@@ -118,6 +118,83 @@ public class GenAiModelPoolTests
     }
 
     [Fact]
+    public async Task GetLeaseAsync_CapacityTwo_KeepsTokenizerCachesWithTheirEntries()
+    {
+        using var admission = NewAdmissionPool(hostBudgetMb: 400);
+        var created = new List<FakeGenAiModelResource>();
+        using var pool = new GenAiModelPool(admission, TrackingFactory(created), maxEntries: 2);
+        var keyA = Key("cache-a");
+        var keyB = Key("cache-b");
+
+        using GenAiModelLease a = await pool.GetLeaseAsync(keyA, CancellationToken.None);
+        FakeCachedTokenizer tokenizerA = a.GetOrCreateCachedTokenizer(_ => new FakeCachedTokenizer());
+        FakeCachedTokenizer tokenizerB;
+        using (GenAiModelLease b = await pool.GetLeaseAsync(keyB, CancellationToken.None))
+        {
+            tokenizerB = b.GetOrCreateCachedTokenizer(_ => new FakeCachedTokenizer());
+            Assert.NotSame(tokenizerA, tokenizerB);
+        }
+
+        using (GenAiModelLease b = await pool.GetLeaseAsync(keyB, CancellationToken.None))
+        {
+            Assert.Same(tokenizerB, b.GetOrCreateCachedTokenizer(_ => new FakeCachedTokenizer()));
+        }
+
+        a.Dispose();
+        using (await pool.GetLeaseAsync(Key("cache-c"), CancellationToken.None).WaitAsync(HangGuard))
+        {
+            Assert.Equal(1, tokenizerA.DisposeCount + tokenizerB.DisposeCount);
+            GenAiModelKey survivorKey = tokenizerA.DisposeCount == 0 ? keyA : keyB;
+            FakeCachedTokenizer survivor = tokenizerA.DisposeCount == 0 ? tokenizerA : tokenizerB;
+            using GenAiModelLease lease = await pool.GetLeaseAsync(survivorKey, CancellationToken.None)
+                .WaitAsync(HangGuard);
+            Assert.Same(survivor, lease.GetOrCreateCachedTokenizer(_ => new FakeCachedTokenizer()));
+        }
+    }
+
+    [Fact]
+    public async Task Dispose_ThrowingTokenizer_StillDisposesModelAndReservation()
+    {
+        using var admission = NewAdmissionPool(hostBudgetMb: 100);
+        var created = new List<FakeGenAiModelResource>();
+        var pool = new GenAiModelPool(admission, TrackingFactory(created), maxEntries: 1);
+        using (GenAiModelLease lease = await pool.GetLeaseAsync(Key("throwing"), CancellationToken.None))
+        {
+            lease.GetOrCreateCachedTokenizer(_ => new ThrowingTokenizer());
+        }
+
+        Assert.Throws<AggregateException>(pool.Dispose);
+        Assert.Equal(1, created[0].DisposeCount);
+        using var replacement = new GenAiModelPool(admission, TrackingFactory(created), maxEntries: 1);
+        using GenAiModelLease next = await replacement.GetLeaseAsync(Key("replacement", estimatedMb: 80), CancellationToken.None)
+            .WaitAsync(HangGuard);
+    }
+
+    [Fact]
+    public async Task Dispose_MultipleThrowingTokenizers_DisposesAllEntriesAndAggregatesFailures()
+    {
+        using var admission = NewAdmissionPool(hostBudgetMb: 400);
+        var created = new List<FakeGenAiModelResource>();
+        var pool = new GenAiModelPool(admission, TrackingFactory(created), maxEntries: 2);
+        using (GenAiModelLease first = await pool.GetLeaseAsync(Key("throwing-a"), CancellationToken.None))
+        {
+            first.GetOrCreateCachedTokenizer(_ => new ThrowingTokenizer());
+        }
+
+        using (GenAiModelLease second = await pool.GetLeaseAsync(Key("throwing-b"), CancellationToken.None))
+        {
+            second.GetOrCreateCachedTokenizer(_ => new ThrowingTokenizer());
+        }
+
+        AggregateException failure = Assert.Throws<AggregateException>(pool.Dispose);
+
+        Assert.Equal(2, failure.InnerExceptions.Count);
+        Assert.All(failure.InnerExceptions, ex => Assert.IsType<InvalidOperationException>(ex));
+        Assert.Equal(2, created.Count);
+        Assert.All(created, resource => Assert.Equal(1, resource.DisposeCount));
+    }
+
+    [Fact]
     public async Task GetLeaseAsync_SameKey_ConcurrentWaiter_SerializesWithoutDisposing()
     {
         using var admission = NewAdmissionPool();
@@ -838,6 +915,11 @@ public class GenAiModelPoolTests
                 .WaitAsync(TimeSpan.FromSeconds(5)));
 
         pool.Dispose();
+    }
+
+    private sealed class ThrowingTokenizer : IDisposable
+    {
+        public void Dispose() => throw new InvalidOperationException("Tokenizer disposal failed.");
     }
 
     private sealed class FakeCachedTokenizer : IDisposable

@@ -795,9 +795,24 @@ internal sealed class GenAiModelPool : IDisposable
         }
 
         SignalChanged();
+        var disposeFailures = new List<Exception>();
         foreach (Entry entry in toDispose)
         {
-            entry.Dispose();
+            try
+            {
+                entry.Dispose();
+            }
+            catch (Exception ex)
+            {
+                disposeFailures.Add(ex);
+            }
+        }
+
+        if (disposeFailures.Count > 0)
+        {
+            throw new AggregateException(
+                "One or more GenAI model entries failed to dispose.",
+                disposeFailures);
         }
     }
 
@@ -876,8 +891,14 @@ internal sealed class GenAiModelPool : IDisposable
             try
             {
                 // The cached tokenizer wraps the native model, so it goes first.
-                TokenizerCache.Dispose();
-                Resource.Dispose();
+                try
+                {
+                    TokenizerCache.Dispose();
+                }
+                finally
+                {
+                    Resource.Dispose();
+                }
             }
             finally
             {
