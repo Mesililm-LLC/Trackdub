@@ -45,7 +45,10 @@ public sealed class SegmentEditingService(
                     TranscriptWorkflowUtilities.ShouldPreserveWords(segment, text)
                         ? TranscriptWorkflowUtilities.CloneWords(segment.Words)
                         : [],
-                    speakerId != segment.SpeakerId
+                    // An included edit that selects no speaker records a manual unassignment
+                    // even when the segment was already unassigned.
+                    speakerId != segment.SpeakerId ||
+                        (replacement is not null && replacement.SpeakerId is null)
                         ? SpeakerAssignmentOrigin.Manual
                         : segment.SpeakerAssignmentOrigin);
             })

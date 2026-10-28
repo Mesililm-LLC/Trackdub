@@ -329,6 +329,33 @@ public sealed class SpeakerDiarizationStageTests
     }
 
     [Fact]
+    public async Task SaveEditsAsync_records_a_manual_unassignment_for_an_already_unassigned_segment()
+    {
+        TranscriptProjectState state = BuildRerunDiarizationState();
+        TranscriptSegment segment = Assert.Single(state.TranscriptSegments) with
+        {
+            SpeakerId = null,
+            SpeakerAssignmentOrigin = SpeakerAssignmentOrigin.Automatic,
+        };
+        state = state with { TranscriptSegments = [segment] };
+
+        var editor = new SegmentEditingService(transcriptRepository, ttsTakeRepository, BuildArtifactWriter());
+        await editor.SaveEditsAsync(
+            state,
+            new SaveTranscriptEditsRequest(
+                state.CurrentTranscriptRevision!.Id,
+                [new EditedTranscriptSegment(segment.Id, segment.Text, SpeakerId: null)]),
+            TestContext.Current.CancellationToken);
+
+        TranscriptRevision revision = (await transcriptRepository.GetCurrentRevisionAsync(
+            projectId, TestContext.Current.CancellationToken))!;
+        TranscriptSegment revised = Assert.Single(await transcriptRepository.GetSegmentsAsync(
+            revision.Id, TestContext.Current.CancellationToken));
+        Assert.Null(revised.SpeakerId);
+        Assert.Equal(SpeakerAssignmentOrigin.Manual, revised.SpeakerAssignmentOrigin);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_WritesDiarizationArtifact_WhenDiarizationIsEnabled()
     {
         TranscriptArtifactWriter artifactWriter = BuildArtifactWriter();
