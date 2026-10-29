@@ -59,7 +59,7 @@ jobs:
       contents: read
       packages: write
     env:
-      IMAGE_NAME: ghcr.io/mesalimllc/trackdub
+      IMAGE_NAME: ghcr.io/mesililm-llc/trackdub
     steps:
       - name: Checkout
         uses: actions/checkout@v7

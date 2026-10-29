@@ -14,7 +14,7 @@ repowiki:
   template: ""
   notes:
     - text: >-
-        Trackdub is the PUBLIC, Apache-2.0 core (mesalimllc/Trackdub): a
+        Trackdub is the PUBLIC, Apache-2.0 core (Mesililm-LLC/Trackdub): a
         cross-platform, local-first AI dubbing engine, SDK, CLI, and pipeline.
         All inference runs locally via ONNX models with no mandatory cloud
         dependency. The private desktop product (Trackdub-gated) consumes this

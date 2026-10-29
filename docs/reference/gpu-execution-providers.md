@@ -12,7 +12,7 @@ on Windows:
 |------------------|---------------------------------------------|
 | `net10.0` (portable, every OS) | CPU, **TensorRT RTX** (EP ABI plugin, Windows/Linux NVIDIA) |
 | `net10.0-windows10.0.19041.0` | CPU, TensorRT RTX, **DirectML**, Windows ML catalog EPs (MIGraphX, OpenVINO catalog, QNN, VitisAI) |
-| Linux `net10.0` | CPU, native CUDA/TensorRT (system ORT GPU build), and the plugin EPs **TensorRT RTX**, **OpenVINO** and **MIGraphX**, all via [LinML.Catalog](https://github.com/mesalimllc/LinML) |
+| Linux `net10.0` | CPU, native CUDA/TensorRT (system ORT GPU build), and the plugin EPs **TensorRT RTX**, **OpenVINO** and **MIGraphX**, all via [LinML.Catalog](https://github.com/Mesililm-LLC/LinML) |
 
 The portable `net10.0` build compiles the Linux and macOS code paths on every build host and
 picks the bootstrapper, device enumerator and native routes with `OperatingSystem.IsLinux()` /

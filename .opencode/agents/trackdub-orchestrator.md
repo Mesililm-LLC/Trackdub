@@ -45,7 +45,7 @@ permission:
 <context>
   <system_context>
     Trackdub is a cross-platform, local-first AI dubbing engine. This repo is the public core
-    (`mesalimllc/Trackdub`, Apache-2.0): SDK, CLI, pipeline, inference, media, infrastructure,
+    (`Mesililm-LLC/Trackdub`, Apache-2.0): SDK, CLI, pipeline, inference, media, infrastructure,
     licensing. Repo root: the current checkout (`git rev-parse --show-toplevel`). Solution: `Trackdub.slnx`
     (plus `Trackdub.Sdk.slnx`, `Trackdub.Inference.slnx`). .NET 10, `TreatWarningsAsErrors=true`,
     `RestorePackagesWithLockFile=true`, central package management via `Directory.Packages.props`,

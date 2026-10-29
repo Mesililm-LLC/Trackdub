@@ -12,7 +12,7 @@ Three problems it solves:
 
 ## Scope: core repo only
 
-This system governs **`mesalimllc/Trackdub`** — the public core: `src/Trackdub.*`, `src/DubBench*`, `tests/Trackdub.Architecture.Tests`, `tools/`, `scripts/`, and `.github/workflows/`.
+This system governs **`Mesililm-LLC/Trackdub`** — the public core: `src/Trackdub.*`, `src/DubBench*`, `tests/Trackdub.Architecture.Tests`, `tools/`, `scripts/`, and `.github/workflows/`.
 
 It does **not** govern the Avalonia desktop shell. That lives in the `Trackdub-gated` repo under `App.Avalonia` / `App.Avalonia.Tests` / `UI.Tests`, with its own `.opencode` system at `../Trackdub-gated/.opencode/`.
 
