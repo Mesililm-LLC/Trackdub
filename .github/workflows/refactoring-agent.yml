@@ -1,0 +1,32 @@
+name: CodeScene PR Refactoring Agent
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  refactor:
+    if: >-
+      github.event.issue.pull_request != null &&
+      startsWith(github.event.comment.body, '/cs-agent') &&
+      (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) ||
+       github.event.comment.user.login == 'codescene-access[bot]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Run CodeScene refactoring agent
+        uses: codescene-oss/pr-refactoring-agent@449879a10a469bf80a9bf202e64ffc860679d2b4 # v1.1.9
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+        with:
+          pr_number: ${{ github.event.issue.number }}
+          command: ${{ github.event.comment.body }}
+          model: ${{ vars.CODESCENE_AGENT_MODEL || 'cloudflare-workers-ai/@cf/deepseek-ai/deepseek-v4.1-flash-1017' }}
+          codescene_token: ${{ secrets.CODESCENE_ACCESS_TOKEN }}
+          opencode_auth_json: ${{ secrets.OPENCODE_AUTH_JSON }}
