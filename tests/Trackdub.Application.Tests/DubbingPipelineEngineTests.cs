@@ -17,7 +17,7 @@ public sealed class DubbingPipelineEngineTests
             ModelVariantOverrides: new Dictionary<string, string> { ["translation"] = "int4-kv", [ModelVariantOverrideKeys.Build("translation", "madlad400")] = "int4-kv" });
         var preferences = new InferenceModelPreferences(PreferredModelVariantAliases:
             new Dictionary<RuntimeStage, string> { [RuntimeStage.Translation] = "quantized" });
-        var merged = DubbingPipelineEngine.ApplyModelPreferenceAliases(selections, preferences);
+        var merged = DubbingModelPreferences.ApplyModelPreferenceAliases(selections, preferences);
         Assert.Equal("quantized", merged.ModelVariantOverrides!["translation"]);
         Assert.False(merged.ModelVariantOverrides.ContainsKey(ModelVariantOverrideKeys.Build("translation", "madlad400")));
     }
@@ -77,7 +77,7 @@ public sealed class DubbingPipelineEngineTests
             VadModelAlias: "silero-request-pin",
             TtsModelAlias: "chatterbox-clone-pin");
 
-        RuntimeModelSelections merged = DubbingPipelineEngine.ApplyModelPreferenceAliases(selections, preferences);
+        RuntimeModelSelections merged = DubbingModelPreferences.ApplyModelPreferenceAliases(selections, preferences);
 
         Assert.Equal("silero-request-pin", merged.VadModelAlias);
         Assert.Equal("chatterbox-clone-pin", merged.TtsModelAlias);
@@ -94,7 +94,7 @@ public sealed class DubbingPipelineEngineTests
             VadModelAlias: "silero-ui-pick");
         var preferences = new InferenceModelPreferences(TtsModelAlias: "kokoro-request-pin");
 
-        RuntimeModelSelections merged = DubbingPipelineEngine.ApplyModelPreferenceAliases(selections, preferences);
+        RuntimeModelSelections merged = DubbingModelPreferences.ApplyModelPreferenceAliases(selections, preferences);
 
         Assert.Equal("silero-ui-pick", merged.VadModelAlias);
     }
@@ -109,7 +109,7 @@ public sealed class DubbingPipelineEngineTests
             VadModelAlias: "silero-ui-pick",
             TtsModelAlias: "kokoro-ui-pick");
 
-        RuntimeModelSelections merged = DubbingPipelineEngine.ApplyModelPreferenceAliases(selections, null);
+        RuntimeModelSelections merged = DubbingModelPreferences.ApplyModelPreferenceAliases(selections, null);
 
         Assert.Equal("silero-ui-pick", merged.VadModelAlias);
         Assert.Equal("kokoro-ui-pick", merged.TtsModelAlias);
@@ -188,7 +188,7 @@ public sealed class DubbingPipelineEngineTests
             RequireExecutionProviderPreferences = true,
         };
 
-        InferenceModelPreferences? preferences = DubbingPipelineEngine.BuildModelPreferences(options);
+        InferenceModelPreferences? preferences = DubbingModelPreferences.BuildModelPreferences(options);
 
         Assert.NotNull(preferences);
         Assert.Equal(ExecutionProviderKind.Cpu, preferences!.GetPreferredExecutionProvider(RuntimeStage.Asr));
@@ -214,7 +214,7 @@ public sealed class DubbingPipelineEngineTests
             },
         };
 
-        InferenceModelPreferences? preferences = DubbingPipelineEngine.BuildModelPreferences(options);
+        InferenceModelPreferences? preferences = DubbingModelPreferences.BuildModelPreferences(options);
 
         Assert.NotNull(preferences);
         Assert.Equal(ExecutionProviderKind.Cpu, preferences!.GetPreferredExecutionProvider(RuntimeStage.Asr));
@@ -238,7 +238,7 @@ public sealed class DubbingPipelineEngineTests
             },
         };
 
-        Assert.Throws<ArgumentException>(() => DubbingPipelineEngine.BuildModelPreferences(options));
+        Assert.Throws<ArgumentException>(() => DubbingModelPreferences.BuildModelPreferences(options));
     }
 
     [Fact]
@@ -254,7 +254,7 @@ public sealed class DubbingPipelineEngineTests
             },
         };
 
-        Assert.Throws<ArgumentException>(() => DubbingPipelineEngine.BuildModelPreferences(options));
+        Assert.Throws<ArgumentException>(() => DubbingModelPreferences.BuildModelPreferences(options));
     }
 
     private static int IndexOf(IReadOnlyList<string> order, string stageName)

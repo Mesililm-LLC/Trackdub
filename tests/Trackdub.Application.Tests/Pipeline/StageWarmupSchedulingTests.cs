@@ -28,6 +28,15 @@ public class StageWarmupSchedulingTests
             UseVoiceCloning = voiceCloning,
         };
 
+    private static DubbingPipelineEngine.StageSchedule Schedule(string[] stages) =>
+        new(stages, Selections(), Options(), new HashSet<string>());
+
+    private static DubbingPipelineEngine.StageCallbacks Callbacks(
+        Func<string, CancellationToken, Task<StageOutcome?>> gateStageAsync,
+        Func<string, CancellationToken, Task<StageOutcome>> executeStageAsync,
+        Action<StageOutcome> recordOutcome) =>
+        new(gateStageAsync, executeStageAsync, recordOutcome, Progress: null);
+
     [Fact]
     public void StartNextStageWarmup_StartsOnlyFirstWarmableNonDeclinedStage()
     {
@@ -136,11 +145,9 @@ public class StageWarmupSchedulingTests
         var vadRecorded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         Task run = DubbingPipelineEngine.RunScheduledStagesAsync(
-            stages,
+            Schedule(stages),
             coordinator,
-            Selections(),
-            Options(),
-            new HashSet<string>(),
+            Callbacks(
             gateStageAsync: (_, _) => Task.FromResult<StageOutcome?>(null),
             executeStageAsync: async (stage, ct) =>
             {
@@ -163,8 +170,7 @@ public class StageWarmupSchedulingTests
             {
                 outcomes.Add(outcome);
                 if (outcome.StageName == StageNames.Vad) vadRecorded.TrySetResult();
-            },
-            progress: null,
+            }),
             TestContext.Current.CancellationToken);
 
         // VAD finished while the ASR warmup is still blocked: ASR must not have run.
@@ -195,19 +201,16 @@ public class StageWarmupSchedulingTests
         var executed = new List<string>();
 
         await DubbingPipelineEngine.RunScheduledStagesAsync(
-            stages,
+            Schedule(stages),
             coordinator,
-            Selections(),
-            Options(),
-            new HashSet<string>(),
+            Callbacks(
             gateStageAsync: (_, _) => Task.FromResult<StageOutcome?>(null),
             executeStageAsync: (stage, _) =>
             {
                 executed.Add(stage);
                 return Task.FromResult(Succeeded(stage));
             },
-            recordOutcome: outcomes.Add,
-            progress: null,
+            recordOutcome: outcomes.Add),
             TestContext.Current.CancellationToken);
 
         Assert.Equal([StageNames.Vad, StageNames.Translation], executed);
@@ -230,19 +233,16 @@ public class StageWarmupSchedulingTests
         var executed = new List<string>();
 
         await DubbingPipelineEngine.RunScheduledStagesAsync(
-            stages,
+            Schedule(stages),
             coordinator,
-            Selections(),
-            Options(),
-            new HashSet<string>(),
+            Callbacks(
             gateStageAsync: (_, _) => Task.FromResult<StageOutcome?>(null),
             executeStageAsync: (stage, _) =>
             {
                 executed.Add(stage);
                 return Task.FromResult(Succeeded(stage));
             },
-            recordOutcome: outcomes.Add,
-            progress: null,
+            recordOutcome: outcomes.Add),
             TestContext.Current.CancellationToken);
 
         Assert.Equal(stages, executed);
@@ -274,15 +274,16 @@ public class StageWarmupSchedulingTests
         var executed = new List<string>();
 
         await DubbingPipelineEngine.RunScheduledStagesAsync(
-            stages, coordinator, Selections(), Options(), new HashSet<string>(),
+            Schedule(stages),
+            coordinator,
+            Callbacks(
             gateStageAsync: (_, _) => Task.FromResult<StageOutcome?>(null),
             executeStageAsync: (stage, _) =>
             {
                 executed.Add(stage);
                 return Task.FromResult(Succeeded(stage));
             },
-            recordOutcome: outcomes.Add,
-            progress: null,
+            recordOutcome: outcomes.Add),
             TestContext.Current.CancellationToken);
 
         Assert.Equal(stages, executed);
@@ -300,7 +301,9 @@ public class StageWarmupSchedulingTests
         var executed = new List<string>();
 
         await DubbingPipelineEngine.RunScheduledStagesAsync(
-            stages, coordinator, Selections(), Options(), new HashSet<string>(),
+            Schedule(stages),
+            coordinator,
+            Callbacks(
             gateStageAsync: (stage, _) => Task.FromResult<StageOutcome?>(
                 stage == StageNames.Asr
                     ? Succeeded(stage) with
@@ -314,8 +317,7 @@ public class StageWarmupSchedulingTests
                 executed.Add(stage);
                 return Task.FromResult(Succeeded(stage));
             },
-            recordOutcome: outcomes.Add,
-            progress: null,
+            recordOutcome: outcomes.Add),
             TestContext.Current.CancellationToken);
 
         Assert.Equal([StageNames.Vad], executed);

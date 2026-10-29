@@ -490,7 +490,7 @@ public sealed partial class OrchestrationServiceTests
             new Dictionary<string, ExecutionProviderKind>(),
             TtsModelAlias: "kokoro-onnx");
 
-        RuntimeModelSelections result = Trackdub.Application.Dubbing.DubbingPipelineEngine
+        RuntimeModelSelections result = Trackdub.Application.Dubbing.UnattendedVoiceSelection
             .ApplyPresetVoiceModelSelection(selections, options, state);
 
         Assert.Equal(Qwen3TtsDefaults.ResolveCustomVoiceAlias(tier: null), result.TtsModelAlias);
@@ -522,7 +522,7 @@ public sealed partial class OrchestrationServiceTests
             new Dictionary<string, ExecutionProviderKind>(),
             TtsModelAlias: Qwen3TtsDefaults.Base06Alias);
 
-        RuntimeModelSelections result = Trackdub.Application.Dubbing.DubbingPipelineEngine
+        RuntimeModelSelections result = Trackdub.Application.Dubbing.UnattendedVoiceSelection
             .ApplyPresetVoiceModelSelection(selections, options, state);
 
         Assert.Equal(Qwen3TtsDefaults.ResolveCustomVoiceAlias(tier: null), result.TtsModelAlias);
@@ -550,7 +550,7 @@ public sealed partial class OrchestrationServiceTests
             new Dictionary<string, ExecutionProviderKind>(),
             TtsModelAlias: VoiceCloningDefaults.CosyVoicePrimaryAlias);
 
-        RuntimeModelSelections result = Trackdub.Application.Dubbing.DubbingPipelineEngine
+        RuntimeModelSelections result = Trackdub.Application.Dubbing.UnattendedVoiceSelection
             .ApplyPresetVoiceModelSelection(selections, options, state);
 
         Assert.Equal(Qwen3TtsDefaults.ResolveCustomVoiceAlias(tier: null), result.TtsModelAlias);
@@ -581,7 +581,7 @@ public sealed partial class OrchestrationServiceTests
             new Dictionary<string, ExecutionProviderKind>(),
             TtsModelAlias: Qwen3TtsDefaults.CustomVoice17Alias);
 
-        RuntimeModelSelections result = Trackdub.Application.Dubbing.DubbingPipelineEngine
+        RuntimeModelSelections result = Trackdub.Application.Dubbing.UnattendedVoiceSelection
             .ApplyPresetVoiceModelSelection(selections, options, state);
 
         Assert.Equal(Qwen3TtsDefaults.CustomVoice17Alias, result.TtsModelAlias);
@@ -615,7 +615,7 @@ public sealed partial class OrchestrationServiceTests
             new Dictionary<string, ExecutionProviderKind>(),
             TtsModelAlias: "kokoro-onnx");
 
-        RuntimeModelSelections result = Trackdub.Application.Dubbing.DubbingPipelineEngine
+        RuntimeModelSelections result = Trackdub.Application.Dubbing.UnattendedVoiceSelection
             .ApplyPresetVoiceModelSelection(selections, options, state);
 
         Assert.Equal(Qwen3TtsDefaults.ResolveCustomVoiceAlias(tier: null), result.TtsModelAlias);
@@ -653,11 +653,11 @@ public sealed partial class OrchestrationServiceTests
             new Dictionary<string, ExecutionProviderKind>(),
             TtsModelAlias: "kokoro-onnx");
 
-        RuntimeModelSelections result = Trackdub.Application.Dubbing.DubbingPipelineEngine
+        RuntimeModelSelections result = Trackdub.Application.Dubbing.UnattendedVoiceSelection
             .ApplyPresetVoiceModelSelection(selections, options, state);
 
         Assert.Equal("kokoro-onnx", result.TtsModelAlias);
-        Assert.True(Trackdub.Application.Dubbing.DubbingPipelineEngine.RequiresCompanionCustomVoiceModel(
+        Assert.True(Trackdub.Application.Dubbing.UnattendedVoiceSelection.RequiresCompanionCustomVoiceModel(
             selections,
             options,
             state));
@@ -680,7 +680,7 @@ public sealed partial class OrchestrationServiceTests
             ["SPEAKER_00"] = "af_bella",
         };
 
-        IReadOnlyDictionary<Guid, string> resolved = Trackdub.Application.Dubbing.DubbingPipelineEngine
+        IReadOnlyDictionary<Guid, string> resolved = Trackdub.Application.Dubbing.UnattendedVoiceSelection
             .ResolveVoiceAssignmentOverrides(freshState, overrides);
 
         Assert.Empty(resolved);
@@ -710,11 +710,11 @@ public sealed partial class OrchestrationServiceTests
             new Dictionary<string, ExecutionProviderKind>(),
             TtsModelAlias: "kokoro-onnx");
 
-        RuntimeModelSelections result = Trackdub.Application.Dubbing.DubbingPipelineEngine
+        RuntimeModelSelections result = Trackdub.Application.Dubbing.UnattendedVoiceSelection
             .ApplyPresetVoiceModelSelection(selections, options, freshState);
 
         Assert.Equal("kokoro-onnx", result.TtsModelAlias);
-        Assert.True(Trackdub.Application.Dubbing.DubbingPipelineEngine.RequiresCompanionCustomVoiceModel(
+        Assert.True(Trackdub.Application.Dubbing.UnattendedVoiceSelection.RequiresCompanionCustomVoiceModel(
             selections,
             options,
             freshState));
@@ -730,7 +730,7 @@ public sealed partial class OrchestrationServiceTests
         };
 
         InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() =>
-            Trackdub.Application.Dubbing.DubbingPipelineEngine.ResolveVoiceAssignmentOverrides(state, overrides));
+            Trackdub.Application.Dubbing.UnattendedVoiceSelection.ResolveVoiceAssignmentOverrides(state, overrides));
         Assert.Contains("SPEAKER_99", exception.Message, StringComparison.Ordinal);
     }
 
@@ -767,11 +767,11 @@ public sealed partial class OrchestrationServiceTests
             new Dictionary<string, ExecutionProviderKind>(),
             TtsModelAlias: "kokoro-onnx");
 
-        RuntimeModelSelections result = Trackdub.Application.Dubbing.DubbingPipelineEngine
+        RuntimeModelSelections result = Trackdub.Application.Dubbing.UnattendedVoiceSelection
             .ApplyPresetVoiceModelSelection(selections, options, state);
 
         Assert.Equal("kokoro-onnx", result.TtsModelAlias);
-        Assert.True(Trackdub.Application.Dubbing.DubbingPipelineEngine.RequiresCompanionCustomVoiceModel(
+        Assert.True(Trackdub.Application.Dubbing.UnattendedVoiceSelection.RequiresCompanionCustomVoiceModel(
             selections,
             options,
             state));
@@ -804,11 +804,11 @@ public sealed partial class OrchestrationServiceTests
             new Dictionary<string, ExecutionProviderKind>(),
             TtsModelAlias: "kokoro-onnx");
 
-        RuntimeModelSelections result = Trackdub.Application.Dubbing.DubbingPipelineEngine
+        RuntimeModelSelections result = Trackdub.Application.Dubbing.UnattendedVoiceSelection
             .ApplyPresetVoiceModelSelection(selections, options, state);
 
         Assert.Equal("kokoro-onnx", result.TtsModelAlias);
-        Assert.False(Trackdub.Application.Dubbing.DubbingPipelineEngine.RequiresCompanionCustomVoiceModel(
+        Assert.False(Trackdub.Application.Dubbing.UnattendedVoiceSelection.RequiresCompanionCustomVoiceModel(
             result,
             options,
             state));
@@ -844,11 +844,11 @@ public sealed partial class OrchestrationServiceTests
             new Dictionary<string, ExecutionProviderKind>(),
             TtsModelAlias: VoiceCloningDefaults.CosyVoicePrimaryAlias);
 
-        RuntimeModelSelections result = Trackdub.Application.Dubbing.DubbingPipelineEngine
+        RuntimeModelSelections result = Trackdub.Application.Dubbing.UnattendedVoiceSelection
             .ApplyPresetVoiceModelSelection(selections, options, state);
 
         Assert.Equal(Qwen3TtsDefaults.ResolveCustomVoiceAlias(tier: null), result.TtsModelAlias);
-        Assert.False(Trackdub.Application.Dubbing.DubbingPipelineEngine.RequiresCompanionCustomVoiceModel(
+        Assert.False(Trackdub.Application.Dubbing.UnattendedVoiceSelection.RequiresCompanionCustomVoiceModel(
             result,
             options,
             state));
@@ -874,7 +874,7 @@ public sealed partial class OrchestrationServiceTests
             new Dictionary<string, ExecutionProviderKind>(),
             TtsModelAlias: "kokoro-onnx");
 
-        RuntimeModelSelections result = Trackdub.Application.Dubbing.DubbingPipelineEngine
+        RuntimeModelSelections result = Trackdub.Application.Dubbing.UnattendedVoiceSelection
             .ApplyPresetVoiceModelSelection(selections, options, state);
 
         Assert.Equal(

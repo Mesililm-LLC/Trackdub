@@ -65,16 +65,16 @@ public sealed class TrackdubDubbingEngine : IDubbingPipelineEngine, ITransientFa
     internal static Dictionary<Guid, string>? BuildUnattendedFallbackVoiceIds(
         TranscriptProjectState state,
         string? targetLanguageCode) =>
-        DubbingPipelineEngine.BuildUnattendedFallbackVoiceIds(state, targetLanguageCode);
+        UnattendedVoiceSelection.BuildUnattendedFallbackVoiceIds(state, targetLanguageCode);
 
     internal static DubbingSessionOptions ApplyVoiceCloningDefaults(DubbingSessionOptions options) =>
-        DubbingPipelineEngine.ApplyVoiceCloningDefaults(options);
+        UnattendedVoiceSelection.ApplyVoiceCloningDefaults(options);
 
     internal static GenerateTtsForAllSpeakersRequest BuildUnattendedTtsRequest(
         TranscriptProjectState state,
         DubbingSessionOptions options,
         string? ttsModelAlias) =>
-        DubbingPipelineEngine.BuildUnattendedTtsRequest(state, options, ttsModelAlias);
+        UnattendedVoiceSelection.BuildUnattendedTtsRequest(state, options, ttsModelAlias);
 
     internal static ExportOutputContainer ResolveExportContainer(string? exportFormat) =>
         DubbingPipelineEngine.ResolveExportContainer(exportFormat);
@@ -90,7 +90,7 @@ public sealed class TrackdubDubbingEngine : IDubbingPipelineEngine, ITransientFa
         Dictionary<string, string> snapshot,
         RuntimeModelSelections selections,
         IModelAliasResolver? modelAliasResolver = null) =>
-        DubbingPipelineEngine.MergeRuntimeModelSelectionsIntoSnapshot(snapshot, selections, modelAliasResolver);
+        DubbingExecutionSnapshot.MergeRuntimeModelSelectionsIntoSnapshot(snapshot, selections, modelAliasResolver);
 
     internal static (StageStatus Status, string? ReasonCode, IReadOnlyList<string>? Degradations)
         MapStageRunToSdkOutcome(StageRunRecord? stageRun) =>
@@ -105,5 +105,5 @@ public sealed class TrackdubDubbingEngine : IDubbingPipelineEngine, ITransientFa
         DubbingPipelineEngine.ResolveStageOrder(stageFilter);
 
     internal static Dictionary<string, string> CaptureExecutionSnapshot(DubbingSessionOptions options) =>
-        DubbingPipelineEngine.CaptureExecutionSnapshot(options);
+        DubbingExecutionSnapshot.CaptureExecutionSnapshot(options);
 }

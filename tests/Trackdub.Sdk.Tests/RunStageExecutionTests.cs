@@ -306,9 +306,9 @@ public sealed class RunStageExecutionTests : IDisposable
             services.Replace(ServiceDescriptor.Singleton<IPipelineReadinessService>(
                 new FakePipelineReadinessService(ReadinessState.DownloadRequired)));
             services.Replace(ServiceDescriptor.Singleton<IPipelineModelSetupInteraction>(
-                new SkipOptionalStageSetupInteraction()));
+                new FixedDecisionSetupInteraction(RuntimeModelSetupDecision.SkipOptionalStage)));
             services.Replace(ServiceDescriptor.Singleton<IRuntimeModelBootstrapService>(
-                new MissingRuntimeModelBootstrapService()));
+                new StubRuntimeModelBootstrapService(isAvailable: false)));
         });
 
         await using (TrackdubSession session = factory.CreateSession(projectDir))
@@ -351,9 +351,9 @@ public sealed class RunStageExecutionTests : IDisposable
             services.Replace(ServiceDescriptor.Singleton<IPipelineReadinessService>(
                 new FakePipelineReadinessService(ReadinessState.DownloadRequired)));
             services.Replace(ServiceDescriptor.Singleton<IPipelineModelSetupInteraction>(
-                new SkipOptionalStageSetupInteraction()));
+                new FixedDecisionSetupInteraction(RuntimeModelSetupDecision.SkipOptionalStage)));
             services.Replace(ServiceDescriptor.Singleton<IRuntimeModelBootstrapService>(
-                new MissingRuntimeModelBootstrapService()));
+                new StubRuntimeModelBootstrapService(isAvailable: false)));
             // Normalization must succeed on a real WAV payload so the stage reaches the
             // preparation path; the placeholder media file is not extractable by ffmpeg.
             services.Replace(ServiceDescriptor.Singleton<IAudioExtractionService>(
@@ -402,9 +402,9 @@ public sealed class RunStageExecutionTests : IDisposable
             services.Replace(ServiceDescriptor.Singleton<IPipelineReadinessService>(
                 new FakePipelineReadinessService(ReadinessState.DownloadRequired)));
             services.Replace(ServiceDescriptor.Singleton<IPipelineModelSetupInteraction>(
-                new SkipOptionalStageSetupInteraction()));
+                new FixedDecisionSetupInteraction(RuntimeModelSetupDecision.SkipOptionalStage)));
             services.Replace(ServiceDescriptor.Singleton<IRuntimeModelBootstrapService>(
-                new MissingRuntimeModelBootstrapService()));
+                new StubRuntimeModelBootstrapService(isAvailable: false)));
         });
 
         await using (TrackdubSession session = factory.CreateSession(projectDir))
@@ -445,6 +445,94 @@ public sealed class RunStageExecutionTests : IDisposable
         Assert.Equal(
             Enumerable.Range(1, secondRun.Events.Count).Select(i => (long)i).ToArray(),
             secondSequence);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ProvisioningCancelled_FailsPreFlightWithoutReevaluating()
+    {
+        var readiness = new FakePipelineReadinessService(ReadinessState.DownloadRequired);
+        var interaction = new FixedDecisionSetupInteraction(RuntimeModelSetupDecision.Cancel);
+
+        DubbingRunResult result = await RunSeparationPreFlightAsync(readiness, interaction, modelsAvailable: false);
+
+        AssertPreFlightFailure(result, "Model provisioning was cancelled during pre-flight.");
+        Assert.Equal((1, 0), (readiness.EvaluateCalls, readiness.InvalidatedStages.Count));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_StillBlockedAfterProvisioning_ReevaluatesAndReportsAggregatedFailure()
+    {
+        // Provisioning succeeds, but the refreshed readiness pass still blocks (e.g. the stage
+        // now resolves to a cloud model without a key). The failure must come from the second
+        // evaluation, after the cache for the remaining stages was invalidated.
+        var readiness = new FakePipelineReadinessService(
+            ReadinessState.DownloadRequired,
+            ReadinessState.CloudKeyMissing);
+        var interaction = new FixedDecisionSetupInteraction(RuntimeModelSetupDecision.Cancel);
+
+        DubbingRunResult result = await RunSeparationPreFlightAsync(readiness, interaction, modelsAvailable: true);
+
+        AssertPreFlightFailure(result, $"{StageNames.Separation}: API key not configured for cloud provider");
+        Assert.Equal(2, readiness.EvaluateCalls);
+        Assert.NotSame(readiness.ReceivedSelections[0], readiness.ReceivedSelections[1]);
+        IReadOnlyList<RuntimeStage>? invalidated = Assert.Single(readiness.InvalidatedStages);
+        Assert.Equal([RuntimeStage.Separation], invalidated);
+        Assert.NotNull(result.ExecutionSnapshot);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_BlockedWithoutDownload_FailsPreFlightWithoutProvisioning()
+    {
+        var readiness = new FakePipelineReadinessService(ReadinessState.CommercialBlocked);
+        var interaction = new FixedDecisionSetupInteraction(RuntimeModelSetupDecision.Cancel);
+
+        DubbingRunResult result = await RunSeparationPreFlightAsync(readiness, interaction, modelsAvailable: false);
+
+        AssertPreFlightFailure(result, $"{StageNames.Separation}: selected model is non-commercial only");
+        Assert.Equal((1, 0), (readiness.EvaluateCalls, interaction.CreateCallbacksCalls));
+    }
+
+    private static void AssertPreFlightFailure(DubbingRunResult result, string expectedFailure)
+    {
+        Assert.Equal(DubbingRunStatus.PreFlightFailed, result.OverallStatus);
+        Assert.Equal([expectedFailure], result.PreFlightFailures);
+    }
+
+    private async Task<DubbingRunResult> RunSeparationPreFlightAsync(
+        FakePipelineReadinessService readiness,
+        FixedDecisionSetupInteraction interaction,
+        bool modelsAvailable)
+    {
+        string tempDir = CreateTempProjectDir();
+        string projectDir = Path.Join(tempDir, "sample.trackdub");
+        Directory.CreateDirectory(projectDir);
+        string mediaPath = Path.Join(tempDir, "video.mp4");
+        await File.WriteAllBytesAsync(mediaPath, [0x00, 0x00, 0x00, 0x20]);
+
+        using TrackdubSessionFactory factory = CreateFactory(services =>
+        {
+            services.Replace(ServiceDescriptor.Singleton<IPipelineReadinessService>(readiness));
+            services.Replace(ServiceDescriptor.Singleton<IPipelineModelSetupInteraction>(interaction));
+            services.Replace(ServiceDescriptor.Singleton<IRuntimeModelBootstrapService>(
+                new StubRuntimeModelBootstrapService(modelsAvailable)));
+        });
+
+        await using (TrackdubSession session = factory.CreateSession(projectDir))
+        {
+            await session.Workspace.CreateMediaSpineAsync(
+                new CreateTranscriptProjectRequest("sample", mediaPath),
+                CancellationToken.None);
+        }
+
+        var engine = new TrackdubDubbingEngine(factory);
+        return await engine.ExecuteAsync(new DubbingSessionOptions
+        {
+            SourceMediaPath = mediaPath,
+            ProjectOutputDirectory = projectDir,
+            TargetLanguageCode = "es",
+            EnableStemSeparation = true,
+            StageFilter = [StageNames.Separation],
+        });
     }
 
     private sealed class CollectingProgress : IProgress<PipelineProgressEvent>
@@ -498,8 +586,18 @@ public sealed class RunStageExecutionTests : IDisposable
         }
     }
 
-    private sealed class FakePipelineReadinessService(ReadinessState status) : IPipelineReadinessService
+    /// <summary>
+    /// Reports every enabled stage with the status for the current evaluation; the last status
+    /// repeats once the sequence is exhausted.
+    /// </summary>
+    private sealed class FakePipelineReadinessService(params ReadinessState[] statusPerEvaluation) : IPipelineReadinessService
     {
+        public int EvaluateCalls { get; private set; }
+
+        public List<IReadOnlyList<RuntimeStage>?> InvalidatedStages { get; } = [];
+
+        public List<RuntimeModelSelections> ReceivedSelections { get; } = [];
+
         public Task<PipelineReadinessReport> EvaluateAsync(
             IReadOnlyList<RuntimeStage> enabledStages,
             RuntimeModelSelections selections,
@@ -508,8 +606,12 @@ public sealed class RunStageExecutionTests : IDisposable
             string? sourceLanguageCode = null,
             string? targetLanguageCode = null,
             bool validateRuntime = true,
-            IReadOnlyDictionary<string, bool>? explicitEgressConsents = null) =>
-            Task.FromResult(new PipelineReadinessReport(enabledStages
+            IReadOnlyDictionary<string, bool>? explicitEgressConsents = null)
+        {
+            ReadinessState status = statusPerEvaluation[Math.Min(EvaluateCalls, statusPerEvaluation.Length - 1)];
+            EvaluateCalls++;
+            ReceivedSelections.Add(selections);
+            return Task.FromResult(new PipelineReadinessReport(enabledStages
                 .Select(stage => new StageReadiness(
                     StageName: StageNameFor(stage),
                     Status: status,
@@ -518,10 +620,10 @@ public sealed class RunStageExecutionTests : IDisposable
                     ModelAlias: null,
                     ResolveAction: "download"))
                 .ToArray()));
-
-        public void InvalidateCache(IReadOnlyList<RuntimeStage>? stages = null)
-        {
         }
+
+        public void InvalidateCache(IReadOnlyList<RuntimeStage>? stages = null) =>
+            InvalidatedStages.Add(stages?.ToArray());
 
         private static string StageNameFor(RuntimeStage stage) => stage switch
         {
@@ -540,19 +642,24 @@ public sealed class RunStageExecutionTests : IDisposable
         };
     }
 
-    private sealed class SkipOptionalStageSetupInteraction : IPipelineModelSetupInteraction
+    private sealed class FixedDecisionSetupInteraction(RuntimeModelSetupDecision decision) : IPipelineModelSetupInteraction
     {
+        public int CreateCallbacksCalls { get; private set; }
+
         public RuntimeModelSetupCallbacks CreateCallbacks(
             IProgress<PipelineProgressEvent>? progress,
-            CancellationToken cancellationToken) =>
-            new(
-                ResolveDecisionAsync: _ => Task.FromResult(RuntimeModelSetupDecision.SkipOptionalStage),
+            CancellationToken cancellationToken)
+        {
+            CreateCallbacksCalls++;
+            return new(
+                ResolveDecisionAsync: _ => Task.FromResult(decision),
                 PickImportFileAsync: () => Task.FromResult<string?>(null),
                 CreateDownloadProgress: _ => new Progress<ModelDownloadProgress>(),
                 RunOperationAsync: (operation, _) => operation(cancellationToken));
+        }
     }
 
-    private sealed class MissingRuntimeModelBootstrapService : IRuntimeModelBootstrapService
+    private sealed class StubRuntimeModelBootstrapService(bool isAvailable) : IRuntimeModelBootstrapService
     {
         public Task<RequiredRuntimeModelStatus?> GetRequiredModelStatusAsync(
             RuntimeModelRequest request,
@@ -567,7 +674,7 @@ public sealed class RunStageExecutionTests : IDisposable
                 ModelPath: "missing/model.onnx",
                 SourceUrl: "https://example.invalid/model.onnx",
                 License: "test",
-                IsAvailable: false,
+                IsAvailable: isAvailable,
                 CanAutoDownload: true,
                 CanImportSingleFile: true,
                 RequiresAttribution: false,
