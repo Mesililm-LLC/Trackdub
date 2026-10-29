@@ -47,6 +47,131 @@ public sealed class SqliteSpeakerRepository(
         return speakers;
     }
 
+    public async Task<IReadOnlyList<MergedSpeakerEntry>> ListMergedSpeakersAsync(Guid projectId, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(database.DatabasePath))
+        {
+            return [];
+        }
+
+        await database.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await using SqliteConnectionLease connectionLease = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        SqliteConnection connection = connectionLease.Connection;
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT id,
+                   project_id,
+                   display_name,
+                   created_at_utc,
+                   merged_into_speaker_id
+            FROM speakers
+            WHERE project_id = $projectId AND merged_into_speaker_id IS NOT NULL
+            ORDER BY created_at_utc, display_name;
+            """;
+        command.Parameters.AddWithValue("$projectId", projectId.ToString("D"));
+
+        var entries = new List<MergedSpeakerEntry>();
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            entries.Add(new MergedSpeakerEntry(
+                new ProjectSpeaker(
+                    Guid.Parse(reader.GetString(0)),
+                    Guid.Parse(reader.GetString(1)),
+                    reader.GetString(2),
+                    new DateTimeOffset(DateTime.SpecifyKind(reader.GetDateTime(3), DateTimeKind.Utc))),
+                Guid.Parse(reader.GetString(4))));
+        }
+
+        // Merge chains are legal (S -> T1, then T1 -> T2 leaves S pointing at the archived T1),
+        // so resolve every entry to the surviving active target like diarization replay does.
+        var targets = new Dictionary<Guid, Guid>();
+        foreach (MergedSpeakerEntry entry in entries)
+        {
+            targets[entry.Speaker.Id] = entry.MergedIntoSpeakerId;
+        }
+
+        return entries
+            .Select(entry => entry with { MergedIntoSpeakerId = ResolveActiveSpeaker(targets, entry.MergedIntoSpeakerId) })
+            .ToArray();
+    }
+
+    public async Task DeleteEmptySpeakerAsync(Guid projectId, Guid speakerId, CancellationToken cancellationToken)
+    {
+        await database.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await using SqliteConnectionLease connectionLease = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        SqliteConnection connection = connectionLease.Connection;
+        await using SqliteTransaction transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+        await using (SqliteCommand validate = connection.CreateCommand())
+        {
+            validate.Transaction = transaction;
+            validate.CommandText =
+                """
+                SELECT merged_into_speaker_id
+                FROM speakers
+                WHERE project_id = $projectId AND id = $speakerId;
+                """;
+            validate.Parameters.AddWithValue("$projectId", projectId.ToString("D"));
+            validate.Parameters.AddWithValue("$speakerId", speakerId.ToString("D"));
+            object? row = await validate.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            if (row is null)
+            {
+                throw new InvalidOperationException("The selected speaker was not found.");
+            }
+
+            if (row is not DBNull)
+            {
+                throw new InvalidOperationException("Merged speakers are retained as history and cannot be deleted.");
+            }
+        }
+
+        await using (SqliteCommand guard = connection.CreateCommand())
+        {
+            guard.Transaction = transaction;
+            guard.CommandText =
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM speaker_turns
+                     WHERE project_id = $projectId AND speaker_id = $speakerId) +
+                    (SELECT COUNT(*) FROM transcript_segments
+                     WHERE speaker_id = $speakerId AND transcript_revision_id IN (
+                         SELECT id FROM transcript_revisions WHERE project_id = $projectId)) +
+                    (SELECT COUNT(*) FROM voice_assignments
+                     WHERE project_id = $projectId AND speaker_id = $speakerId) +
+                    (SELECT COUNT(*) FROM voice_clone_consents
+                     WHERE project_id = $projectId AND speaker_id = $speakerId) +
+                    (SELECT COUNT(*) FROM speakers
+                     WHERE project_id = $projectId AND merged_into_speaker_id = $speakerId);
+                """;
+            guard.Parameters.AddWithValue("$projectId", projectId.ToString("D"));
+            guard.Parameters.AddWithValue("$speakerId", speakerId.ToString("D"));
+            long references = Convert.ToInt64(await guard.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture);
+            if (references > 0)
+            {
+                throw new InvalidOperationException("Only speakers with no turns, segments, voice assignments, voice clone consents, or archived merge history can be removed.");
+            }
+        }
+
+        await using (SqliteCommand delete = connection.CreateCommand())
+        {
+            delete.Transaction = transaction;
+            delete.CommandText =
+                """
+                DELETE FROM speakers
+                WHERE project_id = $projectId
+                  AND id = $speakerId
+                  AND merged_into_speaker_id IS NULL;
+                """;
+            delete.Parameters.AddWithValue("$projectId", projectId.ToString("D"));
+            delete.Parameters.AddWithValue("$speakerId", speakerId.ToString("D"));
+            await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<IReadOnlyList<SpeakerTurn>> ListTurnsAsync(Guid projectId, CancellationToken cancellationToken)
     {
         if (!File.Exists(database.DatabasePath))

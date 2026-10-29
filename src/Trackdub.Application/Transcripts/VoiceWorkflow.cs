@@ -1,3 +1,5 @@
+using Trackdub.Domain.Tts;
+
 namespace Trackdub.Application.Transcripts;
 
 public sealed class VoiceWorkflow(
@@ -22,6 +24,17 @@ public sealed class VoiceWorkflow(
         PreviewVoiceRequest request,
         CancellationToken cancellationToken) =>
         ttsOrchestrationService.PreviewVoiceAsync(request, cancellationToken);
+
+    public async Task<VoiceAssignment?> GetVoiceAssignmentHistoryAsync(
+        Guid speakerId,
+        CancellationToken cancellationToken)
+    {
+        TranscriptProjectState currentState = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        return await voiceAssignmentService.GetVoiceAssignmentHistoryAsync(
+            currentState.ProjectState.Project.Id,
+            speakerId,
+            cancellationToken).ConfigureAwait(false);
+    }
 
     private Task<TranscriptProjectState> OpenAsync(CancellationToken cancellationToken) =>
         stateService.OpenAsync(requestedTranslationTargetLanguage: null, cancellationToken);

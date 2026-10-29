@@ -60,6 +60,22 @@ public sealed class SpeakerAssignmentService(
             cancellationToken).ConfigureAwait(false);
     }
 
+    public Task<IReadOnlyList<MergedSpeakerEntry>> ListMergedSpeakersAsync(
+        TranscriptProjectState currentState,
+        CancellationToken cancellationToken) =>
+        speakerRepository.ListMergedSpeakersAsync(
+            currentState.ProjectState.Project.Id,
+            cancellationToken);
+
+    public Task DeleteEmptySpeakerAsync(
+        TranscriptProjectState currentState,
+        DeleteEmptySpeakerRequest request,
+        CancellationToken cancellationToken) =>
+        speakerRepository.DeleteEmptySpeakerAsync(
+            currentState.ProjectState.Project.Id,
+            request.SpeakerId,
+            cancellationToken);
+
     public Task AssignSpeakerToSegmentAsync(
         TranscriptProjectState currentState,
         AssignSpeakerToSegmentRequest request,

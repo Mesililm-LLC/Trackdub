@@ -650,6 +650,17 @@ public sealed class TranscriptWorkspace(
             ct => Speakers.MergeSpeakersAsync(request, ct),
             cancellationToken);
 
+    public Task<IReadOnlyList<Domain.Speakers.MergedSpeakerEntry>> ListMergedSpeakersAsync(
+        CancellationToken cancellationToken) =>
+        Speakers.ListMergedSpeakersAsync(cancellationToken);
+
+    public Task<TranscriptProjectState> DeleteEmptySpeakerAsync(
+        DeleteEmptySpeakerRequest request,
+        CancellationToken cancellationToken) =>
+        RunLightWriteAsync(
+            ct => Speakers.DeleteEmptySpeakerAsync(request, ct),
+            cancellationToken);
+
     public Task<TranscriptProjectState> AssignSpeakerToSegmentAsync(
         AssignSpeakerToSegmentRequest request,
         CancellationToken cancellationToken) =>
@@ -700,6 +711,11 @@ public sealed class TranscriptWorkspace(
         RunLightWriteAsync(
             ct => Voices.AssignVoiceToSpeakerAsync(request, ct),
             cancellationToken);
+
+    public Task<Domain.Tts.VoiceAssignment?> GetVoiceAssignmentHistoryAsync(
+        Guid speakerId,
+        CancellationToken cancellationToken) =>
+        Voices.GetVoiceAssignmentHistoryAsync(speakerId, cancellationToken);
 
     // Restoring an editing snapshot is a write-only operation; no inference involved.
     public Task<TranscriptProjectState> RestoreEditingStateAsync(

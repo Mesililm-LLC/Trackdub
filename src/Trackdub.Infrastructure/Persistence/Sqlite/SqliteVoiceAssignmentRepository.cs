@@ -62,6 +62,41 @@ public sealed class SqliteVoiceAssignmentRepository(
             : null;
     }
 
+    public async Task<VoiceAssignment?> GetForSpeakerIncludingMergedAsync(
+        Guid projectId,
+        Guid speakerId,
+        CancellationToken cancellationToken)
+    {
+        await database.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await using SqliteConnectionLease connectionLease = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        SqliteConnection connection = connectionLease.Connection;
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT id,
+                   project_id,
+                   speaker_id,
+                   voice_model_id,
+                   voice_variant,
+                   requires_consent,
+                   created_at_utc,
+                   is_fallback,
+                   reference_clip_artifact_id
+            FROM voice_assignments
+            WHERE project_id = $projectId
+              AND speaker_id = $speakerId
+              AND is_fallback = 0
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$projectId", projectId.ToString("D"));
+        command.Parameters.AddWithValue("$speakerId", speakerId.ToString("D"));
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? ReadAssignment(reader)
+            : null;
+    }
+
     public async Task<IReadOnlyList<VoiceAssignment>> GetAllAsync(
         Guid projectId,
         CancellationToken cancellationToken)

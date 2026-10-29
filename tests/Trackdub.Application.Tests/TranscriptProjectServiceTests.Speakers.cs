@@ -69,6 +69,37 @@ public partial class TranscriptProjectServiceTests
         Assert.DoesNotContain(scope.SpeakerRepository.Speakers, speaker => speaker.Id == source.Id);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MergeSpeakersAsync_retains_history_and_protects_reference_free_targets(bool mergeAgain)
+    {
+        (FakeServiceScope scope, TranscriptProjectState state) = await CreateWorkspaceProjectAsync();
+        Guid projectId = state.ProjectState.Project.Id;
+        ProjectSpeaker source = await scope.SpeakerRepository.CreateSpeakerAsync(projectId, TestContext.Current.CancellationToken);
+        ProjectSpeaker target = await scope.SpeakerRepository.CreateSpeakerAsync(projectId, TestContext.Current.CancellationToken);
+
+        await scope.Workspace.Speakers.MergeSpeakersAsync(
+            new MergeSpeakersRequest(source.Id, target.Id), TestContext.Current.CancellationToken);
+        if (mergeAgain)
+        {
+            ProjectSpeaker survivor = await scope.SpeakerRepository.CreateSpeakerAsync(projectId, TestContext.Current.CancellationToken);
+            await scope.Workspace.Speakers.MergeSpeakersAsync(
+                new MergeSpeakersRequest(target.Id, survivor.Id), TestContext.Current.CancellationToken);
+            target = survivor;
+        }
+
+        IReadOnlyList<MergedSpeakerEntry> history = await scope.Workspace.Speakers.ListMergedSpeakersAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(mergeAgain ? 2 : 1, history.Count);
+        Assert.Equal(source, Assert.Single(history, entry => entry.Speaker.Id == source.Id).Speaker);
+        Assert.All(history, entry => Assert.Equal(target.Id, entry.MergedIntoSpeakerId));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => scope.Workspace.Speakers.DeleteEmptySpeakerAsync(
+            new DeleteEmptySpeakerRequest(target.Id), TestContext.Current.CancellationToken));
+
+        Assert.Contains(scope.SpeakerRepository.Speakers, speaker => speaker.Id == target.Id);
+    }
+
     [Fact]
     public async Task AssignSpeakerToSegmentAsync_creates_new_revision_with_override()
     {
