@@ -28,12 +28,22 @@ public sealed partial class DubbingPipelineEngine
         IReadOnlySet<string> DeclinedOptionalStages,
         List<StageOutcome> StageOutcomes);
 
-    /// <summary>Inputs for choosing which later stage to warm up next.</summary>
-    private sealed record WarmupSchedule(
+    /// <summary>The ordered stages to run, and the inputs for choosing which later stage to warm up next.</summary>
+    internal sealed record StageSchedule(
         string[] StagesToRun,
         RuntimeModelSelections RuntimeSelections,
         DubbingSessionOptions Options,
         IReadOnlySet<string> DeclinedOptionalStages);
+
+    /// <summary>
+    /// Per-stage hooks for <see cref="RunScheduledStagesAsync"/>: a gate that may return a skip
+    /// outcome, the execution itself, where outcomes go, and where warmup skips are reported.
+    /// </summary>
+    internal sealed record StageCallbacks(
+        Func<string, CancellationToken, Task<StageOutcome?>> GateStageAsync,
+        Func<string, CancellationToken, Task<StageOutcome>> ExecuteStageAsync,
+        Action<StageOutcome> RecordOutcome,
+        IProgress<PipelineProgressEvent>? Progress);
 
     /// <summary>
     /// Runs each requested stage in order, honoring cancellation, failed prerequisites,
@@ -49,15 +59,9 @@ public sealed partial class DubbingPipelineEngine
         try
         {
             await RunScheduledStagesAsync(
-                plan.StagesToRun,
+                new StageSchedule(plan.StagesToRun, run.RuntimeSelections, run.Options, plan.DeclinedOptionalStages),
                 run.Session.Services?.GetService<IStageWarmupCoordinator>(),
-                run.RuntimeSelections,
-                run.Options,
-                plan.DeclinedOptionalStages,
-                gateStageAsync: loop.GateAsync,
-                executeStageAsync: loop.ExecuteAsync,
-                recordOutcome: loop.Record,
-                telemetry.Progress,
+                new StageCallbacks(loop.GateAsync, loop.ExecuteAsync, loop.Record, telemetry.Progress),
                 cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -81,51 +85,43 @@ public sealed partial class DubbingPipelineEngine
     /// scheduling for those paths.
     /// </summary>
     internal static async Task RunScheduledStagesAsync(
-        string[] stagesToRun,
+        StageSchedule schedule,
         IStageWarmupCoordinator? warmupCoordinator,
-        RuntimeModelSelections runtimeSelections,
-        DubbingSessionOptions options,
-        IReadOnlySet<string> declinedOptionalStages,
-        Func<string, CancellationToken, Task<StageOutcome?>> gateStageAsync,
-        Func<string, CancellationToken, Task<StageOutcome>> executeStageAsync,
-        Action<StageOutcome> recordOutcome,
-        IProgress<PipelineProgressEvent>? progress,
+        StageCallbacks callbacks,
         CancellationToken cancellationToken)
     {
-        var lookahead = new WarmupLookahead(
-            warmupCoordinator,
-            new WarmupSchedule(stagesToRun, runtimeSelections, options, declinedOptionalStages));
+        var lookahead = new WarmupLookahead(warmupCoordinator, schedule);
 
         try
         {
-            for (int i = 0; i < stagesToRun.Length; i++)
+            for (int i = 0; i < schedule.StagesToRun.Length; i++)
             {
-                string stageName = stagesToRun[i];
+                string stageName = schedule.StagesToRun[i];
 
                 // Gate first: a gate-skipped stage (cancelled, prerequisite-failed,
                 // declined, resume-valid) keeps its gate outcome even when its
                 // lookahead warmup failed — the warmup verdict applies only to a
                 // stage that would actually execute.
-                StageOutcome? gateOutcome = await gateStageAsync(stageName, cancellationToken).ConfigureAwait(false);
+                StageOutcome? gateOutcome = await callbacks.GateStageAsync(stageName, cancellationToken).ConfigureAwait(false);
                 if (gateOutcome is not null)
                 {
                     await lookahead.DiscardIfTargetingAsync(stageName, cancellationToken).ConfigureAwait(false);
-                    recordOutcome(gateOutcome);
+                    callbacks.RecordOutcome(gateOutcome);
                     continue;
                 }
 
                 StageOutcome? warmupSkip = await lookahead
-                    .TakeFailedVerdictAsync(stageName, progress, cancellationToken)
+                    .TakeFailedVerdictAsync(stageName, callbacks.Progress, cancellationToken)
                     .ConfigureAwait(false);
                 if (warmupSkip is not null)
                 {
-                    recordOutcome(warmupSkip);
+                    callbacks.RecordOutcome(warmupSkip);
                     continue;
                 }
 
                 lookahead.StartConcurrentIfAllowed(i + 1, cancellationToken);
-                StageOutcome outcome = await executeStageAsync(stageName, cancellationToken).ConfigureAwait(false);
-                recordOutcome(outcome);
+                StageOutcome outcome = await callbacks.ExecuteStageAsync(stageName, cancellationToken).ConfigureAwait(false);
+                callbacks.RecordOutcome(outcome);
                 lookahead.StartIfIdle(i + 1, cancellationToken);
             }
         }
@@ -263,7 +259,7 @@ public sealed partial class DubbingPipelineEngine
     /// Tracks the single in-flight lookahead warmup and decides when to start, join or
     /// discard it.
     /// </summary>
-    private sealed class WarmupLookahead(IStageWarmupCoordinator? coordinator, WarmupSchedule schedule)
+    private sealed class WarmupLookahead(IStageWarmupCoordinator? coordinator, StageSchedule schedule)
     {
         private PendingStageWarmup? _pending;
 
