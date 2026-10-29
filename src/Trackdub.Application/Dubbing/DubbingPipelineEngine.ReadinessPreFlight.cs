@@ -245,7 +245,7 @@ public sealed partial class DubbingPipelineEngine
         RuntimeModelSelections selections)
     {
         if (!enabledStages.Contains(RuntimeStage.Tts) ||
-            !RequiresCompanionCustomVoiceModel(selections, context.Options, context.State))
+            !UnattendedVoiceSelection.RequiresCompanionCustomVoiceModel(selections, context.Options, context.State))
         {
             return null;
         }
