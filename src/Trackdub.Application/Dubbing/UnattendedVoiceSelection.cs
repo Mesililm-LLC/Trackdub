@@ -261,8 +261,16 @@ internal static class UnattendedVoiceSelection
         DubbingSessionOptions options,
         TranscriptProjectState? state)
     {
-        List<string>? allVoiceIds = ResolveStockVoiceIdsForPresetCheck(selections, options, state);
-        return allVoiceIds is { Count: > 0 } && allVoiceIds.All(Qwen3TtsDefaults.IsPresetVoiceId)
+        if (state is null || !CanRetargetToCustomVoice(selections, options))
+        {
+            return selections;
+        }
+
+        List<string> allVoiceIds = EnumerateUnattendedStockVoiceIds(
+            state,
+            ResolveUnattendedVoicePlan(state, options),
+            options.TargetLanguageCode).ToList();
+        return allVoiceIds.Count > 0 && allVoiceIds.All(Qwen3TtsDefaults.IsPresetVoiceId)
             ? selections with
             {
                 TtsModelAlias = Qwen3TtsDefaults.ResolveCustomVoiceAlias(tier: null),
@@ -272,46 +280,47 @@ internal static class UnattendedVoiceSelection
     }
 
     /// <summary>
-    /// True when synthesis will require CustomVoice for at least one speaker while the selected
-    /// TTS alias stays a different model. Preflight must provision both.
+    /// True when synthesis will use a CustomVoice preset while the selected TTS alias is a
+    /// different model. Preflight must provision both.
     /// </summary>
     internal static bool RequiresCompanionCustomVoiceModel(
         RuntimeModelSelections selections,
         DubbingSessionOptions options,
         TranscriptProjectState? state)
     {
-        List<string>? voiceIds = ResolveStockVoiceIdsForPresetCheck(selections, options, state);
-        return voiceIds is not null && MixesPresetAndStockVoices(voiceIds);
-    }
-
-    private static bool MixesPresetAndStockVoices(List<string> voiceIds) =>
-        voiceIds.Any(Qwen3TtsDefaults.IsPresetVoiceId) &&
-        voiceIds.Any(static voiceId => !Qwen3TtsDefaults.IsPresetVoiceId(voiceId));
-
-    /// <summary>
-    /// Voice ids this run will synthesize without cloning, or null when the preset checks do not
-    /// apply: no project state yet, a clone run, or a TTS alias that is already CustomVoice.
-    /// </summary>
-    private static List<string>? ResolveStockVoiceIdsForPresetCheck(
-        RuntimeModelSelections selections,
-        DubbingSessionOptions options,
-        TranscriptProjectState? state)
-    {
-        if (state is null)
+        if (state is null || IsCustomVoiceSelection(selections))
         {
-            return null;
+            return false;
         }
 
-        if (RequestsVoiceCloning(options) || Qwen3TtsDefaults.IsCustomVoiceAlias(selections.TtsModelAlias))
+        // Diarization may not have produced speakers yet. The later voice plan can
+        // still choose a preset through an override or the language fallback.
+        if (state.Speakers.Count == 0 && state.TranscriptSegments.Count == 0)
         {
-            return null;
+            return FreshProjectMayUsePreset(options);
         }
 
-        return EnumerateUnattendedStockVoiceIds(
+        List<string> voiceIds = EnumerateUnattendedStockVoiceIds(
             state,
             ResolveUnattendedVoicePlan(state, options),
             options.TargetLanguageCode).ToList();
+        return voiceIds.Any(Qwen3TtsDefaults.IsPresetVoiceId);
     }
+
+    private static bool IsCustomVoiceSelection(RuntimeModelSelections selections) =>
+        Qwen3TtsDefaults.IsCustomVoiceAlias(selections.TtsModelAlias);
+
+    /// <summary>
+    /// Clone runs and CustomVoice selections keep their own model, so neither retargets to CustomVoice.
+    /// </summary>
+    private static bool CanRetargetToCustomVoice(RuntimeModelSelections selections, DubbingSessionOptions options) =>
+        !RequestsVoiceCloning(options) && !IsCustomVoiceSelection(selections);
+
+    private static bool FreshProjectMayUsePreset(DubbingSessionOptions options) =>
+        (options.VoiceAssignmentOverrides?.Values.Any(Qwen3TtsDefaults.IsPresetVoiceId) ?? false) ||
+        (options.AutoAssignFallbackVoices && !options.UseVoiceCloning &&
+         !StockTtsVoiceMatcher.SupportsKokoro(options.TargetLanguageCode) &&
+         Qwen3TtsDefaults.SupportsLanguage(options.TargetLanguageCode));
 
     private readonly record struct UnattendedVoicePlan(
         IReadOnlyDictionary<Guid, string> ExplicitVoiceIds,
@@ -375,37 +384,36 @@ internal static class UnattendedVoiceSelection
             .Select(static speakerId => speakerId!.Value)
             .ToHashSet();
 
-        IEnumerable<string> explicitVoiceIds = SelectSpeakerVoiceIds(
-            plan.ExplicitVoiceIds,
-            synthesizingSpeakerIds.Contains);
-        IEnumerable<string> fallbackVoiceIds = SelectSpeakerVoiceIds(
-            plan.FallbackVoiceIds,
-            speakerId => synthesizingSpeakerIds.Contains(speakerId) && !plan.ExplicitVoiceIds.ContainsKey(speakerId));
-        IEnumerable<string> persistedVoiceIds = state.VoiceAssignments
-            .Where(assignment => synthesizingSpeakerIds.Contains(assignment.SpeakerId) &&
-                                 !IsSupersededByUnattendedPlan(assignment, plan))
-            .Select(assignment => ResolvePersistedStockVoiceId(assignment, targetLanguage))
-            .OfType<string>();
-
-        return explicitVoiceIds.Concat(fallbackVoiceIds).Concat(persistedVoiceIds);
+        return EnumerateOverrides(plan, synthesizingSpeakerIds)
+            .Concat(EnumerateFallbacks(plan, synthesizingSpeakerIds))
+            .Concat(EnumerateAssignments(state, plan, synthesizingSpeakerIds, targetLanguage));
     }
 
-    private static IEnumerable<string> SelectSpeakerVoiceIds(
-        IReadOnlyDictionary<Guid, string>? voiceIdsBySpeaker,
-        Func<Guid, bool> includeSpeaker) =>
-        voiceIdsBySpeaker is null
-            ? Enumerable.Empty<string>()
-            : voiceIdsBySpeaker
-                .Where(pair => includeSpeaker(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value))
-                .Select(static pair => pair.Value.Trim());
+    private static IEnumerable<string> EnumerateOverrides(UnattendedVoicePlan plan, HashSet<Guid> speakers) =>
+        plan.ExplicitVoiceIds.Where(pair => speakers.Contains(pair.Key))
+            .Where(pair => plan.CloneBySpeaker?.GetValueOrDefault(pair.Key) != true)
+            .Select(pair => pair.Value).Where(voice => !string.IsNullOrWhiteSpace(voice))
+            .Select(voice => voice.Trim());
 
-    private static bool IsSupersededByUnattendedPlan(VoiceAssignment assignment, UnattendedVoicePlan plan) =>
-        assignment.IsFallback ||
-        plan.ExplicitVoiceIds.ContainsKey(assignment.SpeakerId) ||
-        plan.CloneBySpeaker?.GetValueOrDefault(assignment.SpeakerId) == true ||
-        plan.FallbackVoiceIds?.ContainsKey(assignment.SpeakerId) == true;
+    private static IEnumerable<string> EnumerateFallbacks(UnattendedVoicePlan plan, HashSet<Guid> speakers) =>
+        (plan.FallbackVoiceIds ?? []).Where(pair => speakers.Contains(pair.Key))
+            .Where(pair => !plan.ExplicitVoiceIds.ContainsKey(pair.Key))
+            .Select(pair => pair.Value).Where(voice => !string.IsNullOrWhiteSpace(voice))
+            .Select(voice => voice.Trim());
 
-    private static string? ResolvePersistedStockVoiceId(VoiceAssignment assignment, string? targetLanguage)
+    private static IEnumerable<string> EnumerateAssignments(
+        TranscriptProjectState state, UnattendedVoicePlan plan, HashSet<Guid> speakers, string? language) =>
+        state.VoiceAssignments.Where(assignment => IsEligibleAssignment(assignment, plan, speakers))
+            .Select(assignment => ResolveAssignmentVoice(assignment, language))
+            .Where(voice => voice is not null).Select(voice => voice!);
+
+    private static bool IsEligibleAssignment(VoiceAssignment assignment, UnattendedVoicePlan plan, HashSet<Guid> speakers) =>
+        !assignment.IsFallback && speakers.Contains(assignment.SpeakerId) &&
+        !plan.ExplicitVoiceIds.ContainsKey(assignment.SpeakerId) &&
+        plan.CloneBySpeaker?.GetValueOrDefault(assignment.SpeakerId) != true &&
+        plan.FallbackVoiceIds?.ContainsKey(assignment.SpeakerId) != true;
+
+    private static string? ResolveAssignmentVoice(VoiceAssignment assignment, string? language)
     {
         if (!string.IsNullOrWhiteSpace(assignment.VoiceVariant))
         {
@@ -422,13 +430,13 @@ internal static class UnattendedVoiceSelection
             return null;
         }
 
-        if (StockTtsVoiceMatcher.SupportsKokoro(targetLanguage))
+        if (StockTtsVoiceMatcher.SupportsKokoro(language))
         {
             return StockTtsDefaults.KokoroPrimaryAlias;
         }
 
-        return Qwen3TtsDefaults.SupportsLanguage(targetLanguage)
-            ? Qwen3TtsDefaults.ResolveDefaultPresetVoiceId(targetLanguage)
+        return Qwen3TtsDefaults.SupportsLanguage(language)
+            ? Qwen3TtsDefaults.ResolveDefaultPresetVoiceId(language)
             : null;
     }
 }
