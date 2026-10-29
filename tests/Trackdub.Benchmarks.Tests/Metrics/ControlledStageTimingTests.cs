@@ -140,7 +140,7 @@ public sealed class ControlledStageTimingTests
     [Fact]
     public void StageTimingCollector_ThreadSafety_ConcurrentReportsHandledWithoutException()
     {
-        var collector = new StageTimingCollector(Stopwatch.GetTimestamp());
+        var collector = new StageTimingCollector(Stopwatch.GetTimestamp(), FixedResourceSnapshot.Provide);
         const int taskCount = 10;
         const int iterations = 50;
 

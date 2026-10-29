@@ -15,6 +15,7 @@ namespace Trackdub.Benchmarks.Tests.Scenarios;
 /// - CLI DevHost argument permutations (--mock, --dry-run, --format, --providers, --baseline)
 /// - Structured JSON output fidelity and mathematical consistency
 /// </summary>
+[Trait("Category", "Slow")]
 public sealed class Challenger2StressTests : IDisposable
 {
     private readonly MockDubbingBenchmarkHarness _harness = new();

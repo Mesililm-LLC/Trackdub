@@ -8,8 +8,10 @@ namespace Trackdub.CloudJobAdapter;
 public sealed record CliExecutionSpec(string Executable, IReadOnlyList<string> Arguments, string Workspace, string ResultPath);
 public sealed record CliExitEvidence(int ExitCode, WorkerRunOutcome? Outcome);
 
-public sealed partial class CliProcessRunner
+public sealed partial class CliProcessRunner(TimeSpan? terminationGrace = null)
 {
+    private readonly TimeSpan terminationGrace = terminationGrace ?? TimeSpan.FromSeconds(20);
+
     public async Task<CliExitEvidence> RunAsync(CliExecutionSpec spec, CancellationToken token)
     {
         var start = new ProcessStartInfo(OperatingSystem.IsLinux() ? "/usr/bin/setsid" : spec.Executable)
@@ -45,7 +47,7 @@ public sealed partial class CliProcessRunner
             if (!process.HasExited)
             {
                 if (OperatingSystem.IsLinux()) _ = Kill(-process.Id, 15);
-                using var grace = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                using var grace = new CancellationTokenSource(terminationGrace);
                 try { await process.WaitForExitAsync(grace.Token).ConfigureAwait(false); }
                 catch (OperationCanceledException)
                 {

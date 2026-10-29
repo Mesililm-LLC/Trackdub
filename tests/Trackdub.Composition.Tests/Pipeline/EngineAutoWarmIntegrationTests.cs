@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Trackdub.Application.Pipeline;
 using Trackdub.Composition.Headless;
@@ -228,8 +229,13 @@ public class EngineAutoWarmIntegrationTests
     [Fact]
     public async Task A_drain_leaves_the_queue_usable_for_later_installs()
     {
+        // The real warmup service builds TensorRT/ORT engines for any installed model, which took
+        // minutes on machines with models cached and wrote into the user's engine cache. Only the
+        // engine build is faked; the production queue and manifest-driven stage resolution stay.
+        var warmup = new RecordingResidentWarmupService();
         var services = new ServiceCollection();
         services.AddTrackdub();
+        services.Replace(ServiceDescriptor.Singleton<IResidentWarmupService>(warmup));
         await using ServiceProvider provider = services.BuildServiceProvider(
             new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true });
 
@@ -237,10 +243,41 @@ public class EngineAutoWarmIntegrationTests
 
         queue.RequestWarmAfterInstall("onnx-community/whisper-small");
         await queue.DrainAsync(TestContext.Current.CancellationToken);
+        Assert.Equal([[RuntimeStage.Asr]], warmup.StageRequests);
 
         // Draining is a flush, not a shutdown: this second request must still be accepted.
         queue.RequestWarmAfterInstall("onnx-community/opus-mt-en-es");
         await queue.DrainAsync(TestContext.Current.CancellationToken);
+        Assert.Equal([[RuntimeStage.Asr], [RuntimeStage.Translation]], warmup.StageRequests);
+    }
+
+    private sealed class RecordingResidentWarmupService : IResidentWarmupService
+    {
+        private readonly List<RuntimeStage[]> stageRequests = [];
+
+        public IReadOnlyList<RuntimeStage[]> StageRequests
+        {
+            get
+            {
+                lock (stageRequests)
+                {
+                    return stageRequests.ToArray();
+                }
+            }
+        }
+
+        public Task<ResidentWarmupReport> WarmAsync(
+            ResidentWarmupRequest request,
+            IProgress<string>? progress = null,
+            CancellationToken cancellationToken = default)
+        {
+            lock (stageRequests)
+            {
+                stageRequests.Add([.. request.Stages]);
+            }
+
+            return Task.FromResult(new ResidentWarmupReport(false, null, [], []));
+        }
     }
 
     [Fact]

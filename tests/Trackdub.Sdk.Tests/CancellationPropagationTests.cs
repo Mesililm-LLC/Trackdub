@@ -228,6 +228,9 @@ public sealed class CancellationPropagationTests : IDisposable
     [Fact]
     public void CancellationPropagation_PropertyCheck_ViaFact()
     {
+        // One factory for every case: the property is about run cancellation, not factory
+        // construction, and rebuilding the headless composition per case dominated the runtime.
+        using var factory = CreateFactory();
         Prop.ForAll<PositiveInt>(seed =>
         {
             string tempMediaFile = CreateTempMediaFile();
@@ -241,7 +244,6 @@ public sealed class CancellationPropagationTests : IDisposable
                 ForceRerun = true,
             };
 
-            using var factory = CreateFactory();
             var engine = new TrackdubDubbingEngine(factory);
 
             using var cts = new CancellationTokenSource();

@@ -21,6 +21,7 @@ using Trackdub.TestDoubles;
 
 namespace Trackdub.Benchmarks.Tests.E2E;
 
+[Trait("Category", "Slow")]
 public sealed class ResourceTelemetryPipelineTests : IDisposable
 {
     private static readonly ResourceTelemetryBounds ExactBounds = new()
