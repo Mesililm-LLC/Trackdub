@@ -491,7 +491,7 @@
         "type": "Project",
         "dependencies": {
           "Spectre.Console": "[0.57.2, )",
-          "System.CommandLine": "[2.0.14, )",
+          "System.CommandLine": "[2.0.13, )",
           "Trackdub.Sdk": "[1.0.0, )"
         }
       },
@@ -875,9 +875,9 @@
       },
       "System.CommandLine": {
         "type": "CentralTransitive",
-        "requested": "[2.0.14, )",
-        "resolved": "2.0.14",
-        "contentHash": "15fyVO4aG6poR6IKmhM74zf7PUzaU6FZAGm2d3SQSO9yIyGAeo44e6t9qeKjjaqyMEqYdqcb2G1B0gpLoDU2cA=="
+        "requested": "[2.0.13, )",
+        "resolved": "2.0.13",
+        "contentHash": "TIO2lMV+sSP7WW7pD/oCRHD9ENWY+jqwXmYzgks3R46cEdDzwjQOAhsiBn+M3EegfGjgTpa2h+eIrcU+AM2k6A=="
       },
       "System.Numerics.Tensors": {
         "type": "CentralTransitive",
@@ -1363,7 +1363,7 @@
         "type": "Project",
         "dependencies": {
           "Spectre.Console": "[0.57.2, )",
-          "System.CommandLine": "[2.0.14, )",
+          "System.CommandLine": "[2.0.13, )",
           "Trackdub.Sdk": "[1.0.0, )"
         }
       },
@@ -1687,9 +1687,9 @@
       },
       "System.CommandLine": {
         "type": "CentralTransitive",
-        "requested": "[2.0.14, )",
-        "resolved": "2.0.14",
-        "contentHash": "15fyVO4aG6poR6IKmhM74zf7PUzaU6FZAGm2d3SQSO9yIyGAeo44e6t9qeKjjaqyMEqYdqcb2G1B0gpLoDU2cA=="
+        "requested": "[2.0.13, )",
+        "resolved": "2.0.13",
+        "contentHash": "TIO2lMV+sSP7WW7pD/oCRHD9ENWY+jqwXmYzgks3R46cEdDzwjQOAhsiBn+M3EegfGjgTpa2h+eIrcU+AM2k6A=="
       },
       "System.Numerics.Tensors": {
         "type": "CentralTransitive",
