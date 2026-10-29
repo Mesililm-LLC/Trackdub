@@ -26,7 +26,7 @@ jobs:
           CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
         with:
           pr_number: ${{ github.event.issue.number }}
-          command: ${{ github.event.comment.body }}
+          command: ${{ github.event.comment.body == '/cs-agent' && '/cs-agent skill:fix-code-health-degradations' || github.event.comment.body }}
           model: ${{ vars.CODESCENE_AGENT_MODEL || 'cloudflare-workers-ai/@cf/deepseek-ai/deepseek-v4.1-flash-1017' }}
           codescene_token: ${{ secrets.CODESCENE_ACCESS_TOKEN }}
           opencode_auth_json: ${{ secrets.OPENCODE_AUTH_JSON }}
