@@ -15,7 +15,7 @@ using Trackdub.TestDoubles;
 
 namespace Trackdub.Application.Tests;
 
-public sealed class OrchestrationServiceTests
+public sealed partial class OrchestrationServiceTests
 {
     [Fact]
     public async Task TranslationOrchestrationService_GenerateTranslationAsync_persists_fake_engine_output()
@@ -714,7 +714,7 @@ public sealed class OrchestrationServiceTests
             .ApplyPresetVoiceModelSelection(selections, options, freshState);
 
         Assert.Equal("kokoro-onnx", result.TtsModelAlias);
-        Assert.False(Trackdub.Application.Dubbing.DubbingPipelineEngine.RequiresCompanionCustomVoiceModel(
+        Assert.True(Trackdub.Application.Dubbing.DubbingPipelineEngine.RequiresCompanionCustomVoiceModel(
             selections,
             options,
             freshState));
@@ -809,7 +809,7 @@ public sealed class OrchestrationServiceTests
 
         Assert.Equal("kokoro-onnx", result.TtsModelAlias);
         Assert.False(Trackdub.Application.Dubbing.DubbingPipelineEngine.RequiresCompanionCustomVoiceModel(
-            selections,
+            result,
             options,
             state));
     }
@@ -849,7 +849,7 @@ public sealed class OrchestrationServiceTests
 
         Assert.Equal(Qwen3TtsDefaults.ResolveCustomVoiceAlias(tier: null), result.TtsModelAlias);
         Assert.False(Trackdub.Application.Dubbing.DubbingPipelineEngine.RequiresCompanionCustomVoiceModel(
-            selections,
+            result,
             options,
             state));
     }

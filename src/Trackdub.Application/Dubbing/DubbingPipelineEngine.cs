@@ -34,7 +34,7 @@ namespace Trackdub.Application.Dubbing;
 /// is always observable. Callers that need shared visibility across engine +
 /// diagnostics exporter should DI-register the bus as a singleton.
 /// </param>
-public sealed class DubbingPipelineEngine(
+public sealed partial class DubbingPipelineEngine(
     IDubbingSessionFactory sessionFactory,
     PipelineTransientFaultBus? transientFaultBus = null) : IDubbingPipelineEngine, ITransientFaultReporting
 {
@@ -2557,9 +2557,12 @@ public sealed class DubbingPipelineEngine(
         DubbingSessionOptions options,
         TranscriptProjectState? state)
     {
-        if (state is null ||
-            RequestsVoiceCloning(options) ||
-            Qwen3TtsDefaults.IsCustomVoiceAlias(selections.TtsModelAlias))
+        if (state is null || RequestsVoiceCloning(options))
+        {
+            return selections;
+        }
+
+        if (IsCustomVoiceSelection(selections))
         {
             return selections;
         }
@@ -2586,19 +2589,23 @@ public sealed class DubbingPipelineEngine(
         DubbingSessionOptions options,
         TranscriptProjectState? state)
     {
-        if (state is null ||
-            RequestsVoiceCloning(options) ||
-            Qwen3TtsDefaults.IsCustomVoiceAlias(selections.TtsModelAlias))
+        if (state is null || IsCustomVoiceSelection(selections))
         {
             return false;
+        }
+
+        // Diarization may not have produced speakers yet. The later voice plan can
+        // still choose a preset through an override or the language fallback.
+        if (state.Speakers.Count == 0 && state.TranscriptSegments.Count == 0)
+        {
+            return FreshProjectMayUsePreset(options);
         }
 
         List<string> voiceIds = EnumerateUnattendedStockVoiceIds(
             state,
             ResolveUnattendedVoicePlan(state, options),
             options.TargetLanguageCode).ToList();
-        return voiceIds.Any(Qwen3TtsDefaults.IsPresetVoiceId) &&
-               voiceIds.Any(static voiceId => !Qwen3TtsDefaults.IsPresetVoiceId(voiceId));
+        return voiceIds.Any(Qwen3TtsDefaults.IsPresetVoiceId);
     }
 
     private readonly record struct UnattendedVoicePlan(
@@ -2663,64 +2670,9 @@ public sealed class DubbingPipelineEngine(
             .Select(static speakerId => speakerId!.Value)
             .ToHashSet();
 
-        foreach ((Guid speakerId, string voiceId) in plan.ExplicitVoiceIds)
-        {
-            if (synthesizingSpeakerIds.Contains(speakerId) && !string.IsNullOrWhiteSpace(voiceId))
-            {
-                yield return voiceId.Trim();
-            }
-        }
-
-        if (plan.FallbackVoiceIds is not null)
-        {
-            foreach ((Guid speakerId, string voiceId) in plan.FallbackVoiceIds)
-            {
-                if (synthesizingSpeakerIds.Contains(speakerId) &&
-                    !plan.ExplicitVoiceIds.ContainsKey(speakerId) &&
-                    !string.IsNullOrWhiteSpace(voiceId))
-                {
-                    yield return voiceId.Trim();
-                }
-            }
-        }
-
-        foreach (VoiceAssignment assignment in state.VoiceAssignments)
-        {
-            if (assignment.IsFallback ||
-                !synthesizingSpeakerIds.Contains(assignment.SpeakerId) ||
-                plan.ExplicitVoiceIds.ContainsKey(assignment.SpeakerId) ||
-                plan.CloneBySpeaker?.GetValueOrDefault(assignment.SpeakerId) == true ||
-                plan.FallbackVoiceIds?.ContainsKey(assignment.SpeakerId) == true)
-            {
-                continue;
-            }
-
-            if (string.IsNullOrWhiteSpace(assignment.VoiceVariant))
-            {
-                // A prior clone run persists a clone-only model with no voice id. Synthesis
-                // substitutes Kokoro where Kokoro speaks, and a Qwen preset where Qwen speaks.
-                // Languages neither speaks stay unassigned, matching BuildUnattendedFallbackVoiceIds.
-                // KokoroPrimaryAlias is a model alias, not a catalog voice id; it only has to fail
-                // IsPresetVoiceId so this speaker is not counted as a Qwen preset.
-                if (!VoiceCloningDefaults.IsCloneOnlyModelAlias(assignment.VoiceModelId))
-                {
-                    continue;
-                }
-
-                if (StockTtsVoiceMatcher.SupportsKokoro(targetLanguage))
-                {
-                    yield return StockTtsDefaults.KokoroPrimaryAlias;
-                }
-                else if (Qwen3TtsDefaults.SupportsLanguage(targetLanguage))
-                {
-                    yield return Qwen3TtsDefaults.ResolveDefaultPresetVoiceId(targetLanguage);
-                }
-
-                continue;
-            }
-
-            yield return assignment.VoiceVariant.Trim();
-        }
+        return EnumerateOverrides(plan, synthesizingSpeakerIds)
+            .Concat(EnumerateFallbacks(plan, synthesizingSpeakerIds))
+            .Concat(EnumerateAssignments(state, plan, synthesizingSpeakerIds, targetLanguage));
     }
 
     /// <summary>
