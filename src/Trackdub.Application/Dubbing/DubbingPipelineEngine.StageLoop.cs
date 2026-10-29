@@ -364,4 +364,186 @@ public sealed partial class DubbingPipelineEngine
                 schedule.DeclinedOptionalStages,
                 next.CancellationToken);
     }
+
+    /// <summary>
+    /// A prerequisite outcome blocks downstream stages (and any deliverable) when it
+    /// failed outright or was skipped for a non-benign reason — e.g. a stage skipped
+    /// because its proving warmup failed (<see cref="StageSkipReasonCodes.WarmupFailed"/>)
+    /// produced nothing just like a failed stage. Benign skips (valid existing
+    /// artifacts, declined optional model, …) never block.
+    /// </summary>
+    internal static bool IsBlockingPrerequisiteOutcome(StageOutcome outcome) =>
+        DubbingPipelineStages.PrerequisiteStages.Contains(outcome.StageName)
+        && (outcome.Status == StageStatus.Failed
+            || (outcome.Status == StageStatus.Skipped
+                && !IsBenignSkipReasonCode(outcome.ReasonCode)));
+
+    /// <summary>
+    /// TTS overlaps translation when segment streaming is on and TTS runs later in this run:
+    /// the stage at <paramref name="index"/> must be translation.
+    /// </summary>
+    internal static bool ShouldOverlapTtsWithTranslation(
+        DubbingSessionOptions options,
+        string[] stagesToRun,
+        int index,
+        IReadOnlySet<string> declinedOptionalStages) =>
+        options.EnableTranslationSegmentStreaming &&
+        string.Equals(stagesToRun[index], StageNames.Translation, StringComparison.OrdinalIgnoreCase) &&
+        !declinedOptionalStages.Contains(StageNames.Tts) &&
+        stagesToRun.Skip(index + 1).Contains(StageNames.Tts, StringComparer.OrdinalIgnoreCase);
+
+    private static async Task<TtsStreamingPrefetch?> TryCreateTtsPrefetchAsync(
+        IDubbingSession session,
+        DubbingSessionOptions options,
+        RuntimeModelSelections runtimeSelections,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            TranscriptProjectState state = await session.Workspace.Project.OpenAsync(cancellationToken).ConfigureAwait(false);
+            if (state.TranscriptSegments.Count == 0)
+            {
+                return null;
+            }
+
+            return await session.Workspace.CreateTtsStreamingPrefetchAsync(
+                BuildPipelineTtsRequest(state, options, runtimeSelections),
+                options.TargetLanguageCode,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Overlap is an optimization: without it the TTS stage synthesizes every segment itself.
+            TryResolveService<IApplicationLogger>(session)?.LogWarning(
+                "TTS will not overlap translation: the streaming prefetch could not be prepared.", ex);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Concurrent warmup is safe only when the coordinator reports the GenAI pool
+    /// capacity can hold the next model alongside the active one, and no warmup is
+    /// already in flight.
+    /// </summary>
+    internal static bool ShouldStartConcurrentWarmup(
+        IStageWarmupCoordinator? coordinator,
+        PendingStageWarmup? pendingWarmup) =>
+        coordinator is { AllowsConcurrentWarmup: true } && pendingWarmup is null;
+
+    /// <summary>An in-flight warmup for a named pipeline stage; optimization-only.</summary>
+    internal sealed record PendingStageWarmup(string StageName, Task<StageWarmupResult> Task);
+
+    /// <summary>
+    /// Starts warmup for the first stage after <paramref name="startIndex"/> that maps to a
+    /// runtime stage and was not declined in pre-flight. Returns without awaiting so the
+    /// model loads while the current stage executes.
+    /// </summary>
+    internal static PendingStageWarmup? StartNextStageWarmup(
+        IStageWarmupCoordinator coordinator,
+        string[] stagesToRun,
+        int startIndex,
+        RuntimeModelSelections runtimeSelections,
+        DubbingSessionOptions options,
+        IReadOnlySet<string> declinedOptionalStages,
+        CancellationToken cancellationToken)
+    {
+        for (int i = startIndex; i < stagesToRun.Length; i++)
+        {
+            if (declinedOptionalStages.Contains(stagesToRun[i])
+                || MapStageNameToRuntimeStage(stagesToRun[i]) is not { } runtimeStage)
+            {
+                continue;
+            }
+
+            Task<StageWarmupResult> task;
+            try
+            {
+                task = coordinator.WarmAsync(
+                    new StageWarmupRequest(
+                        runtimeStage,
+                        runtimeSelections,
+                        options.SourceLanguageCode,
+                        options.TargetLanguageCode,
+                        UnattendedVoiceSelection.RequestsVoiceCloning(options)),
+                    cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                task = Task.FromResult(new StageWarmupResult(
+                    Attempted: true,
+                    Succeeded: false,
+                    Detail: ex.Message));
+            }
+
+            return new PendingStageWarmup(stagesToRun[i], task);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Builds the skip outcome for a stage whose proving warmup failed, or null when the
+    /// warmup passed, was never attempted (no runnable plan — including cloud selections
+    /// the local planner cannot resolve; the stage must execute and surface its own
+    /// outcome), or produced no result (e.g. a swallowed coordinator exception — those
+    /// stay optimization-only and the stage attempts its own execution). The
+    /// failure detail is preserved on the outcome; the coordinator has recorded no
+    /// verdict for it, so nothing is reported ready on the strength of a failed smoke.
+    /// </summary>
+    internal static StageOutcome? BuildWarmupSkipOutcomeIfFailed(
+        string stageName,
+        StageWarmupResult? warmupResult)
+    {
+        if (warmupResult is not { Attempted: true, Succeeded: false })
+        {
+            return null;
+        }
+
+        StageOutcome outcome = BuildSkippedOutcome(stageName, StageSkipReasonCodes.WarmupFailed);
+        return string.IsNullOrWhiteSpace(warmupResult.Detail)
+            ? outcome
+            : outcome with { DegradationRecords = [warmupResult.Detail] };
+    }
+
+    /// <summary>
+    /// Joins a warmup task and returns its result: ordinary failures are returned (or
+    /// null for a faulted task) rather than thrown, and cancellation is swallowed only
+    /// when the run itself is cancelled.
+    /// </summary>
+    internal static async Task<StageWarmupResult?> AwaitWarmupResultAsync(
+        Task<StageWarmupResult> warmupTask,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await warmupTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Run cancelled — the warmup was optimization-only.
+            return null;
+        }
+        catch (OperationCanceledException)
+        {
+            // A cancelled warmup on a live run token is real cancellation, not a failure.
+            throw;
+        }
+        catch (Exception)
+        {
+            // A faulted coordinator task carries no result to consume; the target stage
+            // attempts its own execution and surfaces any real failure itself.
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Joins a warmup task without letting its outcome affect the run: ordinary failures are
+    /// optimization-only, and cancellation is swallowed only when the run itself is cancelled.
+    /// </summary>
+    internal static async Task ObserveWarmupAsync(
+        Task<StageWarmupResult> warmupTask,
+        CancellationToken cancellationToken)
+    {
+        _ = await AwaitWarmupResultAsync(warmupTask, cancellationToken).ConfigureAwait(false);
+    }
 }

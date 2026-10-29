@@ -212,7 +212,7 @@ public sealed partial class DubbingPipelineEngine
         RuntimeModelSelections refreshedSelections = await CreateRuntimeSelectionsAsync(
                 context.Session, context.Options, context.CancellationToken, context.State)
             .ConfigureAwait(false);
-        MergeRuntimeModelSelectionsIntoSnapshot(
+        DubbingExecutionSnapshot.MergeRuntimeModelSelectionsIntoSnapshot(
             context.ExecutionSnapshot,
             refreshedSelections,
             TryResolveService<IModelAliasResolver>(context.Session));
@@ -274,4 +274,58 @@ public sealed partial class DubbingPipelineEngine
             .ConfigureAwait(false);
         return companion.IsReady ? null : context.ProvisioningCancelled();
     }
+
+    /// <summary>
+    /// Optional stages whose runtime degrades in place when the model is absent.
+    /// A declined model for these stages is exempt from post-provisioning re-blocking,
+    /// and the stage still executes (speech enhancement falls back to FFmpeg/AFX).
+    /// </summary>
+    private static readonly IReadOnlySet<RuntimeStage> StagesWithOptionalModelFallback =
+        new HashSet<RuntimeStage> { RuntimeStage.SpeechEnhancement };
+
+    private static readonly IReadOnlyDictionary<ReadinessState, string> FixedPreFlightFailureMessages =
+        new Dictionary<ReadinessState, string>
+        {
+            [ReadinessState.CommercialBlocked] = "selected model is non-commercial only",
+            [ReadinessState.IntegrityFailed] = "model checksum verification failed — re-download the model",
+            [ReadinessState.ConsentRequired] = "voice-clone consent required",
+        };
+
+    private static string FormatPreFlightFailure(StageReadiness s)
+    {
+        if (FixedPreFlightFailureMessages.TryGetValue(s.Status, out string? message))
+        {
+            return $"{s.StageName}: {message}";
+        }
+
+        return s.Status switch
+        {
+            ReadinessState.CloudKeyMissing =>
+                $"{s.StageName}: API key not configured for cloud provider{FormatModelAliasSuffix(s.ModelAlias)}",
+            ReadinessState.ImportRequired =>
+                $"{s.StageName}: model requires manual import{FormatModelIdSuffix(s.ModelId)}",
+            ReadinessState.CloudEgressConsentRequired =>
+                $"{s.StageName}: {s.Detail ?? "cloud egress consent required. Set TRACKDUB_CLOUD_EGRESS_CONSENT or use the app to consent interactively."}",
+            _ => FormatUnclassifiedFailure(s),
+        };
+    }
+
+    private static string FormatUnclassifiedFailure(StageReadiness s) =>
+        s.Detail is not null
+            ? $"{s.StageName}: {s.Detail}"
+            : $"{s.StageName}: not ready ({s.Status})";
+
+    private static string FormatModelAliasSuffix(string? modelAlias) =>
+        modelAlias is null ? string.Empty : $" ({modelAlias})";
+
+    private static string FormatModelIdSuffix(string? modelId) =>
+        modelId is null ? string.Empty : $" — {modelId}";
+
+    /// <summary>
+    /// Headless provisioning callbacks: auto-download when possible, cancel otherwise.
+    /// No UI dialogs, no file pickers. Used when the session does not register an
+    /// <see cref="IPipelineModelSetupInteraction"/> (e.g. minimal test hosts).
+    /// </summary>
+    private static RuntimeModelSetupCallbacks BuildHeadlessCallbacks(CancellationToken cancellationToken) =>
+        HeadlessRuntimeModelSetup.CreateCallbacks(cancellationToken);
 }

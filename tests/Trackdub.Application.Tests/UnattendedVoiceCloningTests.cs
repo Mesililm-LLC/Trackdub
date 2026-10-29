@@ -129,7 +129,7 @@ public sealed class UnattendedVoiceCloningTests
         // BuildModelPreferences lookup used by CreateSelectionsFromSettings so a regression that
         // reverts to reading the caller's case-sensitive dictionary is caught here.
         DubbingSessionOptions resolved = UnattendedVoiceSelection.ApplyVoiceCloningDefaults(options);
-        InferenceModelPreferences? preferences = DubbingPipelineEngine.BuildModelPreferences(resolved);
+        InferenceModelPreferences? preferences = DubbingModelPreferences.BuildModelPreferences(resolved);
 
         Assert.NotNull(preferences);
         Assert.Equal("chatterbox-multilingual", preferences!.TtsModelAlias);

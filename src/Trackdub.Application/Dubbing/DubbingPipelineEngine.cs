@@ -116,7 +116,7 @@ public sealed partial class DubbingPipelineEngine(
         string projectOutputDirectory = EnsureProjectDirectory(options);
 
         // --- Capture immutable ExecutionSnapshot ---
-        Dictionary<string, string> executionSnapshot = CaptureExecutionSnapshot(options);
+        Dictionary<string, string> executionSnapshot = DubbingExecutionSnapshot.CaptureExecutionSnapshot(options);
 
         // --- Create session ---
         IDubbingSession? session;
@@ -161,7 +161,7 @@ public sealed partial class DubbingPipelineEngine(
 
             if (initialProjectState is not null)
             {
-                UpdateExecutionSnapshotWithSourceAudioKind(
+                DubbingExecutionSnapshot.UpdateExecutionSnapshotWithSourceAudioKind(
                     executionSnapshot,
                     options,
                     ResolveSourceAudioKind(initialProjectState));
@@ -196,7 +196,7 @@ public sealed partial class DubbingPipelineEngine(
                 cancellationToken,
                 initialProjectState).ConfigureAwait(false);
 
-            MergeRuntimeModelSelectionsIntoSnapshot(
+            DubbingExecutionSnapshot.MergeRuntimeModelSelectionsIntoSnapshot(
                 executionSnapshot,
                 runtimeSelections,
                 TryResolveService<IModelAliasResolver>(session));
@@ -396,188 +396,6 @@ public sealed partial class DubbingPipelineEngine(
     }
 
     /// <summary>
-    /// A prerequisite outcome blocks downstream stages (and any deliverable) when it
-    /// failed outright or was skipped for a non-benign reason — e.g. a stage skipped
-    /// because its proving warmup failed (<see cref="StageSkipReasonCodes.WarmupFailed"/>)
-    /// produced nothing just like a failed stage. Benign skips (valid existing
-    /// artifacts, declined optional model, …) never block.
-    /// </summary>
-    internal static bool IsBlockingPrerequisiteOutcome(StageOutcome outcome) =>
-        DubbingPipelineStages.PrerequisiteStages.Contains(outcome.StageName)
-        && (outcome.Status == StageStatus.Failed
-            || (outcome.Status == StageStatus.Skipped
-                && !IsBenignSkipReasonCode(outcome.ReasonCode)));
-
-    /// <summary>
-    /// TTS overlaps translation when segment streaming is on and TTS runs later in this run:
-    /// the stage at <paramref name="index"/> must be translation.
-    /// </summary>
-    internal static bool ShouldOverlapTtsWithTranslation(
-        DubbingSessionOptions options,
-        string[] stagesToRun,
-        int index,
-        IReadOnlySet<string> declinedOptionalStages) =>
-        options.EnableTranslationSegmentStreaming &&
-        string.Equals(stagesToRun[index], StageNames.Translation, StringComparison.OrdinalIgnoreCase) &&
-        !declinedOptionalStages.Contains(StageNames.Tts) &&
-        stagesToRun.Skip(index + 1).Contains(StageNames.Tts, StringComparer.OrdinalIgnoreCase);
-
-    private static async Task<TtsStreamingPrefetch?> TryCreateTtsPrefetchAsync(
-        IDubbingSession session,
-        DubbingSessionOptions options,
-        RuntimeModelSelections runtimeSelections,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            TranscriptProjectState state = await session.Workspace.Project.OpenAsync(cancellationToken).ConfigureAwait(false);
-            if (state.TranscriptSegments.Count == 0)
-            {
-                return null;
-            }
-
-            return await session.Workspace.CreateTtsStreamingPrefetchAsync(
-                BuildPipelineTtsRequest(state, options, runtimeSelections),
-                options.TargetLanguageCode,
-                cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // Overlap is an optimization: without it the TTS stage synthesizes every segment itself.
-            TryResolveService<IApplicationLogger>(session)?.LogWarning(
-                "TTS will not overlap translation: the streaming prefetch could not be prepared.", ex);
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// Concurrent warmup is safe only when the coordinator reports the GenAI pool
-    /// capacity can hold the next model alongside the active one, and no warmup is
-    /// already in flight.
-    /// </summary>
-    internal static bool ShouldStartConcurrentWarmup(
-        IStageWarmupCoordinator? coordinator,
-        PendingStageWarmup? pendingWarmup) =>
-        coordinator is { AllowsConcurrentWarmup: true } && pendingWarmup is null;
-
-    /// <summary>An in-flight warmup for a named pipeline stage; optimization-only.</summary>
-    internal sealed record PendingStageWarmup(string StageName, Task<StageWarmupResult> Task);
-
-    /// <summary>
-    /// Starts warmup for the first stage after <paramref name="startIndex"/> that maps to a
-    /// runtime stage and was not declined in pre-flight. Returns without awaiting so the
-    /// model loads while the current stage executes.
-    /// </summary>
-    internal static PendingStageWarmup? StartNextStageWarmup(
-        IStageWarmupCoordinator coordinator,
-        string[] stagesToRun,
-        int startIndex,
-        RuntimeModelSelections runtimeSelections,
-        DubbingSessionOptions options,
-        IReadOnlySet<string> declinedOptionalStages,
-        CancellationToken cancellationToken)
-    {
-        for (int i = startIndex; i < stagesToRun.Length; i++)
-        {
-            if (declinedOptionalStages.Contains(stagesToRun[i])
-                || MapStageNameToRuntimeStage(stagesToRun[i]) is not { } runtimeStage)
-            {
-                continue;
-            }
-
-            Task<StageWarmupResult> task;
-            try
-            {
-                task = coordinator.WarmAsync(
-                    new StageWarmupRequest(
-                        runtimeStage,
-                        runtimeSelections,
-                        options.SourceLanguageCode,
-                        options.TargetLanguageCode,
-                        UnattendedVoiceSelection.RequestsVoiceCloning(options)),
-                    cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                task = Task.FromResult(new StageWarmupResult(
-                    Attempted: true,
-                    Succeeded: false,
-                    Detail: ex.Message));
-            }
-
-            return new PendingStageWarmup(stagesToRun[i], task);
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// Builds the skip outcome for a stage whose proving warmup failed, or null when the
-    /// warmup passed, was never attempted (no runnable plan — including cloud selections
-    /// the local planner cannot resolve; the stage must execute and surface its own
-    /// outcome), or produced no result (e.g. a swallowed coordinator exception — those
-    /// stay optimization-only and the stage attempts its own execution). The
-    /// failure detail is preserved on the outcome; the coordinator has recorded no
-    /// verdict for it, so nothing is reported ready on the strength of a failed smoke.
-    /// </summary>
-    internal static StageOutcome? BuildWarmupSkipOutcomeIfFailed(
-        string stageName,
-        StageWarmupResult? warmupResult)
-    {
-        if (warmupResult is null || !warmupResult.Attempted || warmupResult.Succeeded)
-        {
-            return null;
-        }
-
-        StageOutcome outcome = BuildSkippedOutcome(stageName, StageSkipReasonCodes.WarmupFailed);
-        return string.IsNullOrWhiteSpace(warmupResult.Detail)
-            ? outcome
-            : outcome with { DegradationRecords = [warmupResult.Detail] };
-    }
-
-    /// <summary>
-    /// Joins a warmup task and returns its result: ordinary failures are returned (or
-    /// null for a faulted task) rather than thrown, and cancellation is swallowed only
-    /// when the run itself is cancelled.
-    /// </summary>
-    internal static async Task<StageWarmupResult?> AwaitWarmupResultAsync(
-        Task<StageWarmupResult> warmupTask,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await warmupTask.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            // Run cancelled — the warmup was optimization-only.
-            return null;
-        }
-        catch (OperationCanceledException)
-        {
-            // A cancelled warmup on a live run token is real cancellation, not a failure.
-            throw;
-        }
-        catch (Exception)
-        {
-            // A faulted coordinator task carries no result to consume; the target stage
-            // attempts its own execution and surfaces any real failure itself.
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// Joins a warmup task without letting its outcome affect the run: ordinary failures are
-    /// optimization-only, and cancellation is swallowed only when the run itself is cancelled.
-    /// </summary>
-    internal static async Task ObserveWarmupAsync(
-        Task<StageWarmupResult> warmupTask,
-        CancellationToken cancellationToken)
-    {
-        _ = await AwaitWarmupResultAsync(warmupTask, cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary>
     /// Exports the repaired video after successful lip synthesis, replacing any
     /// earlier mix-producing Export outcome.
     /// </summary>
@@ -667,7 +485,7 @@ public sealed partial class DubbingPipelineEngine(
             options,
             cancellationToken,
             state).ConfigureAwait(false);
-        MergeRuntimeModelSelectionsIntoSnapshot(
+        DubbingExecutionSnapshot.MergeRuntimeModelSelectionsIntoSnapshot(
             executionSnapshot,
             preFlightSelections,
             TryResolveService<IModelAliasResolver>(session));
@@ -772,47 +590,8 @@ public sealed partial class DubbingPipelineEngine(
             : null;
     }
 
-    /// <summary>
-    /// Optional stages whose runtime degrades in place when the model is absent.
-    /// A declined model for these stages is exempt from post-provisioning re-blocking,
-    /// and the stage still executes (speech enhancement falls back to FFmpeg/AFX).
-    /// </summary>
-    private static readonly IReadOnlySet<RuntimeStage> StagesWithOptionalModelFallback =
-        new HashSet<RuntimeStage> { RuntimeStage.SpeechEnhancement };
-
     private static readonly IReadOnlySet<string> EmptyDeclinedStages =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-    private static string FormatPreFlightFailure(StageReadiness s) =>
-        s.Status switch
-        {
-            ReadinessState.CloudKeyMissing =>
-                $"{s.StageName}: API key not configured for cloud provider" +
-                (s.ModelAlias is not null ? $" ({s.ModelAlias})" : string.Empty),
-            ReadinessState.ImportRequired =>
-                $"{s.StageName}: model requires manual import" +
-                (s.ModelId is not null ? $" — {s.ModelId}" : string.Empty),
-            ReadinessState.CommercialBlocked =>
-                $"{s.StageName}: selected model is non-commercial only",
-            ReadinessState.IntegrityFailed =>
-                $"{s.StageName}: model checksum verification failed — re-download the model",
-            ReadinessState.ConsentRequired =>
-                $"{s.StageName}: voice-clone consent required",
-            ReadinessState.CloudEgressConsentRequired =>
-                $"{s.StageName}: {s.Detail ?? "cloud egress consent required. Set TRACKDUB_CLOUD_EGRESS_CONSENT or use the app to consent interactively."}",
-            _ =>
-                s.Detail is not null
-                    ? $"{s.StageName}: {s.Detail}"
-                    : $"{s.StageName}: not ready ({s.Status})",
-        };
-
-    /// <summary>
-    /// Headless provisioning callbacks: auto-download when possible, cancel otherwise.
-    /// No UI dialogs, no file pickers. Used when the session does not register an
-    /// <see cref="IPipelineModelSetupInteraction"/> (e.g. minimal test hosts).
-    /// </summary>
-    private static RuntimeModelSetupCallbacks BuildHeadlessCallbacks(CancellationToken cancellationToken) =>
-        HeadlessRuntimeModelSetup.CreateCallbacks(cancellationToken);
 
     internal static bool ShouldSkipModelPreFlight(
         string stageName,
@@ -901,12 +680,6 @@ public sealed partial class DubbingPipelineEngine(
         // instead of surfacing them.
         return false;
     }
-
-    /// <summary>
-    /// Attempts to resolve <see cref="IPipelinePreFlightChecker"/> from the session's DI scope.
-    /// </summary>
-    private static IPipelinePreFlightChecker? ResolvePreFlightChecker(IDubbingSession session) =>
-        TryResolveService<IPipelinePreFlightChecker>(session);
 
     private static T? TryResolveService<T>(IDubbingSession session) where T : class
     {
@@ -1819,7 +1592,7 @@ public sealed partial class DubbingPipelineEngine(
         CancellationToken cancellationToken,
         TranscriptProjectState? state = null)
     {
-        InferenceModelPreferences? preferences = BuildModelPreferences(options);
+        InferenceModelPreferences? preferences = DubbingModelPreferences.BuildModelPreferences(options);
         RuntimeModelSelections selections;
 
         if (TryResolveService<IPipelineRuntimeSelectionsProvider>(session) is { } selectionsProvider)
@@ -1836,12 +1609,12 @@ public sealed partial class DubbingPipelineEngine(
                 // CreateSelectionsFromSettings. ApplyPresetVoiceModelSelection may still
                 // retarget TTS when the voices that will speak are Qwen presets, because
                 // synthesis will not use a non-CustomVoice model for those voices.
-                selections = ApplyModelPreferenceAliases(provided with
+                selections = DubbingModelPreferences.ApplyModelPreferenceAliases(provided with
                 {
                     SelectionIntents = Enum.GetValues<RuntimeStage>().ToDictionary(stage => stage, provided.GetSelectionIntent)
                 }, preferences);
                 selections = UnattendedVoiceSelection.ApplyPresetVoiceModelSelection(selections, options, state);
-                return ApplyExecutionProviderPins(selections, options, preferences);
+                return DubbingModelPreferences.ApplyExecutionProviderPins(selections, options, preferences);
             }
         }
 
@@ -1855,454 +1628,16 @@ public sealed partial class DubbingPipelineEngine(
         selections = RuntimeModelRequestFactory.CreateSelectionsFromSettings(
             settings,
             preferences);
-        selections = ApplyModelPreferenceAliases(selections, preferences);
+        selections = DubbingModelPreferences.ApplyModelPreferenceAliases(selections, preferences);
         selections = UnattendedVoiceSelection.ApplyPresetVoiceModelSelection(selections, options, state);
-        return ApplyExecutionProviderPins(selections, options, preferences);
+        return DubbingModelPreferences.ApplyExecutionProviderPins(selections, options, preferences);
     }
 
-    /// <summary>
-    /// Overlays per-stage execution-provider pins from <paramref name="preferences"/> onto the
-    /// resolved <paramref name="selections"/> hardware overrides. Pinned stages become required
-    /// providers only when <see cref="DubbingSessionOptions.RequireExecutionProviderPreferences"/>
-    /// is set; otherwise they act as preferences and existing host/settings overrides still apply.
-    /// </summary>
-    private static RuntimeModelSelections ApplyExecutionProviderPins(
-        RuntimeModelSelections selections,
-        DubbingSessionOptions options,
-        InferenceModelPreferences? preferences)
-    {
-        if (preferences?.PreferredExecutionProviders is not { Count: > 0 })
-        {
-            return selections;
-        }
-
-        // CreateSelectionsFromPreferences maps the stage-keyed provider pins onto the
-        // HardwareOverrides key vocabulary (including the ASR engine disambiguation).
-        IReadOnlyDictionary<string, ExecutionProviderKind> pinOverrides =
-            RuntimeModelRequestFactory.CreateSelectionsFromPreferences(
-                preferences,
-                selections.AsrModelOverride,
-                selections.IsDevBuild).HardwareOverrides;
-        var overrides = new Dictionary<string, ExecutionProviderKind>(
-            selections.HardwareOverrides,
-            StringComparer.OrdinalIgnoreCase);
-        foreach ((string key, ExecutionProviderKind provider) in pinOverrides)
-        {
-            overrides[key] = provider;
-        }
-
-        return selections with
-        {
-            HardwareOverrides = overrides,
-            RequirePreferredExecutionProviders = selections.RequirePreferredExecutionProviders
-                || options.RequireExecutionProviderPreferences,
-        };
-    }
-
-    /// <summary>
-    /// Overlays non-null per-stage model aliases from explicit
-    /// <see cref="InferenceModelPreferences"/> onto a host-provided selection set.
-    /// Fields the request did not pin keep the host's selection.
-    /// </summary>
-    internal static RuntimeModelSelections ApplyModelPreferenceAliases(
-        RuntimeModelSelections selections,
-        InferenceModelPreferences? preferences)
-    {
-        if (preferences is null)
-        {
-            return selections;
-        }
-
-        RuntimeModelSelections requested = RuntimeModelRequestFactory.CreateSelectionsFromPreferences(preferences);
-        return selections with
-        {
-            SelectionIntents = Enum.GetValues<RuntimeStage>().ToDictionary(stage => stage,
-                stage => requested.GetSelectionIntent(stage) == RuntimeModelSelectionIntent.Explicit
-                    ? RuntimeModelSelectionIntent.Explicit : selections.GetSelectionIntent(stage)),
-            VadModelAlias = preferences.VadModelAlias ?? selections.VadModelAlias,
-            DiarizationModelAlias = preferences.DiarizationModelAlias ?? selections.DiarizationModelAlias,
-            SeparationModelAlias = preferences.SeparationModelAlias ?? selections.SeparationModelAlias,
-            OverlapRescueModelAlias = preferences.OverlapRescueModelAlias ?? selections.OverlapRescueModelAlias,
-            AsrModelAlias = preferences.AsrModelAlias ?? selections.AsrModelAlias,
-            TranslationModelAlias = preferences.TranslationModelAlias ?? selections.TranslationModelAlias,
-            TtsModelAlias = preferences.TtsModelAlias ?? selections.TtsModelAlias,
-            TextRefinementModelAlias = preferences.TextRefinementModelAlias ?? selections.TextRefinementModelAlias,
-            LipSyncModelAlias = preferences.LipSyncModelAlias ?? selections.LipSyncModelAlias,
-            LipSynthesisModelAlias = preferences.LipSynthesisModelAlias ?? selections.LipSynthesisModelAlias,
-            ModelVariantOverrides = requested.ModelVariantOverrides is { Count: > 0 }
-                ? new Dictionary<string, string>(selections.ModelVariantOverrides ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase)
-                    .Where(pair => !ModelVariantOverrideKeys.TryParse(pair.Key, out string stageKey, out _)
-                        || !requested.ModelVariantOverrides.ContainsKey(stageKey))
-                    .Concat(requested.ModelVariantOverrides).GroupBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
-                    .ToDictionary(g => g.Key, g => g.Last().Value, StringComparer.OrdinalIgnoreCase)
-                : selections.ModelVariantOverrides,
-        };
-    }
-
-    /// <summary>
-    /// Builds <see cref="InferenceModelPreferences"/> from the dubbing session options.
-    /// Per-stage provider pins in <see cref="DubbingSessionOptions.ExecutionProviderPreferences"/>
-    /// are mapped from canonical <see cref="StageNames"/> keys onto runtime stages and marked
-    /// required; a stage name with no runtime mapping or an unparseable provider label is an
-    /// argument error, never silently ignored.
-    /// </summary>
-    internal static InferenceModelPreferences? BuildModelPreferences(DubbingSessionOptions options)
-    {
-        bool hasModelOverrides = options.ModelPreferences is { Count: > 0 };
-        bool hasProviderPins = options.ExecutionProviderPreferences is { Count: > 0 };
-        if (!hasModelOverrides && !hasProviderPins && options.ModelVariantPreferences is not { Count: > 0 } && !options.EnableAsrTextRefinement)
-        {
-            return null;
-        }
-
-        IReadOnlyDictionary<string, string> modelPreferences = options.ModelPreferences
-            ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        IReadOnlyDictionary<RuntimeStage, ExecutionProviderKind>? providerPins =
-            ParseExecutionProviderPreferences(options);
-
-        return new InferenceModelPreferences(
-            VadModelAlias: modelPreferences.GetValueOrDefault(StageNames.Vad),
-            AsrModelAlias: modelPreferences.GetValueOrDefault(StageNames.Asr),
-            DiarizationModelAlias: modelPreferences.GetValueOrDefault(StageNames.Diarization),
-            SeparationModelAlias: modelPreferences.GetValueOrDefault(StageNames.Separation),
-            OverlapRescueModelAlias: modelPreferences.GetValueOrDefault(StageNames.OverlapRescue),
-            TranslationModelAlias: modelPreferences.GetValueOrDefault(StageNames.Translation),
-            TtsModelAlias: modelPreferences.GetValueOrDefault(StageNames.Tts),
-            TextRefinementModelAlias: modelPreferences.GetValueOrDefault(StageNames.TextRefinementAsr),
-            LipSyncModelAlias: modelPreferences.GetValueOrDefault(StageNames.LipSync),
-            LipSynthesisModelAlias: modelPreferences.GetValueOrDefault(StageNames.LipSynthesis),
-            EnableAsrTextRefinement: options.EnableAsrTextRefinement,
-            PreferredExecutionProviders: providerPins,
-            PreferredModelVariantAliases: options.ModelVariantPreferences?.ToDictionary(
-                pair => MapStageNameToRuntimeStage(pair.Key) ?? throw new ArgumentException("Unknown variant stage."), pair => pair.Value),
-            RequiredExecutionProviderStages:
-                providerPins is { Count: > 0 } && options.RequireExecutionProviderPreferences
-                    ? new HashSet<RuntimeStage>(providerPins.Keys)
-                    : null);
-    }
-
-    /// <summary>
-    /// Parses <see cref="DubbingSessionOptions.ExecutionProviderPreferences"/> into a
-    /// runtime-stage keyed map. Returns null when no pins were supplied.
-    /// </summary>
-    private static IReadOnlyDictionary<RuntimeStage, ExecutionProviderKind>? ParseExecutionProviderPreferences(
-        DubbingSessionOptions options)
-    {
-        if (options.ExecutionProviderPreferences is not { Count: > 0 } pins)
-        {
-            return null;
-        }
-
-        var providers = new Dictionary<RuntimeStage, ExecutionProviderKind>();
-        foreach ((string stageName, string label) in pins)
-        {
-            if (MapStageNameToRuntimeStage(stageName) is not { } stage)
-            {
-                throw new ArgumentException(
-                    $"Execution provider pin names unknown or non-runtime stage '{stageName}'.",
-                    nameof(options));
-            }
-
-            if (!ExecutionProviderTokens.TryParse(label, out ExecutionProviderKind provider))
-            {
-                throw new ArgumentException(
-                    $"Execution provider pin for stage '{stageName}' has invalid provider label '{label}'. " +
-                    $"Expected one of: {ExecutionProviderTokens.FormatSupportedCliTags()}.",
-                    nameof(options));
-            }
-
-            providers[stage] = ExecutionProviderTokens.ResolvePlatformPin(provider);
-        }
-
-        return providers;
-    }
-
-    /// <summary>
-    /// Merges resolved runtime model aliases (settings, starter packs, explicit preferences)
-    /// into the execution snapshot so artifact resume checks compare against models that
-    /// will actually execute.
-    /// </summary>
-    internal static void MergeRuntimeModelSelectionsIntoSnapshot(
-        Dictionary<string, string> snapshot,
-        RuntimeModelSelections selections,
-        IModelAliasResolver? modelAliasResolver = null)
-    {
-        ArgumentNullException.ThrowIfNull(snapshot);
-        ArgumentNullException.ThrowIfNull(selections);
-
-        RuntimeModelRequestOptions options = RuntimeModelRequestFactory.CreateOptions(selections);
-
-        SetSnapshotModelAlias(snapshot, StageNames.Asr, selections.AsrModelAlias);
-        SetSnapshotModelVariant(snapshot, options, StageNames.Asr, RuntimeStage.Asr, selections.AsrModelAlias);
-        AddModelId(snapshot, StageNames.Asr, selections.AsrModelAlias, modelAliasResolver);
-
-        SetSnapshotModelAlias(snapshot, StageNames.Diarization, selections.DiarizationModelAlias);
-        SetSnapshotModelVariant(
-            snapshot,
-            options,
-            StageNames.Diarization,
-            RuntimeStage.Diarization,
-            selections.DiarizationModelAlias);
-        AddModelId(snapshot, StageNames.Diarization, selections.DiarizationModelAlias, modelAliasResolver);
-
-        SetSnapshotModelAlias(snapshot, StageNames.Separation, selections.SeparationModelAlias);
-        SetSnapshotModelVariant(
-            snapshot,
-            options,
-            StageNames.Separation,
-            RuntimeStage.Separation,
-            selections.SeparationModelAlias);
-        AddModelId(snapshot, StageNames.Separation, selections.SeparationModelAlias, modelAliasResolver);
-
-        SetSnapshotModelAlias(snapshot, StageNames.OverlapRescue, selections.OverlapRescueModelAlias);
-        SetSnapshotModelVariant(
-            snapshot,
-            options,
-            StageNames.OverlapRescue,
-            RuntimeStage.OverlapRescue,
-            selections.OverlapRescueModelAlias);
-        AddModelId(snapshot, StageNames.OverlapRescue, selections.OverlapRescueModelAlias, modelAliasResolver);
-
-        SetSnapshotModelAlias(snapshot, StageNames.Translation, selections.TranslationModelAlias);
-        SetSnapshotModelVariant(
-            snapshot,
-            options,
-            StageNames.Translation,
-            RuntimeStage.Translation,
-            selections.TranslationModelAlias);
-        AddModelId(snapshot, StageNames.Translation, selections.TranslationModelAlias, modelAliasResolver);
-
-        SetSnapshotModelAlias(snapshot, StageNames.Tts, selections.TtsModelAlias);
-        SetSnapshotModelVariant(snapshot, options, StageNames.Tts, RuntimeStage.Tts, selections.TtsModelAlias);
-        AddModelId(snapshot, StageNames.Tts, selections.TtsModelAlias, modelAliasResolver);
-
-        if (selections.EnableAsrTextRefinement)
-        {
-            SetSnapshotModelAlias(snapshot, StageNames.TextRefinementAsr, selections.TextRefinementModelAlias);
-            SetSnapshotModelVariant(
-                snapshot,
-                options,
-                StageNames.TextRefinementAsr,
-                RuntimeStage.TextRefinement,
-                selections.TextRefinementModelAlias);
-            AddModelId(snapshot, StageNames.TextRefinementAsr, selections.TextRefinementModelAlias, modelAliasResolver);
-        }
-
-        SetSnapshotModelAlias(snapshot, StageNames.LipSync, selections.LipSyncModelAlias);
-        SetSnapshotModelVariant(
-            snapshot,
-            options,
-            StageNames.LipSync,
-            RuntimeStage.LipSync,
-            selections.LipSyncModelAlias);
-        AddModelId(snapshot, StageNames.LipSync, selections.LipSyncModelAlias, modelAliasResolver);
-
-        SetSnapshotModelAlias(snapshot, StageNames.LipSynthesis, selections.LipSynthesisModelAlias);
-        SetSnapshotModelVariant(
-            snapshot,
-            options,
-            StageNames.LipSynthesis,
-            RuntimeStage.LipSynthesis,
-            selections.LipSynthesisModelAlias);
-        AddModelId(snapshot, StageNames.LipSynthesis, selections.LipSynthesisModelAlias, modelAliasResolver);
-
-        // Hardware/provider overrides change which execution provider a stage runs on; a
-        // prior run's artifacts were produced under the provider recorded on its stage row,
-        // so resume must compare them rather than reuse artifacts across provider changes.
-        foreach ((string stageName, RuntimeStage stage) in ProviderSnapshotStages)
-        {
-            SetSnapshotExecutionProvider(snapshot, options, stageName, stage);
-        }
-    }
-
-    private static readonly (string StageName, RuntimeStage Stage)[] ProviderSnapshotStages =
-    [
-        (StageNames.Vad, RuntimeStage.Vad),
-        (StageNames.Asr, RuntimeStage.Asr),
-        (StageNames.Diarization, RuntimeStage.Diarization),
-        (StageNames.Separation, RuntimeStage.Separation),
-        (StageNames.OverlapRescue, RuntimeStage.OverlapRescue),
-        (StageNames.Translation, RuntimeStage.Translation),
-        (StageNames.Tts, RuntimeStage.Tts),
-        (StageNames.AudioPreparation, RuntimeStage.SpeechEnhancement),
-        (StageNames.TextRefinementAsr, RuntimeStage.TextRefinement),
-        (StageNames.LipSync, RuntimeStage.LipSync),
-        (StageNames.LipSynthesis, RuntimeStage.LipSynthesis),
-    ];
-
-    private static void SetSnapshotExecutionProvider(
-        Dictionary<string, string> snapshot,
-        RuntimeModelRequestOptions options,
-        string stageName,
-        RuntimeStage stage)
-    {
-        ExecutionProviderKind? preferredProvider =
-            RuntimeModelRequestFactory.ResolvePreferredExecutionProvider(options, stage);
-        if (preferredProvider is not null)
-        {
-            snapshot[$"Provider:{stageName}"] =
-                RuntimeModelRequestFactory.FormatExecutionProviderLabel(preferredProvider.Value);
-        }
-    }
-
-    private static void AddModelId(
-        Dictionary<string, string> snapshot,
-        string stageName,
-        string? modelAlias,
-        IModelAliasResolver? modelAliasResolver)
-    {
-        if (modelAliasResolver is not null &&
-            !string.IsNullOrWhiteSpace(modelAlias) &&
-            modelAliasResolver.TryResolveModelId(modelAlias, out string? modelId) &&
-            !string.IsNullOrWhiteSpace(modelId))
-        {
-            snapshot[$"ModelId:{stageName}"] = modelId;
-        }
-    }
-
-    private static void SetSnapshotModelAlias(
-        Dictionary<string, string> snapshot,
-        string stageName,
-        string? modelAlias)
-    {
-        if (!string.IsNullOrWhiteSpace(modelAlias))
-        {
-            snapshot[$"Model:{stageName}"] = modelAlias;
-        }
-    }
-
-    private static void SetSnapshotModelVariant(
-        Dictionary<string, string> snapshot,
-        RuntimeModelRequestOptions options,
-        string stageName,
-        RuntimeStage stage,
-        string? modelAlias)
-    {
-        string? variant = RuntimeModelRequestFactory.ResolvePreferredModelVariantAlias(options, stage, modelAlias);
-        if (!string.IsNullOrWhiteSpace(variant))
-        {
-            snapshot[$"ModelVariant:{stageName}"] = variant;
-        }
-    }
-
-    /// <summary>
-    /// Captures an immutable snapshot of provider/model/voice decisions at run start.
-    /// </summary>
-    internal static Dictionary<string, string> CaptureExecutionSnapshot(DubbingSessionOptions options)
-    {
-        var snapshot = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["SourceMediaPath"] = options.SourceMediaPath,
-            ["TargetLanguageCode"] = options.TargetLanguageCode,
-            ["ForceRerun"] = options.ForceRerun.ToString(),
-            ["EnableAsrTextRefinement"] = options.EnableAsrTextRefinement.ToString(),
-            ["UseVoiceCloning"] = options.UseVoiceCloning.ToString(),
-        };
-
-        AddTtsTimingSnapshotEntries(snapshot, options.TtsTiming);
-        AddExportResumeGatingSnapshotEntries(snapshot, options);
-
-        if (options.SourceLanguageCode is not null)
-        {
-            snapshot["SourceLanguage"] = options.SourceLanguageCode;
-        }
-
-        AddSnapshotEntries(snapshot, options.ModelPreferences?
-            .Select(static pair => ($"Model:{pair.Key}", pair.Value)));
-        AddSnapshotEntries(snapshot, options.VoiceCloneBySpeakerId?
-            .Select(static pair => ($"VoiceClone:{pair.Key:D}", pair.Value.ToString())));
-        AddSnapshotEntries(snapshot, options.VoiceAssignmentOverrides?
-            .Select(static pair => ($"Voice:{pair.Key}", pair.Value)));
-
-        return snapshot;
-    }
-
-    private static void AddSnapshotEntries(
-        Dictionary<string, string> snapshot,
-        IEnumerable<(string Key, string Value)>? entries)
-    {
-        foreach ((string key, string value) in entries ?? [])
-        {
-            snapshot[key] = value;
-        }
-    }
-
-    private static void AddTtsTimingSnapshotEntries(Dictionary<string, string> snapshot, TtsTimingSettings? ttsTiming)
-    {
-        if (ttsTiming is not null)
-        {
-            snapshot["TtsTiming.EnableRubberbandStretch"] = ttsTiming.EnableRubberbandStretch.ToString();
-            snapshot["TtsTiming.RubberbandStretchThreshold"] =
-                ttsTiming.RubberbandStretchThreshold.ToString("G17", CultureInfo.InvariantCulture);
-            if (ttsTiming.AutoStretchMaxOverrun is double autoStretchMaxOverrun)
-            {
-                snapshot["TtsTiming.AutoStretchMaxOverrun"] =
-                    autoStretchMaxOverrun.ToString("G17", CultureInfo.InvariantCulture);
-            }
-        }
-
-        snapshot[TtsTimingResumeIdentity.SnapshotKey] =
-            TtsTimingResumeIdentity.Normalize(ttsTiming?.AutoStretchMaxOverrun);
-    }
-
-    private static void AddExportResumeGatingSnapshotEntries(
-        Dictionary<string, string> snapshot,
-        DubbingSessionOptions options)
-    {
-        // Audio/subtitle/encoder flags (and the pre-existing ExportFormat) gate the Export
-        // stage's artifact resume: any change here must invalidate a cached export so it reruns
-        // without requiring --force-rerun. These values are produced by ExportResumeGating so
-        // capture (here) and comparison (the persisted ExportManifest, read back by
-        // StageArtifactResumeEvaluator) share one normalization and cannot drift.
-        // Note: sourceAudioKind defaults to NormalizedAudio here because the project may not exist
-        // yet. The actual kind is determined at export time when BuildExportGating inspects artifacts.
-        foreach ((string key, string value) in ExportResumeGating.Build(
-            ResolveExportContainer(options.ExportFormat),
-            ArtifactKind.NormalizedAudio,
-            options.ApplyTimbrePolish,
-            options.RestoreOriginalPan,
-            options.MatchOriginalLoudness,
-            options.BurnInSubtitles,
-            ResolveSubtitleSource(options.SubtitleSource),
-            ExportResumeGating.SubtitleFormatsTokenFromRawOptions(options.SubtitleFormats),
-            options.VideoEncoder,
-            options.ExportTargetLufs ?? ExportLoudnessTargets.OnlineLufs,
-            options.ExportSourceGainDb ?? 0d,
-            options.ExportDubbedSpeechGainDb ?? 0d,
-            options.ExportDuckingGainDb))
-        {
-            snapshot[key] = value;
-        }
-    }
 
     private static ArtifactKind ResolveSourceAudioKind(TranscriptProjectState state) =>
         TranscriptWorkflowUtilities.GetLatestAcceptedAmbianceStem(state.ProjectState.Artifacts, state.StageRuns) is not null
             ? ArtifactKind.Ambiance
             : ArtifactKind.NormalizedAudio;
-
-    private static void UpdateExecutionSnapshotWithSourceAudioKind(
-        Dictionary<string, string> snapshot,
-        DubbingSessionOptions options,
-        ArtifactKind sourceAudioKind)
-    {
-        foreach ((string key, string value) in ExportResumeGating.Build(
-            ResolveExportContainer(options.ExportFormat),
-            sourceAudioKind,
-            options.ApplyTimbrePolish,
-            options.RestoreOriginalPan,
-            options.MatchOriginalLoudness,
-            options.BurnInSubtitles,
-            ResolveSubtitleSource(options.SubtitleSource),
-            ExportResumeGating.SubtitleFormatsTokenFromRawOptions(options.SubtitleFormats),
-            options.VideoEncoder,
-            options.ExportTargetLufs ?? ExportLoudnessTargets.OnlineLufs,
-            options.ExportSourceGainDb ?? 0d,
-            options.ExportDubbedSpeechGainDb ?? 0d,
-            options.ExportDuckingGainDb))
-        {
-            snapshot[key] = value;
-        }
-    }
 
     internal static ExportOutputContainer ResolveExportContainer(string? exportFormat) =>
         ExportStageRequestBuilder.ResolveContainer(exportFormat);
@@ -2334,7 +1669,7 @@ public sealed partial class DubbingPipelineEngine(
         return result;
     }
 
-    private static ExportSubtitleSource ResolveSubtitleSource(string? source) =>
+    internal static ExportSubtitleSource ResolveSubtitleSource(string? source) =>
         source?.Trim().ToLowerInvariant() switch
         {
             "transcript" => ExportSubtitleSource.Transcript,
