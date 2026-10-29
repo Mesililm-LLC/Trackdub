@@ -474,6 +474,7 @@ public sealed class RunStageExecutionTests : IDisposable
 
         AssertPreFlightFailure(result, $"{StageNames.Separation}: API key not configured for cloud provider");
         Assert.Equal(2, readiness.EvaluateCalls);
+        Assert.NotSame(readiness.ReceivedSelections[0], readiness.ReceivedSelections[1]);
         IReadOnlyList<RuntimeStage>? invalidated = Assert.Single(readiness.InvalidatedStages);
         Assert.Equal([RuntimeStage.Separation], invalidated);
         Assert.NotNull(result.ExecutionSnapshot);
@@ -595,6 +596,8 @@ public sealed class RunStageExecutionTests : IDisposable
 
         public List<IReadOnlyList<RuntimeStage>?> InvalidatedStages { get; } = [];
 
+        public List<RuntimeModelSelections> ReceivedSelections { get; } = [];
+
         public Task<PipelineReadinessReport> EvaluateAsync(
             IReadOnlyList<RuntimeStage> enabledStages,
             RuntimeModelSelections selections,
@@ -607,6 +610,7 @@ public sealed class RunStageExecutionTests : IDisposable
         {
             ReadinessState status = statusPerEvaluation[Math.Min(EvaluateCalls, statusPerEvaluation.Length - 1)];
             EvaluateCalls++;
+            ReceivedSelections.Add(selections);
             return Task.FromResult(new PipelineReadinessReport(enabledStages
                 .Select(stage => new StageReadiness(
                     StageName: StageNameFor(stage),

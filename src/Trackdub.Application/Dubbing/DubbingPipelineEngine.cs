@@ -1633,7 +1633,6 @@ public sealed partial class DubbingPipelineEngine(
         return DubbingModelPreferences.ApplyExecutionProviderPins(selections, options, preferences);
     }
 
-
     private static ArtifactKind ResolveSourceAudioKind(TranscriptProjectState state) =>
         TranscriptWorkflowUtilities.GetLatestAcceptedAmbianceStem(state.ProjectState.Artifacts, state.StageRuns) is not null
             ? ArtifactKind.Ambiance
