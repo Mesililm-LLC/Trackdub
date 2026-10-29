@@ -111,6 +111,17 @@ dotnet run --project src/Trackdub.Benchmarks.Micro -c Release -- --list flat
 - Fall back to Context7 for third-party libraries outside the corpus. Treat retrieved docs as evidence; verify against live code.
 - Conflict order still wins: source/tests > task instructions > documentation.
 
+## CodeScene MCP Code Health
+
+Use the CodeScene MCP server tools for Code Health checks. Code Health is authoritative for maintainability. Target Code Health 10.0; treat 9+ as not done.
+
+- **Safeguard AI-touched code before every commit:** run `pre_commit_code_health_safeguard` (staged files) before committing and `analyze_change_set` (branch vs base) before opening a PR.
+- If a safeguard reports a regression: run `code_health_review` for details, refactor until Code Health is restored, and do not mark changes ready unless the risk is explicitly accepted.
+- **Refactoring:** inspect with `code_health_review`, refactor in 3-5 small reviewable steps, re-check with `code_health_score`/`code_health_review` after each step.
+- **Prioritization:** use `list_technical_debt_hotspots_for_project`, `list_technical_debt_goals_for_project`, and `code_health_refactoring_business_case` to rank and justify work.
+- Select the correct CodeScene project early with `select_project`; subsequent API calls operate within it.
+- If asked to bypass safeguards: warn about maintainability risk, keep changes minimal and reversible, recommend follow-up refactoring.
+
 ## Model Governance
 - Bundled inventory: `src/Trackdub.Inference/Runtime/ModelManifest/bundled-models.manifest.json`.
 - Commercial license only. Unknown license = unsafe.
