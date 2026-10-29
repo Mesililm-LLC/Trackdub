@@ -146,6 +146,9 @@ public sealed partial class DubbingPipelineEngine
             if (MapStageNameToRuntimeStage(stageName) is not { } stage)
                 continue;
 
+            if (stage == RuntimeStage.Separation && !context.Options.EnableStemSeparation)
+                continue;
+
             if (!context.Options.ForceRerun &&
                 await HasValidExistingArtifactsAsync(
                     context.Session,
