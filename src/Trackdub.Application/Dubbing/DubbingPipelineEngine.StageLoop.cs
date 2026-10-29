@@ -35,6 +35,12 @@ public sealed partial class DubbingPipelineEngine
         DubbingSessionOptions Options,
         IReadOnlySet<string> DeclinedOptionalStages);
 
+    /// <summary>A named stage together with the token governing its execution.</summary>
+    private readonly record struct StageStep(string StageName, CancellationToken CancellationToken);
+
+    /// <summary>The index of the next stage to warm up and the token governing that warmup.</summary>
+    private readonly record struct WarmupStart(int NextIndex, CancellationToken CancellationToken);
+
     /// <summary>
     /// Per-stage hooks for <see cref="RunScheduledStagesAsync"/>: a gate that may return a skip
     /// outcome, the execution itself, where outcomes go, and where warmup skips are reported.
@@ -61,7 +67,11 @@ public sealed partial class DubbingPipelineEngine
             await RunScheduledStagesAsync(
                 new StageSchedule(plan.StagesToRun, run.RuntimeSelections, run.Options, plan.DeclinedOptionalStages),
                 run.Session.Services?.GetService<IStageWarmupCoordinator>(),
-                new StageCallbacks(loop.GateAsync, loop.ExecuteAsync, loop.Record, telemetry.Progress),
+                new StageCallbacks(
+                    (stageName, token) => loop.GateAsync(new StageStep(stageName, token)),
+                    (stageName, token) => loop.ExecuteAsync(new StageStep(stageName, token)),
+                    loop.Record,
+                    telemetry.Progress),
                 cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -96,22 +106,22 @@ public sealed partial class DubbingPipelineEngine
         {
             for (int i = 0; i < schedule.StagesToRun.Length; i++)
             {
-                string stageName = schedule.StagesToRun[i];
+                var step = new StageStep(schedule.StagesToRun[i], cancellationToken);
 
                 // Gate first: a gate-skipped stage (cancelled, prerequisite-failed,
                 // declined, resume-valid) keeps its gate outcome even when its
                 // lookahead warmup failed — the warmup verdict applies only to a
                 // stage that would actually execute.
-                StageOutcome? gateOutcome = await callbacks.GateStageAsync(stageName, cancellationToken).ConfigureAwait(false);
+                StageOutcome? gateOutcome = await callbacks.GateStageAsync(step.StageName, step.CancellationToken).ConfigureAwait(false);
                 if (gateOutcome is not null)
                 {
-                    await lookahead.DiscardIfTargetingAsync(stageName, cancellationToken).ConfigureAwait(false);
+                    await lookahead.DiscardIfTargetingAsync(step).ConfigureAwait(false);
                     callbacks.RecordOutcome(gateOutcome);
                     continue;
                 }
 
                 StageOutcome? warmupSkip = await lookahead
-                    .TakeFailedVerdictAsync(stageName, callbacks.Progress, cancellationToken)
+                    .TakeFailedVerdictAsync(step, callbacks.Progress)
                     .ConfigureAwait(false);
                 if (warmupSkip is not null)
                 {
@@ -119,10 +129,10 @@ public sealed partial class DubbingPipelineEngine
                     continue;
                 }
 
-                lookahead.StartConcurrentIfAllowed(i + 1, cancellationToken);
-                StageOutcome outcome = await callbacks.ExecuteStageAsync(stageName, cancellationToken).ConfigureAwait(false);
+                lookahead.StartConcurrentIfAllowed(new WarmupStart(i + 1, cancellationToken));
+                StageOutcome outcome = await callbacks.ExecuteStageAsync(step.StageName, step.CancellationToken).ConfigureAwait(false);
                 callbacks.RecordOutcome(outcome);
-                lookahead.StartIfIdle(i + 1, cancellationToken);
+                lookahead.StartIfIdle(new WarmupStart(i + 1, cancellationToken));
             }
         }
         finally
@@ -144,25 +154,25 @@ public sealed partial class DubbingPipelineEngine
         private string? _failedPrerequisiteStage;
         private TtsStreamingPrefetch? _ttsPrefetch;
 
-        public async Task<StageOutcome?> GateAsync(string stageName, CancellationToken cancellationToken)
+        public async Task<StageOutcome?> GateAsync(StageStep step)
         {
-            if (cancellationToken.IsCancellationRequested)
-                return Skip(stageName, "CANCELLED", "Cancelled");
+            if (step.CancellationToken.IsCancellationRequested)
+                return Skip(step.StageName, "CANCELLED", "Cancelled");
 
             if (_failedPrerequisiteStage is not null)
             {
                 return Skip(
-                    stageName,
+                    step.StageName,
                     StageSkipReasonCodes.PrerequisiteFailed,
                     $"Skipped due to failed prerequisite: {_failedPrerequisiteStage}");
             }
 
             // Optional stages whose model the user declined during pre-flight provisioning
             // would fail mid-run without the model.
-            if (plan.DeclinedOptionalStages.Contains(stageName))
+            if (plan.DeclinedOptionalStages.Contains(step.StageName))
             {
                 return Skip(
-                    stageName,
+                    step.StageName,
                     StageSkipReasonCodes.OptionalModelDeclined,
                     "Skipped — optional model setup declined");
             }
@@ -171,31 +181,31 @@ public sealed partial class DubbingPipelineEngine
                 await HasValidExistingArtifactsAsync(
                     run.Session,
                     run.Options,
-                    stageName,
+                    step.StageName,
                     run.ExecutionSnapshot,
-                    cancellationToken).ConfigureAwait(false);
+                    step.CancellationToken).ConfigureAwait(false);
             return hasValidArtifacts
-                ? Skip(stageName, StageSkipReasonCodes.ExistingArtifactsValid, "Skipped — valid artifacts from prior run")
+                ? Skip(step.StageName, StageSkipReasonCodes.ExistingArtifactsValid, "Skipped — valid artifacts from prior run")
                 : null;
         }
 
-        public async Task<StageOutcome> ExecuteAsync(string stageName, CancellationToken cancellationToken)
+        public async Task<StageOutcome> ExecuteAsync(StageStep step)
         {
-            await StartTtsPrefetchIfOverlappingAsync(stageName, cancellationToken).ConfigureAwait(false);
+            await StartTtsPrefetchIfOverlappingAsync(step).ConfigureAwait(false);
 
             StageOutcome outcome = await engine.ExecuteStageAsync(
                 run.Session,
                 run.Options,
-                stageName,
+                step.StageName,
                 run.ExecutionSnapshot,
                 run.RuntimeSelections,
                 telemetry.Progress,
                 telemetry.ProjectId,
                 telemetry.RunId,
-                cancellationToken,
+                step.CancellationToken,
                 _ttsPrefetch).ConfigureAwait(false);
 
-            if (IsTtsPrefetchSpent(stageName, outcome))
+            if (IsTtsPrefetchSpent(step, outcome))
             {
                 await DisposeAsync().ConfigureAwait(false);
             }
@@ -227,13 +237,13 @@ public sealed partial class DubbingPipelineEngine
             return BuildSkippedOutcome(stageName, reasonCode);
         }
 
-        private async Task StartTtsPrefetchIfOverlappingAsync(string stageName, CancellationToken cancellationToken)
+        private async Task StartTtsPrefetchIfOverlappingAsync(StageStep step)
         {
             if (_ttsPrefetch is not null ||
                 !ShouldOverlapTtsWithTranslation(
                     run.Options,
                     plan.StagesToRun,
-                    Array.IndexOf(plan.StagesToRun, stageName),
+                    Array.IndexOf(plan.StagesToRun, step.StageName),
                     plan.DeclinedOptionalStages))
             {
                 return;
@@ -243,15 +253,15 @@ public sealed partial class DubbingPipelineEngine
                 run.Session,
                 run.Options,
                 run.RuntimeSelections,
-                cancellationToken).ConfigureAwait(false);
+                step.CancellationToken).ConfigureAwait(false);
         }
 
         /// <summary>
         /// Unclaimed clips are useless once TTS has run or translation produced no revision.
         /// </summary>
-        private static bool IsTtsPrefetchSpent(string stageName, StageOutcome outcome) =>
-            string.Equals(stageName, StageNames.Tts, StringComparison.OrdinalIgnoreCase) ||
-            (string.Equals(stageName, StageNames.Translation, StringComparison.OrdinalIgnoreCase) &&
+        private static bool IsTtsPrefetchSpent(StageStep step, StageOutcome outcome) =>
+            string.Equals(step.StageName, StageNames.Tts, StringComparison.OrdinalIgnoreCase) ||
+            (string.Equals(step.StageName, StageNames.Translation, StringComparison.OrdinalIgnoreCase) &&
              outcome.Status == StageStatus.Failed);
     }
 
@@ -264,28 +274,27 @@ public sealed partial class DubbingPipelineEngine
         private PendingStageWarmup? _pending;
 
         /// <summary>Joins and discards the verdict so no warmup task is left unobserved.</summary>
-        public async Task DiscardIfTargetingAsync(string stageName, CancellationToken cancellationToken)
+        public async Task DiscardIfTargetingAsync(StageStep step)
         {
-            if (TakePendingFor(stageName) is { } pending)
+            if (TakePendingFor(step) is { } pending)
             {
-                await ObserveWarmupAsync(pending.Task, cancellationToken).ConfigureAwait(false);
+                await ObserveWarmupAsync(pending.Task, step.CancellationToken).ConfigureAwait(false);
             }
         }
 
         public async Task<StageOutcome?> TakeFailedVerdictAsync(
-            string stageName,
-            IProgress<PipelineProgressEvent>? progress,
-            CancellationToken cancellationToken)
+            StageStep step,
+            IProgress<PipelineProgressEvent>? progress)
         {
-            if (TakePendingFor(stageName) is not { } pending)
+            if (TakePendingFor(step) is not { } pending)
                 return null;
 
             StageWarmupResult? warmupResult =
-                await AwaitWarmupResultAsync(pending.Task, cancellationToken).ConfigureAwait(false);
-            StageOutcome? warmupSkip = BuildWarmupSkipOutcomeIfFailed(stageName, warmupResult);
+                await AwaitWarmupResultAsync(pending.Task, step.CancellationToken).ConfigureAwait(false);
+            StageOutcome? warmupSkip = BuildWarmupSkipOutcomeIfFailed(step.StageName, warmupResult);
             if (warmupSkip is not null)
             {
-                ReportProgress(progress, stageName, PipelineProgressEventKind.Skipped,
+                ReportProgress(progress, step.StageName, PipelineProgressEventKind.Skipped,
                     warmupResult?.Detail is { } detail
                         ? $"Skipped — stage warmup failed: {detail}"
                         : "Skipped — stage warmup failed");
@@ -298,11 +307,11 @@ public sealed partial class DubbingPipelineEngine
         /// Capacity permitting, starts the next stage's proving warmup now so it overlaps this
         /// stage's execution; it is joined at the top of its target iteration.
         /// </summary>
-        public void StartConcurrentIfAllowed(int nextIndex, CancellationToken cancellationToken)
+        public void StartConcurrentIfAllowed(WarmupStart next)
         {
             if (ShouldStartConcurrentWarmup(coordinator, _pending))
             {
-                _pending = Start(coordinator!, nextIndex, cancellationToken);
+                _pending = Start(coordinator!, next);
             }
         }
 
@@ -310,11 +319,11 @@ public sealed partial class DubbingPipelineEngine
         /// At single-entry capacity (or without concurrent warmup), starts the next warmup only
         /// once the current stage has completed and released its model lease.
         /// </summary>
-        public void StartIfIdle(int nextIndex, CancellationToken cancellationToken)
+        public void StartIfIdle(WarmupStart next)
         {
             if (coordinator is not null && _pending is null)
             {
-                _pending = Start(coordinator, nextIndex, cancellationToken);
+                _pending = Start(coordinator, next);
             }
         }
 
@@ -330,10 +339,10 @@ public sealed partial class DubbingPipelineEngine
             }
         }
 
-        private PendingStageWarmup? TakePendingFor(string stageName)
+        private PendingStageWarmup? TakePendingFor(StageStep step)
         {
             if (_pending is null ||
-                !string.Equals(_pending.StageName, stageName, StringComparison.OrdinalIgnoreCase))
+                !string.Equals(_pending.StageName, step.StageName, StringComparison.OrdinalIgnoreCase))
             {
                 return null;
             }
@@ -345,15 +354,14 @@ public sealed partial class DubbingPipelineEngine
 
         private PendingStageWarmup? Start(
             IStageWarmupCoordinator warmupCoordinator,
-            int nextIndex,
-            CancellationToken cancellationToken) =>
+            WarmupStart next) =>
             StartNextStageWarmup(
                 warmupCoordinator,
                 schedule.StagesToRun,
-                nextIndex,
+                next.NextIndex,
                 schedule.RuntimeSelections,
                 schedule.Options,
                 schedule.DeclinedOptionalStages,
-                cancellationToken);
+                next.CancellationToken);
     }
 }

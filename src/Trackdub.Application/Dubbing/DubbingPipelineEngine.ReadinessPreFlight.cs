@@ -143,25 +143,35 @@ public sealed partial class DubbingPipelineEngine
         var enabledStages = new List<RuntimeStage>();
         foreach (string stageName in context.StageNames)
         {
-            if (MapStageNameToRuntimeStage(stageName) is not { } stage)
-                continue;
-
-            if (stage == RuntimeStage.Separation && !context.Options.EnableStemSeparation)
-                continue;
-
-            if (!context.Options.ForceRerun &&
-                await HasValidExistingArtifactsAsync(
-                    context.Session,
-                    context.Options,
-                    stageName,
-                    context.ExecutionSnapshot,
-                    context.CancellationToken).ConfigureAwait(false))
-                continue;
-
-            enabledStages.Add(stage);
+            if (MapStageNameToRuntimeStage(stageName) is { } stage &&
+                await IsStageEnabledAsync(context, stage, stageName).ConfigureAwait(false))
+            {
+                enabledStages.Add(stage);
+            }
         }
 
         return enabledStages;
+    }
+
+    /// <summary>
+    /// A stage is evaluated unless separation was disabled or resumable artifacts from a
+    /// prior run already satisfy it.
+    /// </summary>
+    private static async Task<bool> IsStageEnabledAsync(
+        ReadinessPreFlightContext context,
+        RuntimeStage stage,
+        string stageName)
+    {
+        if (stage == RuntimeStage.Separation && !context.Options.EnableStemSeparation)
+            return false;
+
+        return context.Options.ForceRerun ||
+            !await HasValidExistingArtifactsAsync(
+                context.Session,
+                context.Options,
+                stageName,
+                context.ExecutionSnapshot,
+                context.CancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
