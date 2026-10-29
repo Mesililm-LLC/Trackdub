@@ -203,16 +203,9 @@ public sealed partial class DubbingPipelineEngine(
 
             // --- Execute stages ---
             await RunStageLoopAsync(
-                session,
-                options,
-                stagesToRun,
-                executionSnapshot,
-                runtimeSelections,
-                scopedProgress,
-                projectId,
-                runId,
-                stageOutcomes,
-                declinedOptionalStages,
+                new StageRunContext(session, options, runtimeSelections, executionSnapshot),
+                new StageRunTelemetry(scopedProgress, projectId, runId),
+                new StageLoopPlan(stagesToRun, declinedOptionalStages, stageOutcomes),
                 cancellationToken).ConfigureAwait(false);
 
             await RunPostLipSynthesisExportIfNeededAsync(
@@ -403,136 +396,6 @@ public sealed partial class DubbingPipelineEngine(
     }
 
     /// <summary>
-    /// Runs each requested stage in order, honoring cancellation, failed prerequisites,
-    /// and artifact resume. Outcomes are appended to <paramref name="stageOutcomes"/>.
-    /// </summary>
-    private async Task RunStageLoopAsync(
-        IDubbingSession session,
-        DubbingSessionOptions options,
-        string[] stagesToRun,
-        Dictionary<string, string> executionSnapshot,
-        RuntimeModelSelections runtimeSelections,
-        IProgress<PipelineProgressEvent>? progress,
-        Guid projectId,
-        Guid runId,
-        List<StageOutcome> stageOutcomes,
-        IReadOnlySet<string> declinedOptionalStages,
-        CancellationToken cancellationToken)
-    {
-        string? failedPrerequisiteStage = null;
-
-        IStageWarmupCoordinator? warmupCoordinator =
-            session.Services?.GetService<IStageWarmupCoordinator>();
-        TtsStreamingPrefetch? ttsPrefetch = null;
-
-        try
-        {
-            await RunScheduledStagesAsync(
-                stagesToRun,
-                warmupCoordinator,
-                runtimeSelections,
-                options,
-                declinedOptionalStages,
-                gateStageAsync: async (stageName, ct) =>
-                {
-                    // Check cancellation between stages
-                    if (ct.IsCancellationRequested)
-                    {
-                        ReportProgress(progress, stageName, PipelineProgressEventKind.Skipped, "Cancelled");
-                        return BuildSkippedOutcome(stageName, "CANCELLED");
-                    }
-
-                    // Skip if a prerequisite stage failed
-                    if (failedPrerequisiteStage is not null)
-                    {
-                        ReportProgress(progress, stageName, PipelineProgressEventKind.Skipped,
-                            $"Skipped due to failed prerequisite: {failedPrerequisiteStage}");
-                        return BuildSkippedOutcome(stageName, StageSkipReasonCodes.PrerequisiteFailed);
-                    }
-
-                    // Skip optional stages whose model the user declined during pre-flight
-                    // provisioning; without the model they would fail mid-run.
-                    if (declinedOptionalStages.Contains(stageName))
-                    {
-                        ReportProgress(progress, stageName, PipelineProgressEventKind.Skipped,
-                            "Skipped — optional model setup declined");
-                        return BuildSkippedOutcome(stageName, StageSkipReasonCodes.OptionalModelDeclined);
-                    }
-
-                    // Check resumability: skip stages with valid existing artifacts
-                    if (!options.ForceRerun &&
-                        await HasValidExistingArtifactsAsync(
-                            session,
-                            options,
-                            stageName,
-                            executionSnapshot,
-                            ct).ConfigureAwait(false))
-                    {
-                        ReportProgress(progress, stageName, PipelineProgressEventKind.Skipped,
-                            "Skipped — valid artifacts from prior run");
-                        return BuildSkippedOutcome(stageName, StageSkipReasonCodes.ExistingArtifactsValid);
-                    }
-
-                    return null;
-                },
-                executeStageAsync: async (stageName, ct) =>
-                {
-                    if (ttsPrefetch is null &&
-                        ShouldOverlapTtsWithTranslation(
-                            options, stagesToRun, Array.IndexOf(stagesToRun, stageName), declinedOptionalStages))
-                    {
-                        ttsPrefetch = await TryCreateTtsPrefetchAsync(
-                            session,
-                            options,
-                            runtimeSelections,
-                            ct).ConfigureAwait(false);
-                    }
-
-                    StageOutcome outcome = await ExecuteStageAsync(
-                        session,
-                        options,
-                        stageName,
-                        executionSnapshot,
-                        runtimeSelections,
-                        progress,
-                        projectId,
-                        runId,
-                        ct,
-                        ttsPrefetch).ConfigureAwait(false);
-
-                    // Unclaimed clips are useless once TTS has run or translation produced no revision.
-                    if (ttsPrefetch is not null &&
-                        (string.Equals(stageName, StageNames.Tts, StringComparison.OrdinalIgnoreCase) ||
-                         (string.Equals(stageName, StageNames.Translation, StringComparison.OrdinalIgnoreCase) &&
-                          outcome.Status == StageStatus.Failed)))
-                    {
-                        await ttsPrefetch.DisposeAsync().ConfigureAwait(false);
-                        ttsPrefetch = null;
-                    }
-
-                    return outcome;
-                },
-                recordOutcome: outcome =>
-                {
-                    stageOutcomes.Add(outcome);
-                    if (IsBlockingPrerequisiteOutcome(outcome))
-                    {
-                        failedPrerequisiteStage = outcome.StageName;
-                    }
-                },
-                progress,
-                cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            if (ttsPrefetch is not null)
-            {
-                await ttsPrefetch.DisposeAsync().ConfigureAwait(false);
-            }
-        }
-    }
-
-    /// <summary>
     /// A prerequisite outcome blocks downstream stages (and any deliverable) when it
     /// failed outright or was skipped for a non-benign reason — e.g. a stage skipped
     /// because its proving warmup failed (<see cref="StageSkipReasonCodes.WarmupFailed"/>)
@@ -544,122 +407,6 @@ public sealed partial class DubbingPipelineEngine(
         && (outcome.Status == StageStatus.Failed
             || (outcome.Status == StageStatus.Skipped
                 && !IsBenignSkipReasonCode(outcome.ReasonCode)));
-
-    /// <summary>
-    /// Stage sequence with next-stage warmup lookahead: the warmup for the next warmable
-    /// stage is started (not awaited) immediately before the current stage executes, so
-    /// its proving session create overlaps the current stage's work instead of sitting
-    /// serially in the gap between stages. Each stage's gate runs before its pending
-    /// warmup is joined, and a failed warmup verdict is applied only when the gate
-    /// would let the stage execute: it skips that stage with
-    /// <see cref="StageSkipReasonCodes.WarmupFailed"/> and the failure detail (the
-    /// coordinator records no verdict for a failed smoke), while a passed or
-    /// not-attempted warmup leaves execution untouched. Gate-skipped
-    /// stages (cancelled, prerequisite-failed, declined, resume-valid) keep their
-    /// gate outcome and start no new warmup, matching the previous post-stage
-    /// scheduling for those paths.
-    /// </summary>
-    internal static async Task RunScheduledStagesAsync(
-        string[] stagesToRun,
-        IStageWarmupCoordinator? warmupCoordinator,
-        RuntimeModelSelections runtimeSelections,
-        DubbingSessionOptions options,
-        IReadOnlySet<string> declinedOptionalStages,
-        Func<string, CancellationToken, Task<StageOutcome?>> gateStageAsync,
-        Func<string, CancellationToken, Task<StageOutcome>> executeStageAsync,
-        Action<StageOutcome> recordOutcome,
-        IProgress<PipelineProgressEvent>? progress,
-        CancellationToken cancellationToken)
-    {
-        PendingStageWarmup? pendingWarmup = null;
-
-        try
-        {
-            for (int i = 0; i < stagesToRun.Length; i++)
-            {
-                string stageName = stagesToRun[i];
-
-                // Gate first: a gate-skipped stage (cancelled, prerequisite-failed,
-                // declined, resume-valid) keeps its gate outcome even when its
-                // lookahead warmup failed — the warmup verdict applies only to a
-                // stage that would actually execute.
-                StageOutcome? gateOutcome = await gateStageAsync(stageName, cancellationToken).ConfigureAwait(false);
-                if (gateOutcome is not null)
-                {
-                    if (pendingWarmup is not null
-                        && string.Equals(pendingWarmup.StageName, stageName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        // Join and discard the verdict so no warmup task is left unobserved.
-                        await ObserveWarmupAsync(pendingWarmup.Task, cancellationToken).ConfigureAwait(false);
-                        pendingWarmup = null;
-                    }
-
-                    recordOutcome(gateOutcome);
-                    continue;
-                }
-
-                if (pendingWarmup is not null
-                    && string.Equals(pendingWarmup.StageName, stageName, StringComparison.OrdinalIgnoreCase))
-                {
-                    StageWarmupResult? warmupResult =
-                        await AwaitWarmupResultAsync(pendingWarmup.Task, cancellationToken).ConfigureAwait(false);
-                    pendingWarmup = null;
-
-                    if (BuildWarmupSkipOutcomeIfFailed(stageName, warmupResult) is { } warmupSkip)
-                    {
-                        ReportProgress(progress, stageName, PipelineProgressEventKind.Skipped,
-                            warmupResult?.Detail is { } detail
-                                ? $"Skipped — stage warmup failed: {detail}"
-                                : "Skipped — stage warmup failed");
-                        recordOutcome(warmupSkip);
-                        continue;
-                    }
-                }
-
-                // Capacity permitting, start the next stage's proving warmup now so
-                // it overlaps this stage's execution; it is joined at the top of its
-                // target iteration.
-                if (ShouldStartConcurrentWarmup(warmupCoordinator, pendingWarmup))
-                {
-                    pendingWarmup = StartNextStageWarmup(
-                        warmupCoordinator!,
-                        stagesToRun,
-                        i + 1,
-                        runtimeSelections,
-                        options,
-                        declinedOptionalStages,
-                        cancellationToken);
-                }
-
-                StageOutcome outcome = await executeStageAsync(stageName, cancellationToken).ConfigureAwait(false);
-                recordOutcome(outcome);
-
-                // At single-entry capacity (or without concurrent warmup), start the
-                // next warmup only now that this stage has completed and released its
-                // model lease; it is joined at the top of its target iteration.
-                if (warmupCoordinator is not null && pendingWarmup is null)
-                {
-                    pendingWarmup = StartNextStageWarmup(
-                        warmupCoordinator,
-                        stagesToRun,
-                        i + 1,
-                        runtimeSelections,
-                        options,
-                        declinedOptionalStages,
-                        cancellationToken);
-                }
-            }
-        }
-        finally
-        {
-            // Stop joining warmup promptly on cancellation; the coordinator receives the
-            // same token and will stop at its next cancellable checkpoint.
-            if (pendingWarmup is not null)
-            {
-                await ObserveWarmupAsync(pendingWarmup.Task, cancellationToken).ConfigureAwait(false);
-            }
-        }
-    }
 
     /// <summary>
     /// TTS overlaps translation when segment streaming is on and TTS runs later in this run:
@@ -1195,23 +942,25 @@ public sealed partial class DubbingPipelineEngine(
         }
     }
 
-    internal static RuntimeStage? MapStageNameToRuntimeStage(string stageName) =>
-        stageName.ToLowerInvariant() switch
+    private static readonly IReadOnlyDictionary<string, RuntimeStage> RuntimeStageByStageName =
+        new Dictionary<string, RuntimeStage>(StringComparer.OrdinalIgnoreCase)
         {
-            StageNames.Vad => RuntimeStage.Vad,
-            StageNames.Asr => RuntimeStage.Asr,
-            StageNames.Diarization => RuntimeStage.Diarization,
-            StageNames.Translation => RuntimeStage.Translation,
-            StageNames.Tts => RuntimeStage.Tts,
-            StageNames.Separation => RuntimeStage.Separation,
-            StageNames.AudioPreparation => RuntimeStage.SpeechEnhancement,
-            StageNames.SpeechEnhancement => RuntimeStage.SpeechEnhancement,
-            StageNames.OverlapRescue => RuntimeStage.OverlapRescue,
-            StageNames.TextRefinementAsr => RuntimeStage.TextRefinement,
-            StageNames.LipSync => RuntimeStage.LipSync,
-            StageNames.LipSynthesis => RuntimeStage.LipSynthesis,
-            _ => null,
+            [StageNames.Vad] = RuntimeStage.Vad,
+            [StageNames.Asr] = RuntimeStage.Asr,
+            [StageNames.Diarization] = RuntimeStage.Diarization,
+            [StageNames.Translation] = RuntimeStage.Translation,
+            [StageNames.Tts] = RuntimeStage.Tts,
+            [StageNames.Separation] = RuntimeStage.Separation,
+            [StageNames.AudioPreparation] = RuntimeStage.SpeechEnhancement,
+            [StageNames.SpeechEnhancement] = RuntimeStage.SpeechEnhancement,
+            [StageNames.OverlapRescue] = RuntimeStage.OverlapRescue,
+            [StageNames.TextRefinementAsr] = RuntimeStage.TextRefinement,
+            [StageNames.LipSync] = RuntimeStage.LipSync,
+            [StageNames.LipSynthesis] = RuntimeStage.LipSynthesis,
         };
+
+    internal static RuntimeStage? MapStageNameToRuntimeStage(string stageName) =>
+        RuntimeStageByStageName.TryGetValue(stageName, out RuntimeStage stage) ? stage : null;
 
     internal readonly record struct StageWorkflowResult(
         IReadOnlyList<string> ArtifactPaths,
@@ -2868,12 +2617,42 @@ public sealed partial class DubbingPipelineEngine(
             ["UseVoiceCloning"] = options.UseVoiceCloning.ToString(),
         };
 
-        if (options.TtsTiming is not null)
+        AddTtsTimingSnapshotEntries(snapshot, options.TtsTiming);
+        AddExportResumeGatingSnapshotEntries(snapshot, options);
+
+        if (options.SourceLanguageCode is not null)
         {
-            snapshot["TtsTiming.EnableRubberbandStretch"] = options.TtsTiming.EnableRubberbandStretch.ToString();
+            snapshot["SourceLanguage"] = options.SourceLanguageCode;
+        }
+
+        AddSnapshotEntries(snapshot, options.ModelPreferences?
+            .Select(static pair => ($"Model:{pair.Key}", pair.Value)));
+        AddSnapshotEntries(snapshot, options.VoiceCloneBySpeakerId?
+            .Select(static pair => ($"VoiceClone:{pair.Key:D}", pair.Value.ToString())));
+        AddSnapshotEntries(snapshot, options.VoiceAssignmentOverrides?
+            .Select(static pair => ($"Voice:{pair.Key}", pair.Value)));
+
+        return snapshot;
+    }
+
+    private static void AddSnapshotEntries(
+        Dictionary<string, string> snapshot,
+        IEnumerable<(string Key, string Value)>? entries)
+    {
+        foreach ((string key, string value) in entries ?? [])
+        {
+            snapshot[key] = value;
+        }
+    }
+
+    private static void AddTtsTimingSnapshotEntries(Dictionary<string, string> snapshot, TtsTimingSettings? ttsTiming)
+    {
+        if (ttsTiming is not null)
+        {
+            snapshot["TtsTiming.EnableRubberbandStretch"] = ttsTiming.EnableRubberbandStretch.ToString();
             snapshot["TtsTiming.RubberbandStretchThreshold"] =
-                options.TtsTiming.RubberbandStretchThreshold.ToString("G17", CultureInfo.InvariantCulture);
-            if (options.TtsTiming.AutoStretchMaxOverrun is double autoStretchMaxOverrun)
+                ttsTiming.RubberbandStretchThreshold.ToString("G17", CultureInfo.InvariantCulture);
+            if (ttsTiming.AutoStretchMaxOverrun is double autoStretchMaxOverrun)
             {
                 snapshot["TtsTiming.AutoStretchMaxOverrun"] =
                     autoStretchMaxOverrun.ToString("G17", CultureInfo.InvariantCulture);
@@ -2881,8 +2660,13 @@ public sealed partial class DubbingPipelineEngine(
         }
 
         snapshot[TtsTimingResumeIdentity.SnapshotKey] =
-            TtsTimingResumeIdentity.Normalize(options.TtsTiming?.AutoStretchMaxOverrun);
+            TtsTimingResumeIdentity.Normalize(ttsTiming?.AutoStretchMaxOverrun);
+    }
 
+    private static void AddExportResumeGatingSnapshotEntries(
+        Dictionary<string, string> snapshot,
+        DubbingSessionOptions options)
+    {
         // Audio/subtitle/encoder flags (and the pre-existing ExportFormat) gate the Export
         // stage's artifact resume: any change here must invalidate a cached export so it reruns
         // without requiring --force-rerun. These values are produced by ExportResumeGating so
@@ -2907,37 +2691,6 @@ public sealed partial class DubbingPipelineEngine(
         {
             snapshot[key] = value;
         }
-
-        if (options.SourceLanguageCode is not null)
-        {
-            snapshot["SourceLanguage"] = options.SourceLanguageCode;
-        }
-
-        if (options.ModelPreferences is not null)
-        {
-            foreach ((string stage, string model) in options.ModelPreferences)
-            {
-                snapshot[$"Model:{stage}"] = model;
-            }
-        }
-
-        if (options.VoiceCloneBySpeakerId is not null)
-        {
-            foreach ((Guid speaker, bool clone) in options.VoiceCloneBySpeakerId)
-            {
-                snapshot[$"VoiceClone:{speaker:D}"] = clone.ToString();
-            }
-        }
-
-        if (options.VoiceAssignmentOverrides is not null)
-        {
-            foreach ((string speaker, string voice) in options.VoiceAssignmentOverrides)
-            {
-                snapshot[$"Voice:{speaker}"] = voice;
-            }
-        }
-
-        return snapshot;
     }
 
     private static ArtifactKind ResolveSourceAudioKind(TranscriptProjectState state) =>
