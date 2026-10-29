@@ -33,7 +33,7 @@ public sealed class UnattendedVoiceCloningTests
             UseVoiceCloning = true,
         };
 
-        DubbingSessionOptions resolved = DubbingPipelineEngine.ApplyVoiceCloningDefaults(options);
+        DubbingSessionOptions resolved = UnattendedVoiceSelection.ApplyVoiceCloningDefaults(options);
 
         Assert.NotNull(resolved.ModelPreferences);
         Assert.Equal(VoiceCloningDefaults.ChatterboxPrimaryAlias, resolved.ModelPreferences["tts"]);
@@ -54,7 +54,7 @@ public sealed class UnattendedVoiceCloningTests
             UseVoiceCloning = true,
         };
 
-        DubbingSessionOptions resolved = DubbingPipelineEngine.ApplyVoiceCloningDefaults(options);
+        DubbingSessionOptions resolved = UnattendedVoiceSelection.ApplyVoiceCloningDefaults(options);
 
         Assert.NotNull(resolved.ModelPreferences);
         Assert.Equal("chatterbox-multilingual", resolved.ModelPreferences!["tts"]);
@@ -75,7 +75,7 @@ public sealed class UnattendedVoiceCloningTests
             UseVoiceCloning = true,
         };
 
-        DubbingSessionOptions resolved = DubbingPipelineEngine.ApplyVoiceCloningDefaults(options);
+        DubbingSessionOptions resolved = UnattendedVoiceSelection.ApplyVoiceCloningDefaults(options);
 
         Assert.NotNull(resolved.ModelPreferences);
         // The explicit override survives a case-insensitive lookup (StageNames.Tts == "tts").
@@ -103,7 +103,7 @@ public sealed class UnattendedVoiceCloningTests
             UseVoiceCloning = true,
         };
 
-        DubbingSessionOptions resolved = DubbingPipelineEngine.ApplyVoiceCloningDefaults(options);
+        DubbingSessionOptions resolved = UnattendedVoiceSelection.ApplyVoiceCloningDefaults(options);
 
         Assert.NotNull(resolved.ModelPreferences);
         // Last write wins: the "tts" entry, enumerated after "TTS", is retained.
@@ -128,8 +128,8 @@ public sealed class UnattendedVoiceCloningTests
         // Drive the real runtime-selection path: normalize, then feed the result through the same
         // BuildModelPreferences lookup used by CreateSelectionsFromSettings so a regression that
         // reverts to reading the caller's case-sensitive dictionary is caught here.
-        DubbingSessionOptions resolved = DubbingPipelineEngine.ApplyVoiceCloningDefaults(options);
-        InferenceModelPreferences? preferences = DubbingPipelineEngine.BuildModelPreferences(resolved);
+        DubbingSessionOptions resolved = UnattendedVoiceSelection.ApplyVoiceCloningDefaults(options);
+        InferenceModelPreferences? preferences = DubbingModelPreferences.BuildModelPreferences(resolved);
 
         Assert.NotNull(preferences);
         Assert.Equal("chatterbox-multilingual", preferences!.TtsModelAlias);
@@ -144,7 +144,7 @@ public sealed class UnattendedVoiceCloningTests
             TargetLanguageCode = "en",
         };
 
-        Assert.Same(options, DubbingPipelineEngine.ApplyVoiceCloningDefaults(options));
+        Assert.Same(options, UnattendedVoiceSelection.ApplyVoiceCloningDefaults(options));
     }
 
     [Fact]
@@ -161,7 +161,7 @@ public sealed class UnattendedVoiceCloningTests
             UseVoiceCloning = true,
         };
 
-        GenerateTtsForAllSpeakersRequest request = DubbingPipelineEngine.BuildUnattendedTtsRequest(
+        GenerateTtsForAllSpeakersRequest request = UnattendedVoiceSelection.BuildUnattendedTtsRequest(
             state,
             options,
             ttsModelAlias: null);
@@ -185,7 +185,7 @@ public sealed class UnattendedVoiceCloningTests
             UseVoiceCloning = true,
         };
 
-        GenerateTtsForAllSpeakersRequest request = DubbingPipelineEngine.BuildUnattendedTtsRequest(
+        GenerateTtsForAllSpeakersRequest request = UnattendedVoiceSelection.BuildUnattendedTtsRequest(
             state,
             options,
             ttsModelAlias: "chatterbox-turbo");
@@ -208,7 +208,7 @@ public sealed class UnattendedVoiceCloningTests
             TargetLanguageCode = "en",
         };
 
-        GenerateTtsForAllSpeakersRequest request = DubbingPipelineEngine.BuildUnattendedTtsRequest(
+        GenerateTtsForAllSpeakersRequest request = UnattendedVoiceSelection.BuildUnattendedTtsRequest(
             state,
             options,
             ttsModelAlias: "kokoro-onnx");
@@ -239,7 +239,7 @@ public sealed class UnattendedVoiceCloningTests
             },
         };
 
-        GenerateTtsForAllSpeakersRequest request = DubbingPipelineEngine.BuildUnattendedTtsRequest(
+        GenerateTtsForAllSpeakersRequest request = UnattendedVoiceSelection.BuildUnattendedTtsRequest(
             state,
             options,
             ttsModelAlias: "kokoro-onnx");
@@ -272,7 +272,7 @@ public sealed class UnattendedVoiceCloningTests
             },
         };
 
-        GenerateTtsForAllSpeakersRequest request = DubbingPipelineEngine.BuildUnattendedTtsRequest(
+        GenerateTtsForAllSpeakersRequest request = UnattendedVoiceSelection.BuildUnattendedTtsRequest(
             state,
             options,
             ttsModelAlias: null);
@@ -301,7 +301,7 @@ public sealed class UnattendedVoiceCloningTests
         };
 
         InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
-            DubbingPipelineEngine.BuildUnattendedTtsRequest(state, options, ttsModelAlias: "kokoro-onnx"));
+            UnattendedVoiceSelection.BuildUnattendedTtsRequest(state, options, ttsModelAlias: "kokoro-onnx"));
         Assert.Contains("SPEAKER_09", ex.Message, StringComparison.Ordinal);
     }
 

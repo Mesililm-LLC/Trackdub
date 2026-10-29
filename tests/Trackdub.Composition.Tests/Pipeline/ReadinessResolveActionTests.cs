@@ -81,7 +81,7 @@ public sealed class ReadinessResolveActionTests
     public async Task Caller_alias_overlaid_on_host_automatic_selections_is_explicit_through_EvaluateAsync()
     {
         var automatic = RuntimeModelRequestFactory.CreateSelectionsFromSettings(StudioSettings.Default);
-        var overlaid = DubbingPipelineEngine.ApplyModelPreferenceAliases(automatic, new InferenceModelPreferences(TranslationModelAlias: "caller-model"));
+        var overlaid = DubbingModelPreferences.ApplyModelPreferenceAliases(automatic, new InferenceModelPreferences(TranslationModelAlias: "caller-model"));
         var report = await Service(new Planner()).EvaluateAsync([RuntimeStage.Translation], overlaid, null, TestContext.Current.CancellationToken);
         Assert.Equal("download", Assert.Single(report.Stages).ResolveAction);
     }

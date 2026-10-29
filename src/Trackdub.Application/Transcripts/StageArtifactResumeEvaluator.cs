@@ -724,7 +724,7 @@ public static class StageArtifactResumeEvaluator
             }
             else if (key.StartsWith("Voice:", StringComparison.Ordinal) &&
                      !string.IsNullOrWhiteSpace(value) &&
-                     DubbingPipelineEngine.TryMatchSpeaker(
+                     UnattendedVoiceSelection.TryMatchSpeaker(
                          state.Speakers,
                          key["Voice:".Length..],
                          out ProjectSpeaker? speaker) &&
