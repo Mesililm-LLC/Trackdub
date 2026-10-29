@@ -4,9 +4,9 @@
     "net10.0": {
       "Microsoft.AspNetCore.Authentication.JwtBearer": {
         "type": "Direct",
-        "requested": "[10.0.13, )",
-        "resolved": "10.0.13",
-        "contentHash": "cEPhQWsaUKymSdQ+NB2rF4GnWtjofAcRrzr2aGPzbjSFyeDtIlBzrbX1Qeh/OAHjvdwBe05SbsukoSbz27AD6g==",
+        "requested": "[10.0.14, )",
+        "resolved": "10.0.14",
+        "contentHash": "DaTs32NtRkTabidrvhLhcXpa+Uguw0rN5FaX8Q1HmzbYtcI72iSauYlN4WmqbrXp6QQoB8fmZlHk5/bjiMTY7A==",
         "dependencies": {
           "Microsoft.IdentityModel.Protocols.OpenIdConnect": "8.19.2"
         }
@@ -19,8 +19,8 @@
       },
       "AWSSDK.Core": {
         "type": "Transitive",
-        "resolved": "4.0.102.13",
-        "contentHash": "vaYs/kwfB+Lv9PeVKYE4g2mQlzVtHImXLWgfTG8UgeCybUAPkew5kwb8GS6RhuzwvImbolyLHT+IM34WoM9lJg=="
+        "resolved": "4.0.102.14",
+        "contentHash": "pRYOOIyj40UdQ6G9iq8AOU30sFPqWS/umM/sFTmAl4n1S6AVbVa67DJpJTxD+9qJFqweHPcyVW7Qb4BbUBLJdg=="
       },
       "Microsoft.Bcl.Cryptography": {
         "type": "Transitive",
@@ -83,8 +83,8 @@
       "trackdub.cloud.aws": {
         "type": "Project",
         "dependencies": {
-          "AWSSDK.DynamoDBv2": "[4.0.109.1, )",
-          "AWSSDK.S3": "[4.0.104.6, )",
+          "AWSSDK.DynamoDBv2": "[4.0.109.3, )",
+          "AWSSDK.S3": "[4.0.104.7, )",
           "Trackdub.Cloud": "[1.0.0, )"
         }
       },
@@ -99,20 +99,20 @@
       },
       "AWSSDK.DynamoDBv2": {
         "type": "CentralTransitive",
-        "requested": "[4.0.109.1, )",
-        "resolved": "4.0.109.1",
-        "contentHash": "GJeycIKL2UyUVf5ew5bVezy4LIeWZm1oWt1Dvx6LK+oGar99Nexzbp7IsmHHII/mWJKRDRirbW7LOTBggYeeNg==",
+        "requested": "[4.0.109.3, )",
+        "resolved": "4.0.109.3",
+        "contentHash": "xPZSBd65Qpxi2pXJOkTHxa1cb6cQKC0ociQ0NGzmxYHvgJtQ18aVfbYpoEh4zmYQ1LQq2U1Ch/kfV+aR3rjJWg==",
         "dependencies": {
-          "AWSSDK.Core": "[4.0.102.13, 5.0.0)"
+          "AWSSDK.Core": "[4.0.102.14, 5.0.0)"
         }
       },
       "AWSSDK.S3": {
         "type": "CentralTransitive",
-        "requested": "[4.0.104.6, )",
-        "resolved": "4.0.104.6",
-        "contentHash": "fSqAOkftU8jKemilzLGZDU0zLEJXHjAemU+8Nd29+sUwRxVK04w6/GY3O4f9S1+JIYwEnHDGcW66VK4AZ2kx6g==",
+        "requested": "[4.0.104.7, )",
+        "resolved": "4.0.104.7",
+        "contentHash": "mmURYvVR/+CM3+9FycHsz+ZZ2I3B1PPch7msARX8fKtiAfkDHYXCzdwQOKA5SvGGvleOKhLGa8YcWlAlbAtu0g==",
         "dependencies": {
-          "AWSSDK.Core": "[4.0.102.13, 5.0.0)"
+          "AWSSDK.Core": "[4.0.102.14, 5.0.0)"
         }
       },
       "Microsoft.IdentityModel.Tokens": {
