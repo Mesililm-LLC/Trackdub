@@ -115,7 +115,9 @@ public sealed class TensorRtRtxCudaRuntimeBootstrapTests
 
         try
         {
-            if (!TryDenyDirectoryEnumerateAccess(root))
+            // Elevated tokens (CI runners, root in containers) can still list a directory whose
+            // ACL/mode denies it, which leaves nothing to test.
+            if (!TryDenyDirectoryEnumerateAccess(root) || CanEnumerate(root))
             {
                 return;
             }
@@ -134,6 +136,19 @@ public sealed class TensorRtRtxCudaRuntimeBootstrapTests
             {
                 Directory.Delete(root, recursive: true);
             }
+        }
+    }
+
+    private static bool CanEnumerate(string directory)
+    {
+        try
+        {
+            _ = Directory.EnumerateDirectories(directory).ToArray();
+            return true;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            return false;
         }
     }
 
