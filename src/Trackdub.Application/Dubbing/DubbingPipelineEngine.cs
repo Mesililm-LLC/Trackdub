@@ -34,7 +34,7 @@ namespace Trackdub.Application.Dubbing;
 /// is always observable. Callers that need shared visibility across engine +
 /// diagnostics exporter should DI-register the bus as a singleton.
 /// </param>
-public sealed class DubbingPipelineEngine(
+public sealed partial class DubbingPipelineEngine(
     IDubbingSessionFactory sessionFactory,
     PipelineTransientFaultBus? transientFaultBus = null) : IDubbingPipelineEngine, ITransientFaultReporting
 {
@@ -931,20 +931,11 @@ public sealed class DubbingPipelineEngine(
 
         if (readinessService is not null && coordinator is not null)
         {
-            return await RunPreFlightWithReadinessServiceAsync(
-                session,
-                options,
-                stagesToRun,
-                runId,
-                runStart,
-                stageOutcomes,
-                executionSnapshot,
-                preFlightSelections,
-                readinessService,
-                coordinator,
-                progress,
-                cancellationToken,
-                state)
+            var readinessContext = new ReadinessPreFlightContext(
+                new PreFlightTarget(session, options, stagesToRun, state),
+                new PreFlightRun(runId, runStart, stageOutcomes, executionSnapshot),
+                new PreFlightProvisioning(readinessService, coordinator, progress, cancellationToken));
+            return await RunPreFlightWithReadinessServiceAsync(readinessContext, preFlightSelections)
                 .ConfigureAwait(false);
         }
 
@@ -1044,188 +1035,6 @@ public sealed class DubbingPipelineEngine(
 
     private static readonly IReadOnlySet<string> EmptyDeclinedStages =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-    /// <summary>
-    /// Pre-flight using the consolidated readiness gate.
-    /// Evaluates all stages upfront, auto-provisions downloadable models before the stage loop,
-    /// and fails fast with an aggregated error if anything is still blocking.
-    /// </summary>
-    private static async Task<(DubbingRunResult? Error, IReadOnlySet<string> DeclinedStages)> RunPreFlightWithReadinessServiceAsync(
-        IDubbingSession session,
-        DubbingSessionOptions options,
-        string[] stageNames,
-        Guid runId,
-        DateTimeOffset runStart,
-        List<StageOutcome> stageOutcomes,
-        Dictionary<string, string> executionSnapshot,
-        RuntimeModelSelections selections,
-        IPipelineReadinessService readinessService,
-        RuntimeModelSetupCoordinator coordinator,
-        IProgress<PipelineProgressEvent>? progress,
-        CancellationToken cancellationToken,
-        TranscriptProjectState? state = null)
-    {
-        var declinedStages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        // Map to RuntimeStage, skipping stages with valid existing artifacts (resumable).
-        var enabledStages = new List<RuntimeStage>();
-        foreach (string stageName in stageNames)
-        {
-            RuntimeStage? stage = MapStageNameToRuntimeStage(stageName);
-            if (stage is null) continue;
-
-            if (!options.ForceRerun &&
-                await HasValidExistingArtifactsAsync(
-                    session, options, stageName, executionSnapshot, cancellationToken).ConfigureAwait(false))
-                continue;
-
-            enabledStages.Add(stage.Value);
-        }
-
-        if (enabledStages.Count == 0)
-            return (null, EmptyDeclinedStages);
-
-        // Evaluate. The project state is passed so consent gates (voice cloning) are
-        // evaluated up front instead of failing mid-run.
-        PipelineReadinessReport report;
-        using (BenchmarkPhaseCapture.Start("readiness-evaluate"))
-        {
-            report = await readinessService
-                .EvaluateAsync(
-                    enabledStages,
-                    selections,
-                    state,
-                    cancellationToken,
-                    options.SourceLanguageCode,
-                    options.TargetLanguageCode,
-                    explicitEgressConsents: BuildExplicitCloudEgressConsents(options.ExplicitCloudEgressConsents))
-                .ConfigureAwait(false);
-        }
-
-        // Provision downloadable models upfront via the host's interaction surface.
-        // Headless sessions auto-download-or-cancel; interactive hosts show dialogs.
-        if (report.Stages.Any(s => s.Status == ReadinessState.DownloadRequired))
-        {
-            RuntimeModelSetupCallbacks setupCallbacks =
-                TryResolveService<IPipelineModelSetupInteraction>(session)
-                    ?.CreateCallbacks(progress, cancellationToken)
-                ?? BuildHeadlessCallbacks(cancellationToken);
-            RuntimeModelSetupResult result;
-            using (BenchmarkPhaseCapture.Start("model-provision"))
-            {
-                result = await coordinator
-                    .EnsurePipelineModelsAvailableAsync(
-                        session.Workspace,
-                        selections,
-                        report,
-                        setupCallbacks,
-                        options.SourceLanguageCode,
-                        options.TargetLanguageCode,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-            }
-
-            RuntimeModelSetupResult provisionResult = result;
-
-            if (!provisionResult.IsReady)
-            {
-                return (BuildErrorResult(
-                    runId,
-                    runStart,
-                    stageOutcomes,
-                    DubbingRunStatus.PreFlightFailed,
-                    ["Model provisioning was cancelled during pre-flight."],
-                    executionSnapshot), EmptyDeclinedStages);
-            }
-
-            // Stages whose optional model the user declined must not re-block on
-            // re-evaluation (the model is still absent). Stages with an in-place
-            // fallback still execute and degrade; stages without one are skipped.
-            foreach (string stageName in stageNames)
-            {
-                if (MapStageNameToRuntimeStage(stageName) is not { } skippedStage ||
-                    !provisionResult.SkippedStages.Contains(skippedStage))
-                {
-                    continue;
-                }
-
-                enabledStages.Remove(skippedStage);
-                if (!StagesWithOptionalModelFallback.Contains(skippedStage))
-                {
-                    declinedStages.Add(stageName);
-                }
-            }
-
-            if (enabledStages.Count == 0)
-            {
-                return (null, declinedStages);
-            }
-
-            // Re-evaluate after provisioning with refreshed selections in case settings changed.
-            selections = await CreateRuntimeSelectionsAsync(session, options, cancellationToken, state)
-                .ConfigureAwait(false);
-            MergeRuntimeModelSelectionsIntoSnapshot(
-                executionSnapshot,
-                selections,
-                TryResolveService<IModelAliasResolver>(session));
-            readinessService.InvalidateCache(enabledStages);
-            report = await readinessService
-                .EvaluateAsync(
-                    enabledStages,
-                    selections,
-                    state,
-                    cancellationToken,
-                    options.SourceLanguageCode,
-                    options.TargetLanguageCode,
-                    explicitEgressConsents: BuildExplicitCloudEgressConsents(options.ExplicitCloudEgressConsents))
-                .ConfigureAwait(false);
-        }
-
-        // Collect all remaining blocking states into an aggregated failure list.
-        var failures = report.BlockingStages
-            .Select(s => FormatPreFlightFailure(s))
-            .ToList();
-
-        if (failures.Count > 0)
-        {
-            return (BuildErrorResult(
-                runId,
-                runStart,
-                stageOutcomes,
-                DubbingRunStatus.PreFlightFailed,
-                failures,
-                executionSnapshot), declinedStages);
-        }
-
-        if (enabledStages.Contains(RuntimeStage.Tts) &&
-            RequiresCompanionCustomVoiceModel(selections, options, state))
-        {
-            RuntimeModelSetupCallbacks setupCallbacks =
-                TryResolveService<IPipelineModelSetupInteraction>(session)
-                    ?.CreateCallbacks(progress, cancellationToken)
-                ?? BuildHeadlessCallbacks(cancellationToken);
-            RuntimeModelSetupResult companion = await coordinator
-                .EnsureTtsModelAvailableAsync(
-                    session.Workspace,
-                    selections with { TtsModelAlias = Qwen3TtsDefaults.ResolveCustomVoiceAlias(tier: null) },
-                    requiresVoiceClone: false,
-                    setupCallbacks,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            if (!companion.IsReady)
-            {
-                return (BuildErrorResult(
-                    runId,
-                    runStart,
-                    stageOutcomes,
-                    DubbingRunStatus.PreFlightFailed,
-                    ["Model provisioning was cancelled during pre-flight."],
-                    executionSnapshot), declinedStages);
-            }
-        }
-
-        return (null, declinedStages);
-    }
 
     private static string FormatPreFlightFailure(StageReadiness s) =>
         s.Status switch
@@ -2663,64 +2472,61 @@ public sealed class DubbingPipelineEngine(
             .Select(static speakerId => speakerId!.Value)
             .ToHashSet();
 
-        foreach ((Guid speakerId, string voiceId) in plan.ExplicitVoiceIds)
+        IEnumerable<string> explicitVoiceIds = SelectSpeakerVoiceIds(
+            plan.ExplicitVoiceIds,
+            synthesizingSpeakerIds.Contains);
+        IEnumerable<string> fallbackVoiceIds = SelectSpeakerVoiceIds(
+            plan.FallbackVoiceIds,
+            speakerId => synthesizingSpeakerIds.Contains(speakerId) && !plan.ExplicitVoiceIds.ContainsKey(speakerId));
+        IEnumerable<string> persistedVoiceIds = state.VoiceAssignments
+            .Where(assignment => synthesizingSpeakerIds.Contains(assignment.SpeakerId) &&
+                                 !IsSupersededByUnattendedPlan(assignment, plan))
+            .Select(assignment => ResolvePersistedStockVoiceId(assignment, targetLanguage))
+            .OfType<string>();
+
+        return explicitVoiceIds.Concat(fallbackVoiceIds).Concat(persistedVoiceIds);
+    }
+
+    private static IEnumerable<string> SelectSpeakerVoiceIds(
+        IReadOnlyDictionary<Guid, string>? voiceIdsBySpeaker,
+        Func<Guid, bool> includeSpeaker) =>
+        voiceIdsBySpeaker is null
+            ? Enumerable.Empty<string>()
+            : voiceIdsBySpeaker
+                .Where(pair => includeSpeaker(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value))
+                .Select(static pair => pair.Value.Trim());
+
+    private static bool IsSupersededByUnattendedPlan(VoiceAssignment assignment, UnattendedVoicePlan plan) =>
+        assignment.IsFallback ||
+        plan.ExplicitVoiceIds.ContainsKey(assignment.SpeakerId) ||
+        plan.CloneBySpeaker?.GetValueOrDefault(assignment.SpeakerId) == true ||
+        plan.FallbackVoiceIds?.ContainsKey(assignment.SpeakerId) == true;
+
+    private static string? ResolvePersistedStockVoiceId(VoiceAssignment assignment, string? targetLanguage)
+    {
+        if (!string.IsNullOrWhiteSpace(assignment.VoiceVariant))
         {
-            if (synthesizingSpeakerIds.Contains(speakerId) && !string.IsNullOrWhiteSpace(voiceId))
-            {
-                yield return voiceId.Trim();
-            }
+            return assignment.VoiceVariant.Trim();
         }
 
-        if (plan.FallbackVoiceIds is not null)
+        // A prior clone run persists a clone-only model with no voice id. Synthesis
+        // substitutes Kokoro where Kokoro speaks, and a Qwen preset where Qwen speaks.
+        // Languages neither speaks stay unassigned, matching BuildUnattendedFallbackVoiceIds.
+        // KokoroPrimaryAlias is a model alias, not a catalog voice id; it only has to fail
+        // IsPresetVoiceId so this speaker is not counted as a Qwen preset.
+        if (!VoiceCloningDefaults.IsCloneOnlyModelAlias(assignment.VoiceModelId))
         {
-            foreach ((Guid speakerId, string voiceId) in plan.FallbackVoiceIds)
-            {
-                if (synthesizingSpeakerIds.Contains(speakerId) &&
-                    !plan.ExplicitVoiceIds.ContainsKey(speakerId) &&
-                    !string.IsNullOrWhiteSpace(voiceId))
-                {
-                    yield return voiceId.Trim();
-                }
-            }
+            return null;
         }
 
-        foreach (VoiceAssignment assignment in state.VoiceAssignments)
+        if (StockTtsVoiceMatcher.SupportsKokoro(targetLanguage))
         {
-            if (assignment.IsFallback ||
-                !synthesizingSpeakerIds.Contains(assignment.SpeakerId) ||
-                plan.ExplicitVoiceIds.ContainsKey(assignment.SpeakerId) ||
-                plan.CloneBySpeaker?.GetValueOrDefault(assignment.SpeakerId) == true ||
-                plan.FallbackVoiceIds?.ContainsKey(assignment.SpeakerId) == true)
-            {
-                continue;
-            }
-
-            if (string.IsNullOrWhiteSpace(assignment.VoiceVariant))
-            {
-                // A prior clone run persists a clone-only model with no voice id. Synthesis
-                // substitutes Kokoro where Kokoro speaks, and a Qwen preset where Qwen speaks.
-                // Languages neither speaks stay unassigned, matching BuildUnattendedFallbackVoiceIds.
-                // KokoroPrimaryAlias is a model alias, not a catalog voice id; it only has to fail
-                // IsPresetVoiceId so this speaker is not counted as a Qwen preset.
-                if (!VoiceCloningDefaults.IsCloneOnlyModelAlias(assignment.VoiceModelId))
-                {
-                    continue;
-                }
-
-                if (StockTtsVoiceMatcher.SupportsKokoro(targetLanguage))
-                {
-                    yield return StockTtsDefaults.KokoroPrimaryAlias;
-                }
-                else if (Qwen3TtsDefaults.SupportsLanguage(targetLanguage))
-                {
-                    yield return Qwen3TtsDefaults.ResolveDefaultPresetVoiceId(targetLanguage);
-                }
-
-                continue;
-            }
-
-            yield return assignment.VoiceVariant.Trim();
+            return StockTtsDefaults.KokoroPrimaryAlias;
         }
+
+        return Qwen3TtsDefaults.SupportsLanguage(targetLanguage)
+            ? Qwen3TtsDefaults.ResolveDefaultPresetVoiceId(targetLanguage)
+            : null;
     }
 
     /// <summary>
