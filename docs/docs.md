@@ -22,7 +22,7 @@ contribution, and governance details.
 
 ## Organization
 
-This repository (`mesalimllc/Trackdub`) contains the public core of the
+This repository (`Mesililm-LLC/Trackdub`) contains the public core of the
 Trackdub dubbing engine: SDK, CLI, pipeline, inference, media processing,
 infrastructure, and neutral licensing mechanisms.
 

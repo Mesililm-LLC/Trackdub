@@ -1,6 +1,6 @@
 # Operational & Environment Reference
 
-Detailed operational facts and environment-specific instructions for Trackdub public core (`mesalimllc/Trackdub`).
+Detailed operational facts and environment-specific instructions for Trackdub public core (`Mesililm-LLC/Trackdub`).
 
 ## Cloud & Headless Environment
 - No long-running services. Primary entrypoint is headless CLI (`src/Trackdub.Cli`).

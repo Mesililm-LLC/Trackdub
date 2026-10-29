@@ -1,6 +1,6 @@
 # Handoff: finish native WSL2 TensorRT-RTX support in `LinML.Catalog`
 
-**For:** an agent working in `mesalimllc/LinML` (branch from `main`, current release **v0.4.1**).
+**For:** an agent working in `Mesililm-LLC/LinML` (branch from `main`, current release **v0.4.1**).
 **Why:** Trackdub consumes `LinML.Catalog` 0.4.1 and still carries a WSL2 workaround
 (`LinMlWsl2TensorRtRtxPlugin`). v0.4.1 moved *selection and loading* of the patched build into the catalog but not
 *installation*, so the catalog alone still cannot take a clean WSL2 host to a working GPU provider. This change closes

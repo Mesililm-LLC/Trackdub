@@ -12,12 +12,12 @@ Do not treat the current state as complete. The core is structurally separated b
 
 | Repository | Current role | Rule |
 |---|---|---|
-| `mesalimllc/Trackdub` | Private public-core candidate | Work here first; do not make public until gates pass |
-| `mesalimllc/Trackdub-gated` | Private staging lane | Read-only source until the fresh-root rebuild phase |
-| `mesalimllc/Trackdub-Monorepo-Archive` | Private archived history | Never modify |
-| `mesalimllc/api.trackdub` | Private future server activation/API | Do not change during Phase 1 |
-| `mesalimllc/portal.trackdub` | Private portal | Out of scope |
-| `mesalimllc/trackdub.com` | Private marketing site | Out of scope |
+| `Mesililm-LLC/Trackdub` | Private public-core candidate | Work here first; do not make public until gates pass |
+| `Mesililm-LLC/Trackdub-gated` | Private staging lane | Read-only source until the fresh-root rebuild phase |
+| `Mesililm-LLC/Trackdub-Monorepo-Archive` | Private archived history | Never modify |
+| `Mesililm-LLC/api.trackdub` | Private future server activation/API | Do not change during Phase 1 |
+| `Mesililm-LLC/portal.trackdub` | Private portal | Out of scope |
+| `Mesililm-LLC/trackdub.com` | Private marketing site | Out of scope |
 
 ## Facts Already Verified
 

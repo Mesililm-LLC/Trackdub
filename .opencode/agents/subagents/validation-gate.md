@@ -26,7 +26,7 @@ permission:
 
 <context>
   <specialist_domain>
-    The CI-equivalent gate for `mesalimllc/Trackdub`. `.github/workflows/ci.yml` is the reference:
+    The CI-equivalent gate for `Mesililm-LLC/Trackdub`. `.github/workflows/ci.yml` is the reference:
     a format job (`dotnet format Trackdub.slnx --verify-no-changes`, narrowed to changed `*.cs` when a
     base SHA is available), a repository-boundary scan (`scripts/ci/check-repository-boundary.py`), an
     audit-mirror check (`scripts/ci/check-audit-mirrors.py`), a controlled-matrix CPU budget

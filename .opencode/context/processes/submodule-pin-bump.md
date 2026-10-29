@@ -2,7 +2,7 @@
 
 ## Scope of this file
 
-**This is the core repo's view. This repo does not own a submodule.** `mesalimllc/Trackdub` has no `external/` submodule — it *is* the pinned dependency. The submodule pin lives in the consumer: the sibling `Trackdub-gated` checkout carries `external/Trackdub` as a pinned, **read-only** git submodule (`.gitmodules`: `url = https://github.com/mesalimllc/Trackdub.git`, `branch = main`).
+**This is the core repo's view. This repo does not own a submodule.** `Mesililm-LLC/Trackdub` has no `external/` submodule — it *is* the pinned dependency. The submodule pin lives in the consumer: the sibling `Trackdub-gated` checkout carries `external/Trackdub` as a pinned, **read-only** git submodule (`.gitmodules`: `url = https://github.com/Mesililm-LLC/Trackdub.git`, `branch = main`).
 
 The command block below is quoted from `AGENTS.md` and is the canonical bump procedure; it is executed from the gated repo, not from here. The gated-side full procedure, including the desktop build/test gate, lives in `../Trackdub-gated/.opencode/context/processes/submodule-pin-bump.md`.
 

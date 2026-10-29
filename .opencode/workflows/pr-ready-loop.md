@@ -29,7 +29,7 @@ Do NOT use for:
 ## Preconditions
 
 - `gh` is installed and authenticated. Verify with `gh auth status`.
-- The repo is `mesalimllc/Trackdub` on branch `main`.
+- The repo is `Mesililm-LLC/Trackdub` on branch `main`.
 - `dotnet` SDK matches `global.json`.
 - For stacked work, `gh stack` is available. Verify with `gh stack --help`.
 - The change does not contain a hand-resolved `packages.lock.json` conflict.

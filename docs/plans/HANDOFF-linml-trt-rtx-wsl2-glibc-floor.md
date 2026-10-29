@@ -1,6 +1,6 @@
 # Handoff: rebuild the patched WSL2 TensorRT-RTX plugin against an older glibc
 
-**For:** an agent working in `mesalimllc/LinML` (branch from `main`, current release v0.5.0).
+**For:** an agent working in `Mesililm-LLC/LinML` (branch from `main`, current release v0.5.0).
 **Follows:** `HANDOFF-linml-wsl2-trt-rtx-catalog-support.md` (done: LinML PR #31, released in 0.4.2).
 **Severity:** blocks the patched build on every WSL2 distro and container older than the machine that built it, including
 Docker Desktop containers on Ubuntu 24.04.

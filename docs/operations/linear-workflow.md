@@ -1,6 +1,6 @@
 # Linear workflow (agents + humans)
 
-Linear workspace: [mesalimllc](https://linear.app/mesalimllc). Team key: **TS**.
+Linear workspace: [Mesililm-LLC](https://linear.app/Mesililm-LLC). Team key: **TS**.
 
 Linear is the **source of truth for trackable work** across Trackdub repos (`Trackdub`, `Trackdub-gated`, `api.trackdub`, `portal.trackdub`, `trackdub.com`, and legacy archive). Agents must **reference and update Linear autonomously** as progress is made or new work is discovered. Do not wait for a human to file the issue first.
 
@@ -46,7 +46,7 @@ GitHub, Notion, and Figma OAuth are connected (TS-5 / TS-6 / TS-19 Done).
 | Done | Figma embeds + plugin | Paste Figma frames into Linear; use Linear plugin in Figma |
 | Removed | Linear Release → Actions | Job deleted from `.github/workflows/ci.yml`; it was failing on push to `main` and the integration is no longer wired up |
 
-Pipeline: [Trackdub Release](https://linear.app/mesalimllc/pipeline/trackdub-release/releases) (scheduled). Releases are cut manually; there is no longer a Linear Release Sync workflow to run.
+Pipeline: [Trackdub Release](https://linear.app/Mesililm-LLC/pipeline/trackdub-release/releases) (scheduled). Releases are cut manually; there is no longer a Linear Release Sync workflow to run.
 
 Canonical design links (also in `docs/reference/design-standards.md`):
 

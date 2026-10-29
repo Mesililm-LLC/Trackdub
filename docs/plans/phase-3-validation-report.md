@@ -120,12 +120,12 @@ GitHub's private-repo tier" — that claim was wrong and has been removed.
 Private repositories support branch protection and repository rulesets on
 GitHub Pro, Team, and Enterprise plans, while GitHub Free excludes these
 features for private repositories. This session doesn't know which plan
-`mesalimllc` is on, so neither repo's branch-protection status is recorded
+`Mesililm-LLC` is on, so neither repo's branch-protection status is recorded
 as an accepted gap — both are simply unverified.
 
 Action needed from you: check `Settings → Branches` (or `Settings → Rules →
-Rulesets`) directly on **both** `mesalimllc/Trackdub` and
-`mesalimllc/Trackdub-gated`, record the org's actual GitHub plan and each
+Rulesets`) directly on **both** `Mesililm-LLC/Trackdub` and
+`Mesililm-LLC/Trackdub-gated`, record the org's actual GitHub plan and each
 repo's actual settings, and decide from there whether the existing
 compensating controls in `Trackdub-gated` (PR-merge convention in its
 `AGENTS.md`, `REVIEW.md` checklist, green-CI-before-merge) are sufficient on
