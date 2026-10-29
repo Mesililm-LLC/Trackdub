@@ -227,6 +227,7 @@ public sealed class ChallengerResourceTelemetryStressTests
     // 4. CaptureProcess() Multi-Threaded Stress & Handle Leak Verification
     // =========================================================================
 
+    [Trait("Category", "Slow")]
     [Fact]
     public void CaptureProcess_RapidMultiThreadedInvocation_DoesNotLeakHandlesOrDeadlock()
     {
@@ -300,7 +301,7 @@ public sealed class ChallengerResourceTelemetryStressTests
     public async Task StageTimingCollector_50ConcurrentTasksWithReaders_ThreadSafeAndConsistent()
     {
         long runStart = Stopwatch.GetTimestamp();
-        var collector = new StageTimingCollector(runStart);
+        var collector = new StageTimingCollector(runStart, FixedResourceSnapshot.Provide);
 
         const int workerTaskCount = 50;
         const int iterationsPerTask = 20;

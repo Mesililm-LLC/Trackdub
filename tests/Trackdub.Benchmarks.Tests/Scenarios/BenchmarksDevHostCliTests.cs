@@ -3,6 +3,7 @@ using Trackdub.Benchmarks.Tests.E2E.Fixtures;
 
 namespace Trackdub.Benchmarks.Tests.Scenarios;
 
+[Trait("Category", "Slow")]
 public sealed class BenchmarksDevHostCliTests : IDisposable
 {
     private readonly MockDubbingBenchmarkHarness _harness = new();

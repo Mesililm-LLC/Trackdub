@@ -79,7 +79,7 @@ public sealed class CliProcessRunnerTests
         try
         {
             string result = Path.Join(root, "result.json");
-            var running = new CliProcessRunner().RunAsync(new("dotnet", [typeof(ProcessFixtureMarker).Assembly.Location, "hang", result], root, result), cancel.Token);
+            var running = new CliProcessRunner(TimeSpan.FromSeconds(2)).RunAsync(new("dotnet", [typeof(ProcessFixtureMarker).Assembly.Location, "hang", result], root, result), cancel.Token);
             for (int i = 0; i < 100 && !File.Exists(result + ".started"); i++) await Task.Delay(50, TestContext.Current.CancellationToken);
             Assert.True(File.Exists(result + ".started")); cancel.Cancel();
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => running);

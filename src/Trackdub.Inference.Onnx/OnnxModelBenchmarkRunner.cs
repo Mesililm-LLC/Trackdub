@@ -1846,7 +1846,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
                     pair.Key,
                     pair.Value,
                     encoderOutputByName),
-                _ when IsWhisperSelfPastInput(pair.Key) => CreateWhisperSelfPastInput(pair.Key, pair.Value),
+                _ when IsWhisperSelfPastInput(pair.Key) => CreateEmptyPastInput(pair.Key, pair.Value),
                 _ => throw new NotSupportedException($"Whisper decoder input '{pair.Key}' is not supported by the benchmark harness yet.")
             });
         }
@@ -1903,14 +1903,11 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
         };
     }
 
-    private static NamedOnnxValue CreateWhisperSelfPastInput(string inputName, NodeMetadata metadata)
+    private static NamedOnnxValue CreateEmptyPastInput(string inputName, NodeMetadata metadata)
     {
-        if (!metadata.IsTensor)
-        {
-            throw new NotSupportedException($"Whisper decoder input '{inputName}' is not a tensor input.");
-        }
+        if (!metadata.IsTensor) { throw new NotSupportedException($"Decoder input '{inputName}' is not a tensor input."); }
 
-        var dimensions = ResolveWhisperSelfPastDimensions(metadata);
+        var dimensions = ResolveEmptyPastDimensions(metadata);
         return metadata.ElementDataType switch
         {
             TensorElementType.Float => NamedOnnxValue.CreateFromTensor(
@@ -1920,7 +1917,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
                 inputName,
                 new DenseTensor<Float16>(new Float16[CountElements(dimensions)], dimensions)),
             _ => throw new NotSupportedException(
-                $"Whisper decoder input '{inputName}' uses unsupported self-cache tensor element type '{metadata.ElementDataType}'.")
+                $"Decoder input '{inputName}' uses unsupported past-cache tensor element type '{metadata.ElementDataType}'.")
         };
     }
 
@@ -1954,7 +1951,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             || inputName.StartsWith("past_value_self_", StringComparison.Ordinal);
     }
 
-    private static int[] ResolveWhisperSelfPastDimensions(NodeMetadata metadata)
+    private static int[] ResolveEmptyPastDimensions(NodeMetadata metadata)
     {
         var dimensions = metadata.Dimensions.Select(ToPositiveDimension).ToArray();
         if (dimensions.Length >= 3)
@@ -1986,6 +1983,9 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
                 "encoder_hidden_states" => NamedOnnxValue.CreateFromTensor("encoder_hidden_states", encoderHiddenStates),
                 "attention_mask" when encoderAttentionMask is not null => NamedOnnxValue.CreateFromTensor("attention_mask", encoderAttentionMask),
                 "encoder_attention_mask" when encoderAttentionMask is not null => NamedOnnxValue.CreateFromTensor("encoder_attention_mask", encoderAttentionMask),
+                // Merged Opus decoders take the no-cache branch first: empty past, use_cache_branch=false.
+                "use_cache_branch" => NamedOnnxValue.CreateFromTensor("use_cache_branch", new DenseTensor<bool>(new[] { false }, [1])),
+                _ when pair.Key.StartsWith("past_key_values.", StringComparison.Ordinal) => CreateEmptyPastInput(pair.Key, pair.Value),
                 _ => throw new NotSupportedException($"Opus decoder input '{pair.Key}' is not supported by the benchmark harness yet.")
             });
         }

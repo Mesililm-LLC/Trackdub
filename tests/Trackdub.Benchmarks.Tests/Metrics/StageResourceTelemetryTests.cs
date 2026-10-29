@@ -175,7 +175,7 @@ public sealed class StageResourceTelemetryTests
     [Fact]
     public void StageTimingCollector_ThreadSafety_ConcurrentMemoryReportingHandledSafely()
     {
-        var collector = new StageTimingCollector(Stopwatch.GetTimestamp());
+        var collector = new StageTimingCollector(Stopwatch.GetTimestamp(), FixedResourceSnapshot.Provide);
         const int taskCount = 8;
         const int iterations = 25;
 

@@ -176,11 +176,12 @@ public sealed class TrackdubSessionIsolationPropertyTests : IDisposable
     [Fact]
     public void SessionIsolation_PropertyCheck_ViaFact()
     {
+        // One factory for every case: the property is about sessions created from the same
+        // factory, and rebuilding the headless composition per case dominated the runtime.
+        using var factory = CreateFactory();
         Prop.ForAll<PositiveInt>(sessionCount =>
         {
             int count = Math.Clamp(sessionCount.Get, 2, 6);
-
-            using var factory = CreateFactory();
             var sessions = new List<TrackdubSession>();
 
             try
