@@ -14,11 +14,15 @@ public sealed partial class OrchestrationServiceTests
     {
         TranscriptProjectState state = CreateTranscriptProjectState() with
         {
-            Speakers = [], TranscriptSegments = [], VoiceAssignments = [],
+            Speakers = [],
+            TranscriptSegments = [],
+            VoiceAssignments = [],
         };
         var options = new Trackdub.Contracts.Dubbing.DubbingSessionOptions
         {
-            SourceMediaPath = "source.mp4", TargetLanguageCode = language, AutoAssignFallbackVoices = true,
+            SourceMediaPath = "source.mp4",
+            TargetLanguageCode = language,
+            AutoAssignFallbackVoices = true,
         };
         var selections = new RuntimeModelSelections(
             AsrModelOverride.Auto, false, new Dictionary<string, ExecutionProviderKind>(), TtsModelAlias: "kokoro-onnx");
@@ -33,10 +37,12 @@ public sealed partial class OrchestrationServiceTests
         TranscriptProjectState state = CreateTwoSpeakerTranslatedProjectState();
         var options = new Trackdub.Contracts.Dubbing.DubbingSessionOptions
         {
-            SourceMediaPath = "source.mp4", TargetLanguageCode = "zh",
+            SourceMediaPath = "source.mp4",
+            TargetLanguageCode = "zh",
             VoiceCloneBySpeakerId = new Dictionary<Guid, bool>
             {
-                [state.Speakers[0].Id] = true, [state.Speakers[1].Id] = false,
+                [state.Speakers[0].Id] = true,
+                [state.Speakers[1].Id] = false,
             },
             VoiceAssignmentOverrides = new Dictionary<string, string>
             {
