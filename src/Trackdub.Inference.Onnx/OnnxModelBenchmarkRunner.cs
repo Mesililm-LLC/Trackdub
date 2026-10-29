@@ -1907,7 +1907,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
     {
         if (!metadata.IsTensor) { throw new NotSupportedException($"Decoder input '{inputName}' is not a tensor input."); }
 
-        var dimensions = ResolveWhisperSelfPastDimensions(metadata);
+        var dimensions = ResolveEmptyPastDimensions(metadata);
         return metadata.ElementDataType switch
         {
             TensorElementType.Float => NamedOnnxValue.CreateFromTensor(
@@ -1951,7 +1951,7 @@ public sealed class OnnxModelBenchmarkRunner : IModelBenchmarkRunner
             || inputName.StartsWith("past_value_self_", StringComparison.Ordinal);
     }
 
-    private static int[] ResolveWhisperSelfPastDimensions(NodeMetadata metadata)
+    private static int[] ResolveEmptyPastDimensions(NodeMetadata metadata)
     {
         var dimensions = metadata.Dimensions.Select(ToPositiveDimension).ToArray();
         if (dimensions.Length >= 3)
