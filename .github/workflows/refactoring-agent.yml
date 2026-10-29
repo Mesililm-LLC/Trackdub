@@ -27,7 +27,7 @@ jobs:
       issues: write
     steps:
       - name: Run CodeScene refactoring agent
-        uses: Mesililm-LLC/pr-refactoring-agent@f8391d25282c3b477521864e1063de34d45fe6f9 # v1.1.9 with isolated project config
+        uses: Mesililm-LLC/pr-refactoring-agent@b142315a8e9fcd2dfe726efb9e7860b342b92c51 # v1.1.9 with isolated project config
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
@@ -37,3 +37,4 @@ jobs:
           model: ${{ vars.CODESCENE_AGENT_MODEL || 'cloudflare-workers-ai/@cf/deepseek-ai/deepseek-v4.1-flash-1017' }}
           codescene_token: ${{ secrets.CODESCENE_ACCESS_TOKEN }}
           opencode_auth_json: ${{ secrets.OPENCODE_AUTH_JSON }}
+
