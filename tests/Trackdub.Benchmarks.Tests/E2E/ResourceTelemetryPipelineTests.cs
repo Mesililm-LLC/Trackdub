@@ -603,8 +603,9 @@ public sealed class ResourceTelemetryPipelineTests : IDisposable
         });
         services.AddSingleton<IResourceTelemetryCollector>(collector);
         services.AddSingleton<IWorkingSetSampler>(workingSetSampler ?? new FixedWorkingSetSampler(1000));
-        if (gpuMemoryReader is not null)
-            services.AddSingleton<IProcessGpuMemoryReader>(gpuMemoryReader);
+        // Default to no GPU reading so the Windows build's real process-GPU reader cannot leak
+        // host state into tests written against an unavailable GPU counter.
+        services.AddSingleton<IProcessGpuMemoryReader>(gpuMemoryReader ?? new UnavailableGpuMemoryReader());
     });
 
     private ControlledDubbingBenchmarkRunner CreateScriptedRunner(
@@ -614,8 +615,9 @@ public sealed class ResourceTelemetryPipelineTests : IDisposable
     {
         services.AddSingleton<IResourceTelemetryCollector>(collector);
         services.AddSingleton<IWorkingSetSampler>(new FixedWorkingSetSampler(1000));
-        if (gpuMemoryReader is not null)
-            services.AddSingleton<IProcessGpuMemoryReader>(gpuMemoryReader);
+        // Default to no GPU reading so the Windows build's real process-GPU reader cannot leak
+        // host state into tests written against an unavailable GPU counter.
+        services.AddSingleton<IProcessGpuMemoryReader>(gpuMemoryReader ?? new UnavailableGpuMemoryReader());
         services.AddSingleton<IDubbingPipelineService>(new ScriptedPipeline(execute));
     });
 
@@ -713,6 +715,13 @@ public sealed class ResourceTelemetryPipelineTests : IDisposable
     }
 
     /// <summary>Reports a constant process-GPU reading so interval peak sampling is real.</summary>
+    private sealed class UnavailableGpuMemoryReader : IProcessGpuMemoryReader
+    {
+        public string UnavailableReason => "Test double: GPU counter unavailable.";
+
+        public long? ReadDedicatedGpuMemoryBytes() => null;
+    }
+
     private sealed class FixedGpuMemoryReader(long bytes) : IProcessGpuMemoryReader
     {
         public string UnavailableReason => "Test double: fixed reading.";

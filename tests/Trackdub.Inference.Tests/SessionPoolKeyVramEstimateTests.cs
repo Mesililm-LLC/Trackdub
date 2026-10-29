@@ -247,7 +247,13 @@ public sealed class SessionPoolKeyVramEstimateTests : IDisposable
             allowTrtInitFallback: true);
 
         Assert.NotNull(lease.ResolvedPoolKey);
-        Assert.Equal(148, lease.ResolvedPoolKey.EstimatedVramMb);
+        // Without a registered TRT RTX EP device (the Windows build in a test process), session
+        // options pick DirectML/CPU up front, no init fallback can follow, and the key keeps that
+        // provider's own factor. Only a key still on TRT RTX needs the fallback reservation.
+        long expectedMb = lease.ResolvedPoolKey.Provider is ExecutionProviderKind.TensorRTRtx
+            ? 148
+            : SessionPoolKey.EstimateFromWeightBytes(10 * MiB, lease.ResolvedPoolKey.Provider);
+        Assert.Equal(expectedMb, lease.ResolvedPoolKey.EstimatedVramMb);
     }
 
     /// <summary>Default accelerator budget on the 12 GB RTX 5070 the factors were measured on.</summary>
