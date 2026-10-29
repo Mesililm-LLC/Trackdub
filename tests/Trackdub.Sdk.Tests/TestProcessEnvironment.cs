@@ -14,7 +14,7 @@ internal static class TestProcessEnvironment
     [ModuleInitializer]
     internal static void DisableInferenceWorker()
     {
-        if (Environment.GetEnvironmentVariable(InferenceWorkerClient.WorkerPathEnvironmentVariable) is null)
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(InferenceWorkerClient.WorkerPathEnvironmentVariable)))
         {
             Environment.SetEnvironmentVariable(
                 InferenceWorkerClient.WorkerPathEnvironmentVariable,

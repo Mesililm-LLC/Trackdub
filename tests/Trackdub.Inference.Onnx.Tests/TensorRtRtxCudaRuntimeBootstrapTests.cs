@@ -117,10 +117,12 @@ public sealed class TensorRtRtxCudaRuntimeBootstrapTests
         {
             // Elevated tokens (CI runners, root in containers) can still list a directory whose
             // ACL/mode denies it, which leaves nothing to test.
-            if (!TryDenyDirectoryEnumerateAccess(root) || CanEnumerate(root))
+            if (!TryDenyDirectoryEnumerateAccess(root))
             {
                 return;
             }
+
+            Assert.SkipWhen(CanEnumerate(root), "This process can list a directory its ACL/mode denies.");
 
             // Must not throw when Directory.EnumerateDirectories fails on a locked root.
             string[] children = TensorRtRtxCudaRuntimeBootstrap

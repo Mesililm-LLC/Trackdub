@@ -714,7 +714,7 @@ public sealed class ResourceTelemetryPipelineTests : IDisposable
         public long CaptureWorkingSetBytes() => workingSetBytes;
     }
 
-    /// <summary>Reports a constant process-GPU reading so interval peak sampling is real.</summary>
+    /// <summary>Reports no process-GPU reading so tests never inherit host GPU state.</summary>
     private sealed class UnavailableGpuMemoryReader : IProcessGpuMemoryReader
     {
         public string UnavailableReason => "Test double: GPU counter unavailable.";
@@ -722,6 +722,7 @@ public sealed class ResourceTelemetryPipelineTests : IDisposable
         public long? ReadDedicatedGpuMemoryBytes() => null;
     }
 
+    /// <summary>Reports a constant process-GPU reading so interval peak sampling is real.</summary>
     private sealed class FixedGpuMemoryReader(long bytes) : IProcessGpuMemoryReader
     {
         public string UnavailableReason => "Test double: fixed reading.";
