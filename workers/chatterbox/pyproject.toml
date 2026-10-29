@@ -13,12 +13,16 @@ model = [
     "torch==2.11.*",
     "torchaudio==2.11.*",
     "chatterbox-tts==0.1.7",
+    # resemble-perth 1.0.1 imports pkg_resources, deprecated and removed in
+    # setuptools 81+; cap below 81 so ChatterboxTTS model load keeps working
+    # (verified live run: tools/sidecar-evidence/live-run.txt).
+    "setuptools>=80,<81",
 ]
 
 # Conformance tests (`python -m pytest tests/ -q`) are stdlib-only, but the
 # pytest runner itself must be declared so a clean `uv sync` can run them.
 [dependency-groups]
-dev = ["pytest>=8.3,<9"]
+dev = ["pytest>=9.0.3,<10"]
 
 # torch/torchaudio MUST come from the CUDA index (PyPI wheels are CPU-only,
 # which silently works but never touches the GPU). The pin above plus this
@@ -36,8 +40,30 @@ torchaudio = [{ index = "pytorch-cu128" }]
 # build new enough for Blackwell (sm_120 needs CUDA 12.8+). Override to the
 # 2.11 CUDA stack and prove compatibility by running the model, not by
 # trusting the pin. Revisit if chatterbox-tts relaxes its torch requirement.
+#
+# The remaining overrides force Dependabot-patched floors for packages the
+# worker never imports (gradio/starlette/pillow serve chatterbox's demo UI)
+# or consumes narrowly (transformers/diffusers). chatterbox-tts 0.1.7 pins
+# gradio==6.8.0 exactly, which in turn caps pillow<13 and starlette<1, so
+# these floors only resolve as overrides. setuptools is held below 82 via the
+# dependencies floor below; see the override comment. torch stays on 2.11.*: the patched
+# 2.13 line needs a CUDA-stack re-verification before it can replace the pin.
 [tool.uv]
-override-dependencies = ["torch==2.11.*", "torchaudio==2.11.*"]
+override-dependencies = [
+    "torch==2.11.*",
+    "torchaudio==2.11.*",
+    "gradio==6.16.0",
+    "pillow>=13.0.0",
+    "starlette>=1.0.1",
+    "diffusers>=0.38.0",
+    "safetensors>=0.8.0",
+    "transformers>=5.10.0",
+    # setuptools is deliberately NOT raised: resemble-perth 1.0.1 (chatterbox's
+    # watermarker, constructed unconditionally in ChatterboxTTS.__init__) imports
+    # pkg_resources, which setuptools removed in 81+. The Dependabot patch floors
+    # (83.0.0/84.1.0) all break model load, so those two low/medium alerts stay
+    # open until Perth ships a pkg_resources-free release.
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
