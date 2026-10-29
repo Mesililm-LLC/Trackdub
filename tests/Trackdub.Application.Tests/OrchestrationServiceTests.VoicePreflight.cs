@@ -57,5 +57,4 @@ public sealed partial class OrchestrationServiceTests
         Assert.False(Trackdub.Application.Dubbing.UnattendedVoiceSelection
             .RequiresCompanionCustomVoiceModel(selections, options, state));
     }
-
 }
