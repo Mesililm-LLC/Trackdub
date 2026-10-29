@@ -646,7 +646,7 @@
       },
       "Avalonia.Skia": {
         "type": "CentralTransitive",
-        "requested": "[12.0.3, )",
+        "requested": "[12.1.4, )",
         "resolved": "12.1.4",
         "contentHash": "BA6B1Up9AcX4JmnskD6FyxF+ZEowXDhGvzw1lG+Xx6sQO0VyOE2yDoAmD/S2EsYZUukPfRUJmIyjeM//WdZAxA==",
         "dependencies": {
@@ -1566,7 +1566,7 @@
       },
       "Avalonia.Skia": {
         "type": "CentralTransitive",
-        "requested": "[12.0.3, )",
+        "requested": "[12.1.4, )",
         "resolved": "12.1.4",
         "contentHash": "BA6B1Up9AcX4JmnskD6FyxF+ZEowXDhGvzw1lG+Xx6sQO0VyOE2yDoAmD/S2EsYZUukPfRUJmIyjeM//WdZAxA==",
         "dependencies": {
