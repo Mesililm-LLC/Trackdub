@@ -149,9 +149,9 @@ reported source definitions rather than choosing the newest file. Finish legacy 
 their original worktree first, and do not mix old and new gh-stack writers in one clone.
 
 Navigation does not take over another worktree's checkout. Use `--print-path` with a navigation
-command or an explicit-target `checkout`, check the exit status, and change directory to the quoted output. Only affected clean
-owners are updated by rebase/sync; commit or stash manually when those owners are dirty. gh-stack
-does not automatically stash or create/remove worktrees.
+command or an explicit-target `checkout`; check the exit status, then change directory to the
+printed path. Only affected clean owners are updated by rebase/sync; commit or stash manually
+when those owners are dirty. gh-stack does not automatically stash or create/remove worktrees.
 
 For `git init --separate-git-dir` repositories, main invocation and existing absolute/relative
 `core.worktree` backlinks are supported, including settings in the main `config.worktree`. The
