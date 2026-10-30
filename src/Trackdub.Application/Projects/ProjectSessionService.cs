@@ -59,9 +59,24 @@ public sealed class ProjectSessionService(
         string projectName,
         StudioSettings settings)
     {
-        string projectParentDirectory = ProjectRootNameResolver.ResolveProjectParentDirectory(
-            mediaPath,
-            _storagePaths?.UserDataRoot);
+        ArgumentNullException.ThrowIfNull(settings);
+        string projectParentDirectory;
+        if (string.IsNullOrWhiteSpace(settings.DefaultProjectDirectory))
+        {
+            projectParentDirectory = ProjectRootNameResolver.ResolveProjectParentDirectory(
+                mediaPath,
+                _storagePaths?.UserDataRoot);
+        }
+        else
+        {
+            projectParentDirectory = Path.GetFullPath(settings.DefaultProjectDirectory);
+            if (!Directory.Exists(projectParentDirectory))
+            {
+                throw new DirectoryNotFoundException(
+                    $"The default project folder does not exist: {projectParentDirectory}");
+            }
+        }
+
         ProjectRootNameCandidate projectRoot = ProjectRootNameResolver.CreateAvailableProjectRoot(
             mediaPath,
             projectName,
