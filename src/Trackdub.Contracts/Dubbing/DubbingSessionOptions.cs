@@ -123,6 +123,13 @@ public sealed record DubbingSessionOptions
     public bool EnableSpeakerDiarization { get; init; } = true;
 
     /// <summary>
+    /// When true, transcript stages may enhance and prepare source audio before analysis.
+    /// When false, they use normalized source audio directly. Defaults to true for callers
+    /// that do not specify a preference.
+    /// </summary>
+    public bool EnableSpeechAudioPreparation { get; init; } = true;
+
+    /// <summary>
     /// When true, the OverlapRescue stage retranscribes rescued regions and merges
     /// candidates into the transcript. Defaults to false (artifacts only).
     /// </summary>

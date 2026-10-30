@@ -55,6 +55,7 @@ internal static class DubbingExecutionSnapshot
             ["TargetLanguageCode"] = options.TargetLanguageCode,
             ["ForceRerun"] = options.ForceRerun.ToString(),
             ["EnableAsrTextRefinement"] = options.EnableAsrTextRefinement.ToString(),
+            ["EnableSpeechAudioPreparation"] = options.EnableSpeechAudioPreparation.ToString(),
             ["UseVoiceCloning"] = options.UseVoiceCloning.ToString(),
         };
 
