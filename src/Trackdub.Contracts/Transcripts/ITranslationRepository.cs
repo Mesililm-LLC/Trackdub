@@ -56,7 +56,7 @@ public interface ITranslationRepository
                     s.EndSeconds,
                     s.Text,
                     s.SourceSegmentHash,
-                    s.Words))
+                    s.Words) with { Origin = s.Origin })
             .ToList();
 
         // Append any brand-new segments that were not in the previous revision

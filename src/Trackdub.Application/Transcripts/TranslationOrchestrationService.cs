@@ -17,7 +17,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Trackdub.Application.Transcripts;
 
-public sealed class TranslationOrchestrationService(
+public sealed partial class TranslationOrchestrationService(
     ITranslationRepository translationRepository,
     GlossaryService glossaryService,
     IGlossaryTermMatcher glossaryTermMatcher,
@@ -211,16 +211,15 @@ public sealed class TranslationOrchestrationService(
         PipelineProgressReporter.Started(progress, StageNames.Translation, phase: "Preparing");
 
         TranscriptRevision currentTranscriptRevision = TranscriptWorkflowUtilities.GetRequiredTranscriptRevision(currentState);
-        if (currentState.TranscriptSegments.Count == 0)
+        TranslationRunPreparation? preparation =
+            await PrepareTranslationRunAsync(currentState, request, cancellationToken).ConfigureAwait(false);
+        if (preparation is null)
         {
-            throw new InvalidOperationException("The project's transcript revision has no segments to translate.");
+            PipelineProgressReporter.Skipped(progress, StageNames.Translation,
+                "No translations need updating.", DateTimeOffset.UtcNow - progressStartedAt);
+            return;
         }
-
-        string sourceLanguage = await ResolveSourceLanguageAsync(
-            currentState,
-            request.SourceLanguage,
-            cancellationToken).ConfigureAwait(false);
-        string targetLanguage = TranscriptWorkflowUtilities.NormalizeTranslationTargetLanguageCode(request.TargetLanguage);
+        (string sourceLanguage, string targetLanguage, TranslationScopePlan scopePlan) = preparation;
 
         PipelineProgressReporter.Phase(progress, StageNames.Translation, "Resolving model");
         string? provisionedAlias = modelProvisioner is null ? request.PreferredModelAlias :
@@ -247,15 +246,13 @@ public sealed class TranslationOrchestrationService(
         IReadOnlyList<TranslatedTextSegment> translatedTextSegments;
         try
         {
-            TranslationRevision? expectedPrevious = await translationRepository.GetCurrentRevisionAsync(
-                currentState.ProjectState.Project.Id, targetLanguage, cancellationToken).ConfigureAwait(false);
             PipelineProgressReporter.Phase(progress, StageNames.Translation, "Preparing segments");
             IReadOnlyList<GlossaryEntry> glossaryEntries = await glossaryService.GetMergedEntriesAsync(
                 currentState.ProjectState.Project.Id,
                 sourceLanguage,
                 targetLanguage,
                 cancellationToken).ConfigureAwait(false);
-            TranslationInputSegment[] translationInputSegments = currentState.TranscriptSegments
+            TranslationInputSegment[] translationInputSegments = scopePlan.SelectedSegments
                 .OrderBy(segment => segment.SegmentIndex)
                 .Select(segment => new TranslationInputSegment(
                     segment.SegmentIndex,
@@ -365,7 +362,7 @@ public sealed class TranslationOrchestrationService(
                     hasSourceSegment
                         ? TranscriptWorkflowUtilities.ComputeSourceSegmentHash(sourceSegment!)
                         : null,
-                    words: []);
+                    words: []) with { Origin = TranslationSegmentOrigin.Generated };
 
                 if (hasText && hasSourceSegment)
                 {
@@ -391,11 +388,13 @@ public sealed class TranslationOrchestrationService(
                     currentItemLabel: $"Segment {segment.Index}");
             }
 
+            var revisionSegments = scopePlan.BuildRevision(translationRevision.Id, translatedTextSegments, translatedSegments);
+
             PipelineProgressReporter.Phase(progress, StageNames.Translation, "Saving translation");
             IAtomicRevisionCommitBoundary boundary = commitBoundary
                 ?? throw new InvalidOperationException("Atomic revision commit boundary is not configured.");
             translationRevision = await boundary.CommitRevisionAsync(
-                new AtomicRevisionCommitRequest(translationRevision, expectedPrevious?.Id, translatedSegments, streamCommit),
+                new AtomicRevisionCommitRequest(translationRevision, scopePlan.PreviousRevision?.Id, revisionSegments, streamCommit),
                 (revision, ct) => artifactWriter.PrepareTranslationArtifactAsync(
                     currentState.ProjectState.Project.Id, TranscriptWorkflowUtilities.GetRequiredMediaAsset(currentState),
                     revision, translatedSegments, translationStageRun.Id, "generated-translation", ct),
@@ -493,8 +492,9 @@ public sealed class TranslationOrchestrationService(
             ProjectUiSettings updatedUiSettings = SegmentStageRunProvenanceStore.RecordTranslationRuns(
                 currentState.ProjectUiSettings,
                 allSegmentIndices,
-                allSegmentIndices.ToHashSet(),
-                translationStageRun.Id) with
+                scopePlan.SelectedSegments.Select(segment => segment.SegmentIndex).ToHashSet(),
+                translationStageRun.Id,
+                scopePlan.PreviousRevision?.StageRunId) with
             {
                 SelectedTranslationTargetLanguage = targetLanguage,
             };
@@ -639,7 +639,7 @@ public sealed class TranslationOrchestrationService(
                 sourceSegment.EndSeconds,
                 replacementText,
                 TranscriptWorkflowUtilities.ComputeSourceSegmentHash(sourceSegment),
-                words: []);
+                words: []) with { Origin = TranslationSegmentOrigin.Generated };
             if (!string.IsNullOrWhiteSpace(translatedTextSegment?.Text))
             {
                 replacementSegment = await AlignTranslatedWordsAsync(
@@ -779,16 +779,11 @@ public sealed class TranslationOrchestrationService(
         // from the previous revision, avoiding the O(n) full reconstruction when only a subset changed.
         TranslatedSegment[] changedSegmentObjects = currentState.TranslatedSegments
             .Where(segment => replacements.ContainsKey(segment.SegmentIndex))
-            .Select(segment => TranslatedSegment.Create(
-                editedRevision.Id,
-                segment.SegmentIndex,
-                segment.StartSeconds,
-                segment.EndSeconds,
+            .Select(segment => CreateEditedTranslationSegment(
+                editedRevision,
+                segment,
                 replacements[segment.SegmentIndex],
-                segment.SourceSegmentHash,
-                changedSegmentIndices.Contains(segment.SegmentIndex)
-                    ? []
-                    : segment.Words))
+                changedSegmentIndices))
             .ToArray();
 
         await translationRepository.PatchRevisionAsync(
@@ -851,7 +846,7 @@ public sealed class TranslationOrchestrationService(
                 segment.EndSeconds,
                 segment.Text,
                 segment.SourceSegmentHash,
-                segment.Words))
+                segment.Words) with { Origin = segment.Origin })
             .ToArray();
 
         await translationRepository.SaveRevisionAsync(restoredRevision, restoredSegments, cancellationToken).ConfigureAwait(false);
@@ -972,7 +967,7 @@ public sealed class TranslationOrchestrationService(
                 translatedSegment.EndSeconds,
                 translatedSegment.Text,
                 translatedSegment.SourceSegmentHash,
-                alignment.Words)
+                alignment.Words) with { Origin = translatedSegment.Origin }
             : translatedSegment with { Words = [] };
     }
 

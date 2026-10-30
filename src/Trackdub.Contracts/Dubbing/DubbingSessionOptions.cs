@@ -1,4 +1,5 @@
 using Trackdub.Contracts;
+using Trackdub.Domain.Translation;
 
 namespace Trackdub.Contracts.Dubbing;
 
@@ -161,6 +162,12 @@ public sealed record DubbingSessionOptions
     /// persistence still commits atomically at stage end. Default false keeps the batch path.
     /// </summary>
     public bool EnableTranslationSegmentStreaming { get; init; }
+
+    /// <summary>
+    /// Which translated clips the translation stage should generate. Defaults to all clips
+    /// for existing CLI and automation callers.
+    /// </summary>
+    public TranslationRunScope TranslationScope { get; init; } = TranslationRunScope.All;
 
     /// <summary>
     /// Per-speaker voice-clone map: speaker id -> clone from reference audio (true)

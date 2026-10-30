@@ -1263,7 +1263,7 @@ public sealed partial class DubbingPipelineEngine(
                 PreferredModelVariantAlias: RuntimeModelSetupCoordinator.ResolvePreferredModelVariantAlias(
                     runtimeSelections,
                     RuntimeStage.Translation),
-                EnableSegmentStreaming: options.EnableTranslationSegmentStreaming),
+                EnableSegmentStreaming: options.EnableTranslationSegmentStreaming, Scope: options.TranslationScope),
             cancellationToken,
             progress,
             segmentObserver).ConfigureAwait(false);

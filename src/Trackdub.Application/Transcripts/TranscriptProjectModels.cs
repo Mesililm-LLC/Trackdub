@@ -79,7 +79,8 @@ public sealed record GenerateTranslationRequest(
     ExecutionProviderKind? PreferredExecutionProvider = null,
     bool RequirePreferredExecutionProvider = false,
     string? PreferredModelVariantAlias = null,
-    bool EnableSegmentStreaming = false);
+    bool EnableSegmentStreaming = false,
+    TranslationRunScope Scope = TranslationRunScope.All);
 
 public sealed record RetranslateSegmentRequest(
     Guid TranslationRevisionId,
