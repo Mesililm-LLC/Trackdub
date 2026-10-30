@@ -6,7 +6,7 @@ namespace Trackdub.Infrastructure.Tests;
 public sealed class JsonStudioSettingsDefaultDirectoriesTests
 {
     [Fact]
-    public async Task Save_and_load_round_trip_default_project_and_export_directories()
+    public async Task Save_and_load_round_trip_default_project_export_and_model_cache_directories()
     {
         string tempRoot = Path.Join(Path.GetTempPath(), "Trackdub.Infrastructure.Tests", Guid.NewGuid().ToString("N"));
         var storagePaths = new TrackdubStoragePaths(tempRoot);
@@ -14,7 +14,8 @@ public sealed class JsonStudioSettingsDefaultDirectoriesTests
         StudioSettings settings = StudioSettings.Default with
         {
             DefaultProjectDirectory = @"D:\Projects",
-            DefaultExportDirectory = @"D:\Exports"
+            DefaultExportDirectory = @"D:\Exports",
+            DefaultModelCacheDirectory = @"E:\TrackdubModels"
         };
 
         try
@@ -24,6 +25,7 @@ public sealed class JsonStudioSettingsDefaultDirectoriesTests
 
             Assert.Equal(settings.DefaultProjectDirectory, loaded.DefaultProjectDirectory);
             Assert.Equal(settings.DefaultExportDirectory, loaded.DefaultExportDirectory);
+            Assert.Equal(settings.DefaultModelCacheDirectory, loaded.DefaultModelCacheDirectory);
         }
         finally
         {

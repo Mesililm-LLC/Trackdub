@@ -10,6 +10,7 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
 {
     private readonly SemaphoreSlim mutationLock = new(1, 1);
     private int revision;
+    private string? secondaryIndexPath;
 
     internal int Revision => Volatile.Read(ref revision);
 
@@ -72,6 +73,47 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
     }
 
     /// <summary>
+    /// Copies model-cache index records to a new cache directory without moving model files.
+    /// Existing model roots remain available, while future downloads can use the selected directory.
+    /// </summary>
+    public async Task CopyRecordsToDirectoryAsync(
+        DirectoryInfo destinationModelCacheDirectory,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(destinationModelCacheDirectory);
+        string destinationDirectory = destinationModelCacheDirectory.FullName;
+        if (RootsEqual(storagePaths.ModelCacheDirectory, destinationDirectory))
+        {
+            return;
+        }
+
+        await mutationLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            string destinationIndexPath = Path.Join(destinationDirectory, "model-cache-records.json");
+            secondaryIndexPath = destinationIndexPath;
+            IReadOnlyList<LocalModelCacheRecord> sourceRecords = Load();
+            IReadOnlyList<LocalModelCacheRecord> destinationRecords = LoadIndex(destinationIndexPath);
+            if (sourceRecords.Count == 0 && destinationRecords.Count == 0)
+            {
+                return;
+            }
+
+            IReadOnlyList<LocalModelCacheRecord> combined = NormalizeRecords([.. sourceRecords, .. destinationRecords]);
+            if (combined.Count > 0)
+            {
+                await WriteIndexAsync(storagePaths.ModelCacheIndexPath, combined, cancellationToken).ConfigureAwait(false);
+                Interlocked.Increment(ref revision);
+                await WriteIndexAsync(destinationIndexPath, combined, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            mutationLock.Release();
+        }
+    }
+
+    /// <summary>
     /// Reads the cache index. Safe for concurrent readers; does not acquire the mutation lock.
     /// Callers that modify and persist must use <see cref="MutateAsync"/> instead.
     /// </summary>
@@ -96,13 +138,18 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
 
     internal IReadOnlyList<LocalModelCacheRecord> Load(CancellationToken cancellationToken = default)
     {
-        if (!File.Exists(storagePaths.ModelCacheIndexPath))
+        cancellationToken.ThrowIfCancellationRequested();
+        return LoadIndex(storagePaths.ModelCacheIndexPath);
+    }
+
+    private static IReadOnlyList<LocalModelCacheRecord> LoadIndex(string indexPath)
+    {
+        if (!File.Exists(indexPath))
         {
             return [];
         }
 
-        byte[] payload = File.ReadAllBytes(storagePaths.ModelCacheIndexPath);
-        cancellationToken.ThrowIfCancellationRequested();
+        byte[] payload = File.ReadAllBytes(indexPath);
         ReadOnlySpan<byte> json = payload;
         ReadOnlySpan<byte> preamble = Encoding.UTF8.GetPreamble();
         if (json.StartsWith(preamble))
@@ -127,8 +174,25 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
     {
         ArgumentNullException.ThrowIfNull(records);
 
-        Directory.CreateDirectory(storagePaths.ModelCacheDirectory);
-        string indexPath = storagePaths.ModelCacheIndexPath;
+        await WriteIndexAsync(storagePaths.ModelCacheIndexPath, records, cancellationToken).ConfigureAwait(false);
+        Interlocked.Increment(ref revision);
+        if (!string.IsNullOrWhiteSpace(secondaryIndexPath) &&
+            !RootsEqual(
+                Path.GetDirectoryName(storagePaths.ModelCacheIndexPath)!,
+                Path.GetDirectoryName(secondaryIndexPath)!))
+        {
+            await WriteIndexAsync(secondaryIndexPath, records, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task WriteIndexAsync(
+        string indexPath,
+        IReadOnlyList<LocalModelCacheRecord> records,
+        CancellationToken cancellationToken)
+    {
+        string directory = Path.GetDirectoryName(indexPath)
+            ?? throw new ArgumentException("The cache index path must include a directory.", nameof(indexPath));
+        Directory.CreateDirectory(directory);
         string tempPath = indexPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
 
         try
@@ -150,7 +214,6 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
             }
 
             File.Move(tempPath, indexPath, overwrite: true);
-            Interlocked.Increment(ref revision);
         }
         catch
         {

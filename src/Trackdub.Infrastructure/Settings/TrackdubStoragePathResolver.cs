@@ -68,8 +68,14 @@ public static class TrackdubStoragePathResolver
         // TRACKDUB_ENGINE_CACHE_ROOT is an explicit override: honoring it here keeps the engine
         // cache directory that ApplyToCurrentProcess writes back equal to the operator's value.
         TrackdubStorageOptions roots = ResolveRoots(context);
+        string? modelCacheOverride = roots.ExplicitModelCacheDirectory
+            ?? ReadDefaultModelCacheDirectory(new DirectoryInfo(roots.UserDataRoot));
         string? engineCacheOverride = NormalizeOptionalPath(GetValue(context.EnvironmentVariables, EngineCacheRootEnvironmentVariable));
-        return engineCacheOverride is null ? roots : roots with { ExplicitEngineCacheDirectory = engineCacheOverride };
+        return roots with
+        {
+            ExplicitModelCacheDirectory = modelCacheOverride,
+            ExplicitEngineCacheDirectory = engineCacheOverride ?? roots.ExplicitEngineCacheDirectory
+        };
     }
 
     private static TrackdubStorageOptions ResolveRoots(TrackdubStoragePathResolutionContext context)
@@ -281,6 +287,58 @@ public static class TrackdubStoragePathResolver
         }
 
         return null;
+    }
+
+    private static string? ReadDefaultModelCacheDirectory(DirectoryInfo userDataRoot)
+    {
+        FileInfo settingsFile = new(Path.Join(userDataRoot.FullName, "settings.json"));
+        return ReadDefaultModelCacheDirectory(settingsFile);
+    }
+
+    private static string? ReadDefaultModelCacheDirectory(FileInfo settingsFile)
+    {
+        if (!settingsFile.Exists)
+        {
+            return null;
+        }
+
+        try
+        {
+            using FileStream stream = settingsFile.OpenRead();
+            using JsonDocument document = JsonDocument.Parse(stream);
+            return ReadDefaultModelCacheDirectory(document);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+        catch (NotSupportedException)
+        {
+            return null;
+        }
+    }
+
+    private static string? ReadDefaultModelCacheDirectory(JsonDocument settings)
+    {
+        if (!settings.RootElement.TryGetProperty("defaultModelCacheDirectory", out JsonElement value) ||
+            value.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        return NormalizeOptionalPath(value.GetString());
     }
 
     private static IReadOnlyDictionary<string, string?> CaptureEnvironment()
