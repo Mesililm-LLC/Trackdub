@@ -259,8 +259,10 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
         }
     }
 
+    // errno 35 is EWOULDBLOCK on macOS; on Linux it is EDEADLK, which must not be retried.
     private static bool IsLockContention(IOException ex) =>
-        (ex.HResult & 0xffff) is 11 or 32 or 33 or 35
+        (ex.HResult & 0xffff) is 11 or 32 or 33
+        || (OperatingSystem.IsMacOS() && (ex.HResult & 0xffff) == 35)
         || ex.Message.Contains("used by another process", StringComparison.OrdinalIgnoreCase);
 
     private sealed class IndexLocks(List<FileStream> locks) : IDisposable
