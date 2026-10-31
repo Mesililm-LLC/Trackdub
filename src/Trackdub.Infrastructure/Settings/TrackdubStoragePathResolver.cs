@@ -71,7 +71,6 @@ public static class TrackdubStoragePathResolver
         TrackdubStorageOptions roots = ResolveRoots(context);
         string? modelCacheOverride = roots.ExplicitModelCacheDirectory
             ?? ReadDefaultModelCacheDirectory(new DirectoryInfo(roots.UserDataRoot));
-        MigrateModelCacheIfChanged(roots, modelCacheOverride);
         string? engineCacheOverride = NormalizeOptionalPath(GetValue(context.EnvironmentVariables, EngineCacheRootEnvironmentVariable));
         return roots with
         {
@@ -80,27 +79,28 @@ public static class TrackdubStoragePathResolver
         };
     }
 
-    private static void MigrateModelCacheIfChanged(TrackdubStorageOptions roots, string? modelCacheOverride)
+    public static void MigrateModelCacheIfChanged(TrackdubStorageOptions roots)
     {
+        ArgumentNullException.ThrowIfNull(roots);
         string statePath = Path.Join(roots.UserDataRoot, "model-cache-directory.txt");
         using FileStream stateLock = LocalModelCacheRecordStore.AcquireFileLockAsync(
             statePath + ".lock", CancellationToken.None).GetAwaiter().GetResult();
         string defaultDirectory = Path.Join(roots.UserCacheRoot, "model-cache");
         bool stateExists = File.Exists(statePath);
         string previousDirectory = stateExists ? File.ReadAllText(statePath) : defaultDirectory;
-        if (string.IsNullOrWhiteSpace(previousDirectory) || !Path.IsPathFullyQualified(previousDirectory))
+        string destinationDirectory = roots.ExplicitModelCacheDirectory ?? defaultDirectory;
+        bool invalidState = string.IsNullOrWhiteSpace(previousDirectory) || !Path.IsPathFullyQualified(previousDirectory);
+        if (invalidState)
         {
-            throw new InvalidDataException("The saved model cache directory is invalid.");
+            previousDirectory = destinationDirectory;
         }
-
-        string destinationDirectory = modelCacheOverride ?? defaultDirectory;
         if (!LocalModelCacheRecordStore.RootsEqual(previousDirectory, destinationDirectory))
         {
             var previousPaths = new TrackdubStoragePaths(roots with { ExplicitModelCacheDirectory = previousDirectory });
             var store = new LocalModelCacheRecordStore(previousPaths);
             store.CopyRecordsToDirectoryAsync(new DirectoryInfo(destinationDirectory)).GetAwaiter().GetResult();
         }
-        else if (stateExists)
+        else if (stateExists && !invalidState)
         {
             return;
         }

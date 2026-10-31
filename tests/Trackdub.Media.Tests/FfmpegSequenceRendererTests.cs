@@ -204,6 +204,50 @@ public sealed class FfmpegSequenceRendererTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RenderAsync_handles_gpu_discovery_failure_and_propagates_cancellation(bool cancel)
+    {
+        string root = CreateTestDirectory();
+        try
+        {
+            var files = new RendererTestFiles(root);
+            await File.WriteAllBytesAsync(files.SourcePath, [1], TestContext.Current.CancellationToken);
+            await File.WriteAllBytesAsync(files.DubPath, [2], TestContext.Current.CancellationToken);
+            await File.WriteAllBytesAsync(files.FfmpegPath, [3], TestContext.Current.CancellationToken);
+            var runner = new RecordingProcessRunner(async (args, _, token) =>
+            {
+                await File.WriteAllBytesAsync(args[^1], [4], token);
+                return new ProcessResult(0, string.Empty, string.Empty);
+            });
+            var renderer = new FfmpegSequenceRenderer(runner, new FixedMediaProbe(20),
+                new EmptyVideoEncoderCapabilities(), new FailingGpuHintProvider(cancel), files.FfmpegPath);
+            SequenceExportPlan plan = CreatePlan(files) with { VideoEncoder = VideoEncoderPreference.Auto };
+
+            if (cancel)
+            {
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => renderer.RenderAsync(plan, TestContext.Current.CancellationToken));
+                Assert.Empty(runner.Calls);
+            }
+            else
+            {
+                await renderer.RenderAsync(plan, TestContext.Current.CancellationToken);
+                Assert.Contains("libx264", Assert.Single(runner.Calls));
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class FailingGpuHintProvider(bool cancel) : IMediaGpuHintProvider
+    {
+        public Task<MediaGpuHint> GetCurrentAsync(CancellationToken cancellationToken = default) =>
+            cancel ? throw new OperationCanceledException() : throw new InvalidOperationException("discovery failed");
+    }
+
     private static FfmpegSequenceRenderer CreateRenderer(RecordingProcessRunner runner, RendererTestFiles files) =>
         new(
             runner,

@@ -123,9 +123,18 @@ public sealed class FfmpegSequenceRenderer : ISequenceExportRenderer
         FfmpegVideoEncoderSnapshot snapshot = await capabilities
             .RefreshAsync(cancellationToken)
             .ConfigureAwait(false);
-        MediaGpuHint gpuHint = gpuHintProvider is null
-            ? new MediaGpuHint(HasGpu: false)
-            : await gpuHintProvider.GetCurrentAsync(cancellationToken).ConfigureAwait(false);
+        MediaGpuHint gpuHint = new(HasGpu: false);
+        if (gpuHintProvider is not null)
+        {
+            try
+            {
+                gpuHint = await gpuHintProvider.GetCurrentAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+        }
         return FfmpegVideoEncoderSelector.Resolve(plan.VideoEncoder, snapshot, gpuHint);
     }
 

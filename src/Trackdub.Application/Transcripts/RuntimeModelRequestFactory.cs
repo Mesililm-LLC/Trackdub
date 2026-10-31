@@ -26,7 +26,8 @@ public sealed record RuntimeModelRequestOptions(
     bool RequirePreferredExecutionProviders = false,
     string? VadModelAlias = null,
     string? SpeechEnhancementModelAlias = null,
-    ExecutionProviderKind? PreferredExecutionProvider = null);
+    ExecutionProviderKind? PreferredExecutionProvider = null,
+    IReadOnlySet<RuntimeStage>? RequiredExecutionProviderStages = null);
 
 public sealed record RuntimeModelSelections(
     AsrModelOverride AsrModelOverride,
@@ -50,7 +51,8 @@ public sealed record RuntimeModelSelections(
     string? VadModelAlias = null,
     IReadOnlyDictionary<RuntimeStage, RuntimeModelSelectionIntent>? SelectionIntents = null,
     string? SpeechEnhancementModelAlias = null,
-    ExecutionProviderKind? PreferredExecutionProvider = null)
+    ExecutionProviderKind? PreferredExecutionProvider = null,
+    IReadOnlySet<RuntimeStage>? RequiredExecutionProviderStages = null)
 {
     public RuntimeModelSelectionIntent GetSelectionIntent(RuntimeStage stage)
     {
@@ -109,7 +111,9 @@ public static class RuntimeModelRequestFactory
             LipSynthesisModelAlias: preferences.LipSynthesisModelAlias,
             EnableAsrTextRefinement: preferences.EnableAsrTextRefinement,
             ModelVariantOverrides: CreateModelVariantOverridesFromPreferences(preferences),
-            VadModelAlias: preferences.VadModelAlias));
+            VadModelAlias: preferences.VadModelAlias,
+            PreferredExecutionProvider: preferences.GlobalPreferredExecutionProvider,
+            RequiredExecutionProviderStages: preferences.RequiredExecutionProviderStages));
     }
 
     public static RuntimeModelSelections CreateSelectionsFromSettings(
@@ -395,7 +399,8 @@ public static class RuntimeModelRequestFactory
             selections.RequirePreferredExecutionProviders,
             selections.VadModelAlias,
             selections.SpeechEnhancementModelAlias,
-            selections.PreferredExecutionProvider);
+            selections.PreferredExecutionProvider,
+            selections.RequiredExecutionProviderStages);
     }
 
     public static InferenceModelPreferences CreateModelPreferences(RuntimeModelSelections selections) =>
@@ -417,7 +422,11 @@ public static class RuntimeModelRequestFactory
             RequireAsrModelAlias: RequiresExplicitAsrModelAlias(options),
             PreferredExecutionProviders: CreatePreferredExecutionProviders(options),
             RequiredExecutionProviderStages: CreateRequiredExecutionProviderStages(options),
-            PreferredModelVariantAliases: CreatePreferredModelVariantAliases(options));
+            PreferredModelVariantAliases: CreatePreferredModelVariantAliases(options),
+            GlobalPreferredExecutionProvider: options.PreferredExecutionProvider,
+            ExplicitExecutionProviderStages: Enum.GetValues<RuntimeStage>()
+                .Where(stage => ResolveStageExecutionProviderOverride(options, stage) is not null)
+                .ToHashSet());
 
     public static RuntimeModelRequest CreateAsrRequest(
         RuntimeModelRequestOptions options,
@@ -823,7 +832,8 @@ public static class RuntimeModelRequestFactory
         RuntimeModelRequestOptions options,
         RuntimeStage stage) =>
         ResolveStageExecutionProviderOverride(options, stage) is not null
-        && (options.IsDevBuild || options.RequirePreferredExecutionProviders);
+        && (options.IsDevBuild || options.RequirePreferredExecutionProviders ||
+            options.RequiredExecutionProviderStages?.Contains(stage) == true);
 
     private static bool RequiresExplicitAsrModelAlias(RuntimeModelRequestOptions options) =>
         !string.IsNullOrWhiteSpace(options.AsrModelAlias) ||
@@ -978,6 +988,12 @@ public static class RuntimeModelRequestFactory
         var overrides = new Dictionary<string, ExecutionProviderKind>(StringComparer.OrdinalIgnoreCase);
         foreach ((RuntimeStage stage, ExecutionProviderKind provider) in providers)
         {
+            if (preferences.ExplicitExecutionProviderStages is not null &&
+                !preferences.ExplicitExecutionProviderStages.Contains(stage))
+            {
+                continue;
+            }
+
             string key = stage switch
             {
                 RuntimeStage.Asr => asrModelOverride switch

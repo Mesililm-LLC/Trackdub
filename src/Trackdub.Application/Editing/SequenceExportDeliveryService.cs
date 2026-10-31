@@ -133,7 +133,7 @@ public sealed class SequenceExportDeliveryService(
         int outputFrameRate)
     {
         // Allow a couple of frames of rounding, but never publish a visibly truncated render.
-        double toleranceSeconds = Math.Max(2d / Math.Max(outputFrameRate, 1), 0.1d);
+        double toleranceSeconds = 2d / Math.Max(outputFrameRate, 1);
         if (renderedDuration.TotalSeconds + toleranceSeconds < plannedDuration.TotalSeconds)
         {
             return $"The rendered output duration is shorter than the planned sequence duration " +

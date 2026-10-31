@@ -11,6 +11,7 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
     private readonly SemaphoreSlim mutationLock = new(1, 1);
     private int revision;
     private string? secondaryIndexPath;
+    private IReadOnlyList<LocalModelCacheRecord> mirroredBaseline = [];
 
     internal int Revision => Volatile.Read(ref revision);
 
@@ -67,7 +68,12 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
             IReadOnlyList<LocalModelCacheRecord> current = Load();
             if (secondaryIndexPath is not null)
             {
-                current = NormalizeRecords([.. current, .. LoadIndex(secondaryIndexPath)]);
+                IReadOnlyList<LocalModelCacheRecord> secondary = LoadIndex(secondaryIndexPath);
+                // A record removed from either index since the last mirrored write must stay removed.
+                current = NormalizeRecords([.. current, .. secondary])
+                    .Where(record => !ContainsRecord(mirroredBaseline, record) ||
+                        (ContainsRecord(current, record) && ContainsRecord(secondary, record)))
+                    .ToArray();
             }
 
             await SaveLockedAsync(mutator(current), cancellationToken).ConfigureAwait(false);
@@ -105,6 +111,7 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
             {
                 // Nothing to copy, but still mirror future writes to the new directory.
                 secondaryIndexPath = destinationIndexPath;
+                mirroredBaseline = [];
                 return;
             }
 
@@ -117,6 +124,7 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
                 // Arm the mirror only after the destination copy succeeds so a failed write
                 // does not leave later SaveAsync calls targeting an unwritable directory.
                 secondaryIndexPath = destinationIndexPath;
+                mirroredBaseline = combined;
             }
         }
         finally
@@ -208,6 +216,7 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
                 Path.GetDirectoryName(secondaryIndexPath)!))
         {
             await WriteIndexAsync(secondaryIndexPath, records, cancellationToken).ConfigureAwait(false);
+            mirroredBaseline = NormalizeRecords(records);
         }
     }
 
@@ -342,6 +351,10 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
             .Select(group => group.OrderByDescending(variant => variant.CreatedAtUtc)
                 .ThenByDescending(variant => variant.IntegrityFailed).First())
             .ToArray();
+
+    private static bool ContainsRecord(IReadOnlyList<LocalModelCacheRecord> records, LocalModelCacheRecord candidate) =>
+        records.Any(record => string.Equals(record.ModelId, candidate.ModelId, StringComparison.OrdinalIgnoreCase) &&
+            RootsEqual(record.RootPath, candidate.RootPath));
 
     private static IReadOnlyList<LocalModelCacheRecord> NormalizeRecords(IReadOnlyList<LocalModelCacheRecord> records) =>
         records.GroupBy(record => record.ModelId, StringComparer.OrdinalIgnoreCase)

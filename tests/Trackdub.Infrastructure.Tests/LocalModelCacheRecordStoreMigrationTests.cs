@@ -128,6 +128,21 @@ public sealed class LocalModelCacheRecordStoreMigrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Destination_deletion_survives_later_source_mutation()
+    {
+        var source = new LocalModelCacheRecordStore(CreateStoragePaths(Path.Join(root, "source-delete")));
+        var destination = new LocalModelCacheRecordStore(CreateStoragePaths(Path.Join(root, "destination-delete")));
+        var removed = Record("removed");
+        await source.MutateAsync(_ => [removed], TestContext.Current.CancellationToken);
+        await source.CopyRecordsToDirectoryAsync(new DirectoryInfo(Path.Join(root, "destination-delete")), TestContext.Current.CancellationToken);
+        await destination.MutateAsync(_ => [], TestContext.Current.CancellationToken);
+        var added = Record("added");
+        await source.MutateAsync(records => [.. records, added], TestContext.Current.CancellationToken);
+        Assert.Equal("added", Assert.Single(await destination.LoadAsync(TestContext.Current.CancellationToken)).ModelId);
+        Assert.Equal("added", Assert.Single(await source.LoadAsync(TestContext.Current.CancellationToken)).ModelId);
+    }
+
+    [Fact]
     public async Task Waiting_for_index_lock_observes_cancellation()
     {
         TrackdubStoragePaths paths = CreateStoragePaths(Path.Join(root, "locked"));

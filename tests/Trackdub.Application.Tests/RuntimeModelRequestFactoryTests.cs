@@ -73,6 +73,28 @@ public sealed class RuntimeModelRequestFactoryTests
     }
 
     [Fact]
+    public void Provider_preferences_round_trip_preserves_global_fallback_and_explicit_stage()
+    {
+        var options = new RuntimeModelRequestOptions(AsrModelOverride.Auto, true,
+            new Dictionary<string, ExecutionProviderKind> { ["Asr"] = ExecutionProviderKind.Cpu },
+            PreferredExecutionProvider: ExecutionProviderKind.DirectMl);
+        InferenceModelPreferences preferences = RuntimeModelRequestFactory.CreateModelPreferences(options);
+        RuntimeModelSelections selections = RuntimeModelRequestFactory.CreateSelectionsFromPreferences(preferences, isDevBuild: true);
+        InferenceModelPreferences result = RuntimeModelRequestFactory.CreateModelPreferences(selections);
+
+        Assert.Equal(ExecutionProviderKind.DirectMl, result.GetPreferredExecutionProvider(RuntimeStage.Tts));
+        Assert.False(result.RequiresPreferredExecutionProvider(RuntimeStage.Tts));
+        Assert.Equal(ExecutionProviderKind.Cpu, result.GetPreferredExecutionProvider(RuntimeStage.Asr));
+        Assert.True(result.RequiresPreferredExecutionProvider(RuntimeStage.Asr));
+        Assert.Single(selections.HardwareOverrides);
+
+        RuntimeModelSelections releaseSelections = RuntimeModelRequestFactory.CreateSelectionsFromPreferences(preferences);
+        InferenceModelPreferences releaseResult = RuntimeModelRequestFactory.CreateModelPreferences(releaseSelections);
+        Assert.True(releaseResult.RequiresPreferredExecutionProvider(RuntimeStage.Asr));
+        Assert.False(releaseResult.RequiresPreferredExecutionProvider(RuntimeStage.Tts));
+    }
+
+    [Fact]
     public void CreateSelectionsFromPreferences_maps_model_aliases()
     {
         var preferences = new InferenceModelPreferences(

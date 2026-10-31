@@ -137,6 +137,18 @@ public sealed class SequenceExportDeliveryServiceTests
         Assert.Empty(Directory.EnumerateFiles(scenario.Files.Root, "*.partial.mp4"));
     }
 
+    [Theory]
+    [InlineData(60, 9.46, true)]
+    [InlineData(60, 9.48, false)]
+    [InlineData(10, 9.31, false)]
+    [InlineData(10, 9.29, true)]
+    public async Task Rendered_duration_uses_two_frame_tolerance(int frameRate, double duration, bool blocked)
+    {
+        using var scenario = new Scenario(new FakeMediaProbe { Snapshot = OutputSnapshot(duration) });
+        SequenceExportDeliveryResult result = await scenario.ExportAsync(scenario.Plan with { OutputFrameRate = frameRate });
+        Assert.Equal(blocked, result.IsBlocked);
+    }
+
     private static SequenceExportPlan CreatePlan(TemporaryFiles files, out Guid selectedPlacementId)
     {
         Guid projectId = Guid.NewGuid();

@@ -60,6 +60,14 @@ public sealed class JsonStudioSettingsService(
         }
 
         File.Move(tempPath, storagePaths.SettingsPath, overwrite: true);
+        TrackdubStoragePathResolver.MigrateModelCacheIfChanged(new TrackdubStorageOptions(
+            storagePaths.UserDataRoot,
+            storagePaths.UserCacheRoot,
+            storagePaths.SharedAssetRoot,
+            storagePaths.IsPortable,
+            string.IsNullOrWhiteSpace(normalized.DefaultModelCacheDirectory)
+                ? null
+                : Path.GetFullPath(Environment.ExpandEnvironmentVariables(normalized.DefaultModelCacheDirectory))));
     }
 
     public async Task<StudioSettings> TouchRecentProjectAsync(
