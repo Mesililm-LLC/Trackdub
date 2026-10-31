@@ -63,22 +63,31 @@ public sealed class JsonStudioSettingsService(
         Directory.CreateDirectory(storagePaths.RootDirectory);
 
         string tempPath = $"{storagePaths.SettingsPath}.{Guid.NewGuid():N}.tmp";
-        await using (FileStream stream = File.Create(tempPath))
+        try
         {
-            await JsonSerializer.SerializeAsync(stream, normalized, JsonOptions, cancellationToken).ConfigureAwait(false);
-        }
+            await using (FileStream stream = File.Create(tempPath))
+            {
+                await JsonSerializer.SerializeAsync(stream, normalized, JsonOptions, cancellationToken).ConfigureAwait(false);
+            }
 
-        // Migrate before publishing settings.json so a failed migration does not leave settings
-        // that point at a cache directory the records were never moved to.
-        TrackdubStoragePathResolver.MigrateModelCacheIfChanged(
-            new TrackdubStorageOptions(
-                storagePaths.UserDataRoot,
-                storagePaths.UserCacheRoot,
-                storagePaths.SharedAssetRoot,
-                storagePaths.IsPortable,
-                normalized.DefaultModelCacheDirectory),
-            cancellationToken);
-        File.Move(tempPath, storagePaths.SettingsPath, overwrite: true);
+            // Migrate before publishing settings.json so a failed migration does not leave settings
+            // that point at a cache directory the records were never moved to.
+            TrackdubStoragePathResolver.MigrateModelCacheIfChanged(
+                new TrackdubStorageOptions(
+                    storagePaths.UserDataRoot,
+                    storagePaths.UserCacheRoot,
+                    storagePaths.SharedAssetRoot,
+                    storagePaths.IsPortable,
+                    normalized.DefaultModelCacheDirectory),
+                cancellationToken);
+            File.Move(tempPath, storagePaths.SettingsPath, overwrite: true);
+        }
+        finally
+        {
+            // After a successful publish the temp path no longer exists, so this only removes
+            // the file left behind by a failed save.
+            File.Delete(tempPath);
+        }
     }
 
     // The saved value is persisted in its absolute form, so the settings and the cache resolver
