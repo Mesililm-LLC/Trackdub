@@ -192,5 +192,4 @@ public sealed class FfmpegSequenceRenderer : ISequenceExportRenderer
         SequenceExportPlan Plan,
         VideoEncodeProfile? EncodeProfile,
         string OutputPath);
-
 }

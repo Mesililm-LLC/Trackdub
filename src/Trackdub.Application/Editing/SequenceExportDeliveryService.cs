@@ -46,8 +46,7 @@ public sealed class SequenceExportDeliveryService(
             OutputPath = outputPath,
             RequiresWatermark = plan.RequiresWatermark || exportTierGate?.RequiresWatermark == true
         };
-        TimeSpan plannedDuration = TimeSpan.FromSeconds(SequenceEditor.GetPositions(scopedSequence)
-            .LastOrDefault()?.SequenceEndSeconds ?? 0d);
+        TimeSpan plannedDuration = TimeSpan.FromSeconds(SequenceEditor.GetPositions(scopedSequence)[^1].SequenceEndSeconds);
         return new PreparedSequenceExport(scopedPlan, outputPath, plannedDuration);
     }
 
