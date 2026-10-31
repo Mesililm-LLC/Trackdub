@@ -5,14 +5,17 @@ namespace Trackdub.Application.Editing;
 
 internal static class SequenceExportOutputPathValidator
 {
+    private const string OutputPathParameterName = "outputPath";
+
     public static void Validate(SequenceExportPlan plan, string outputPath)
     {
-        ValidateContainerExtension(plan.Container, outputPath);
-        ValidatePlacementInputs(plan, outputPath);
-        ValidateAuxiliaryInputs(plan, outputPath);
+        var output = new FileInfo(outputPath);
+        ValidateContainerExtension(plan.Container, output);
+        ValidatePlacementInputs(plan, output);
+        ValidateAuxiliaryInputs(plan, output);
     }
 
-    private static void ValidateContainerExtension(ExportOutputContainer container, string outputPath)
+    private static void ValidateContainerExtension(ExportOutputContainer container, FileInfo output)
     {
         string expectedExtension = container switch
         {
@@ -20,37 +23,33 @@ internal static class SequenceExportOutputPathValidator
             ExportOutputContainer.Mkv => ".mkv",
             _ => throw new ArgumentOutOfRangeException(nameof(container))
         };
-        if (!string.Equals(Path.GetExtension(outputPath), expectedExtension, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(output.Extension, expectedExtension, StringComparison.OrdinalIgnoreCase))
         {
             throw new ArgumentException(
                 $"The output path extension must match the selected {container} container.",
-                nameof(outputPath));
+                OutputPathParameterName);
         }
     }
 
-    private static void ValidatePlacementInputs(SequenceExportPlan plan, string outputPath)
+    private static void ValidatePlacementInputs(SequenceExportPlan plan, FileInfo output)
     {
         foreach (SequenceRenderPlacementAssets assets in plan.PlacementAssets.Values)
         {
-            EnsureDifferentPath(outputPath, assets.SourceMediaPath,
-                "Sequence output path must be different from every source input.");
+            EnsureDifferentPath(output, assets.SourceMediaPath, ExportPathConflict.SourceMedia);
             if (plan.AudioMode is SequenceExportAudioMode.Dubbed)
             {
-                EnsureDifferentPath(outputPath, assets.AudioPath,
-                    "Sequence output path must be different from every audio input.");
+                EnsureDifferentPath(output, assets.AudioPath, ExportPathConflict.Audio);
             }
         }
     }
 
-    private static void ValidateAuxiliaryInputs(SequenceExportPlan plan, string outputPath)
+    private static void ValidateAuxiliaryInputs(SequenceExportPlan plan, FileInfo output)
     {
-        EnsureDifferentPath(outputPath, plan.BurnInSubtitlePath,
-            "Sequence output path must be different from the subtitle input.");
-        EnsureDifferentPath(outputPath, plan.WatermarkFontPath,
-            "Sequence output path must be different from the watermark font.");
+        EnsureDifferentPath(output, plan.BurnInSubtitlePath, ExportPathConflict.Subtitle);
+        EnsureDifferentPath(output, plan.WatermarkFontPath, ExportPathConflict.WatermarkFont);
     }
 
-    private static void EnsureDifferentPath(string outputPath, string? inputPath, string errorMessage)
+    private static void EnsureDifferentPath(FileInfo output, string? inputPath, ExportPathConflict conflict)
     {
         if (string.IsNullOrWhiteSpace(inputPath))
         {
@@ -60,15 +59,24 @@ internal static class SequenceExportOutputPathValidator
         // Compare resolved filesystem identity, not just normalized strings: an input that is
         // a symlink (or lives under a symlinked directory) can resolve to the requested output,
         // and publishing over it would destroy the source media.
-        if (FilePathComparison.AreSame(ResolveRealPath(outputPath), ResolveRealPath(inputPath)))
+        if (FilePathComparison.AreSame(ResolveRealPath(output), ResolveRealPath(new FileInfo(inputPath))))
         {
-            throw new InvalidOperationException(errorMessage);
+            throw new InvalidOperationException(BuildConflictMessage(conflict));
         }
     }
 
-    private static string ResolveRealPath(string path)
+    private static string BuildConflictMessage(ExportPathConflict conflict) => conflict switch
     {
-        string fullPath = Path.GetFullPath(path);
+        ExportPathConflict.SourceMedia => "Sequence output path must be different from every source input.",
+        ExportPathConflict.Audio => "Sequence output path must be different from every audio input.",
+        ExportPathConflict.Subtitle => "Sequence output path must be different from the subtitle input.",
+        ExportPathConflict.WatermarkFont => "Sequence output path must be different from the watermark font.",
+        _ => throw new ArgumentOutOfRangeException(nameof(conflict))
+    };
+
+    private static string ResolveRealPath(FileInfo path)
+    {
+        string fullPath = path.FullName;
         string root = Path.GetPathRoot(fullPath) ?? string.Empty;
         string[] segments = fullPath[root.Length..].Split(
             [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
@@ -87,11 +95,18 @@ internal static class SequenceExportOutputPathValidator
         try
         {
             FileSystemInfo info = Directory.Exists(path) ? new DirectoryInfo(path) : new FileInfo(path);
-            if (info.Exists && info.LinkTarget is not null &&
-                info.ResolveLinkTarget(returnFinalTarget: true) is { } target)
+            if (!info.Exists)
             {
-                return Path.GetFullPath(target.FullName);
+                return path;
             }
+
+            if (info.LinkTarget is null)
+            {
+                return path;
+            }
+
+            FileSystemInfo? target = info.ResolveLinkTarget(returnFinalTarget: true);
+            return target is null ? path : Path.GetFullPath(target.FullName);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -100,5 +115,13 @@ internal static class SequenceExportOutputPathValidator
         }
 
         return path;
+    }
+
+    private enum ExportPathConflict
+    {
+        SourceMedia,
+        Audio,
+        Subtitle,
+        WatermarkFont
     }
 }

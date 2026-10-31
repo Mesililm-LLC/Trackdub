@@ -18,12 +18,7 @@ public sealed class FfmpegSequenceRenderer : ISequenceExportRenderer
     private readonly FfmpegSequenceMediaRangeValidator mediaRangeValidator;
 
     public FfmpegSequenceRenderer(IMediaProbe mediaProbe, string? ffmpegPath = null)
-        : this(
-            new ProcessRunner(),
-            mediaProbe,
-            new FfmpegVideoEncoderCapabilityService(ffmpegPath),
-            gpuHintProvider: null,
-            ffmpegPath)
+        : this(mediaProbe, gpuHintProvider: null, ffmpegPath)
     {
     }
 

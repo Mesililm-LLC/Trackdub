@@ -12,173 +12,129 @@ public sealed class SequenceExportDeliveryServiceTests
     [Fact]
     public async Task Selected_export_keeps_source_range_and_publishes_only_after_probe_and_tier_check()
     {
-        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
-        using var files = new TemporaryFiles();
-        SequenceExportPlan plan = CreatePlan(files, out Guid selectedPlacementId);
-        var renderer = new RecordingSequenceRenderer();
-        var probe = new FakeMediaProbe { Snapshot = OutputSnapshot(durationSeconds: 4.5d) };
-        var tierGate = new RecordingTierGate(maxDurationSeconds: 60, requiresWatermark: true);
-        var service = new SequenceExportDeliveryService(renderer, probe, tierGate);
+        using var scenario = new Scenario(
+            new FakeMediaProbe { Snapshot = OutputSnapshot(durationSeconds: 4.5d) },
+            new RecordingTierGate(maxDurationSeconds: 60, requiresWatermark: true));
 
-        SequenceExportDeliveryResult result = await service.ExportAsync(plan, selectedPlacementId, cancellationToken);
+        SequenceExportDeliveryResult result = await scenario.ExportSelectedAsync();
 
-        AssertPublishedResult(result, plan, TimeSpan.FromSeconds(4.5d));
-        AssertRenderedFileContents(plan);
-        AssertSelectedPlacement(renderer, selectedPlacementId);
-        AssertScopedRenderOptions(renderer, plan);
-        AssertDeliveryChecks(tierGate, probe);
+        AssertPublishedResult(result, scenario.Plan, TimeSpan.FromSeconds(4.5d));
+        AssertRenderedFileContents(scenario.Plan);
+        AssertSelectedPlacement(scenario.Renderer, scenario.SelectedPlacementId);
+        AssertScopedRenderOptions(scenario.Renderer, scenario.Plan);
+        AssertDeliveryChecks(scenario.TierGate!, scenario.Probe);
     }
 
     [Fact]
     public async Task Planned_duration_block_skips_rendering()
     {
-        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
-        using var files = new TemporaryFiles();
-        SequenceExportPlan plan = CreatePlan(files, out _);
-        var renderer = new RecordingSequenceRenderer();
-        var probe = new FakeMediaProbe();
-        var tierGate = new RecordingTierGate(maxDurationSeconds: 5, requiresWatermark: true);
-        var service = new SequenceExportDeliveryService(renderer, probe, tierGate);
+        using var scenario = new Scenario(
+            tierGate: new RecordingTierGate(maxDurationSeconds: 5, requiresWatermark: true));
 
-        SequenceExportDeliveryResult result = await service.ExportAsync(plan, cancellationToken: cancellationToken);
+        SequenceExportDeliveryResult result = await scenario.ExportAsync();
 
         AssertDurationBlocked(result);
-        AssertNoRenderOccurred(renderer, probe);
-        Assert.False(File.Exists(plan.OutputPath));
-        Assert.Equal([9.5d], tierGate.CheckedDurations);
+        AssertNoRenderOccurred(scenario.Renderer, scenario.Probe);
+        Assert.False(File.Exists(scenario.Plan.OutputPath));
+        Assert.Equal([9.5d], scenario.TierGate!.CheckedDurations);
     }
 
     [Fact]
     public async Task Rendered_duration_block_preserves_previous_output_and_cleans_temporary_file()
     {
-        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
-        using var files = new TemporaryFiles();
-        SequenceExportPlan plan = CreatePlan(files, out _);
-        await File.WriteAllTextAsync(plan.OutputPath, "previous", cancellationToken);
-        var renderer = new RecordingSequenceRenderer();
-        var probe = new FakeMediaProbe { Snapshot = OutputSnapshot(durationSeconds: 301d) };
-        var tierGate = new RecordingTierGate(maxDurationSeconds: 60, requiresWatermark: true);
-        var service = new SequenceExportDeliveryService(renderer, probe, tierGate);
+        using var scenario = new Scenario(
+            new FakeMediaProbe { Snapshot = OutputSnapshot(durationSeconds: 301d) },
+            new RecordingTierGate(maxDurationSeconds: 60, requiresWatermark: true));
+        await File.WriteAllTextAsync(scenario.Plan.OutputPath, "previous", scenario.CancellationToken);
 
-        SequenceExportDeliveryResult result = await service.ExportAsync(plan, cancellationToken: cancellationToken);
+        SequenceExportDeliveryResult result = await scenario.ExportAsync();
 
         AssertDurationBlocked(result);
-        AssertPriorOutputPreservedAndTemporaryFileRemoved(plan, files);
-        Assert.Equal([9.5d, 301d], tierGate.CheckedDurations);
-        Assert.Single(probe.Calls);
+        AssertPriorOutputPreservedAndTemporaryFileRemoved(scenario.Plan, scenario.Files);
+        Assert.Equal([9.5d, 301d], scenario.TierGate!.CheckedDurations);
+        Assert.Single(scenario.Probe.Calls);
     }
 
     [Fact]
     public async Task Render_failure_preserves_previous_output_and_cleans_temporary_file()
     {
-        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
-        using var files = new TemporaryFiles();
-        SequenceExportPlan plan = CreatePlan(files, out _);
-        await File.WriteAllTextAsync(plan.OutputPath, "previous", cancellationToken);
-        var renderer = new RecordingSequenceRenderer
-        {
-            Failure = new InvalidOperationException("render failed")
-        };
-        var service = new SequenceExportDeliveryService(renderer, new FakeMediaProbe());
+        using var scenario = new Scenario(
+            renderFailure: new InvalidOperationException("render failed"));
+        await File.WriteAllTextAsync(scenario.Plan.OutputPath, "previous", scenario.CancellationToken);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.ExportAsync(plan, cancellationToken: cancellationToken));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => scenario.ExportAsync());
 
-        Assert.Equal("previous", await File.ReadAllTextAsync(plan.OutputPath, cancellationToken));
-        Assert.Empty(Directory.EnumerateFiles(files.Root, "*.partial.mp4"));
+        Assert.Equal("previous", await File.ReadAllTextAsync(scenario.Plan.OutputPath, scenario.CancellationToken));
+        Assert.Empty(Directory.EnumerateFiles(scenario.Files.Root, "*.partial.mp4"));
     }
 
     [Fact]
     public async Task Output_cannot_replace_an_unselected_sequence_source()
     {
-        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
-        using var files = new TemporaryFiles();
-        SequenceExportPlan plan = CreatePlan(files, out Guid selectedPlacementId);
-        string unselectedSourcePath = plan.PlacementAssets[plan.Sequence.Placements[1].Id].SourceMediaPath;
-        var renderer = new RecordingSequenceRenderer();
-        var service = new SequenceExportDeliveryService(renderer, new FakeMediaProbe());
+        using var scenario = new Scenario();
+        string unselectedSourcePath = scenario.Plan.PlacementAssets[scenario.Plan.Sequence.Placements[1].Id].SourceMediaPath;
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.ExportAsync(plan with { OutputPath = unselectedSourcePath }, selectedPlacementId, cancellationToken));
+            scenario.ExportSelectedAsync(scenario.Plan with { OutputPath = unselectedSourcePath }));
 
-        Assert.Empty(renderer.Plans);
+        Assert.Empty(scenario.Renderer.Plans);
     }
 
     [Fact]
     public async Task Output_extension_must_match_selected_container()
     {
-        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
-        using var files = new TemporaryFiles();
-        SequenceExportPlan plan = CreatePlan(files, out _);
-        var renderer = new RecordingSequenceRenderer();
-        var service = new SequenceExportDeliveryService(renderer, new FakeMediaProbe());
+        using var scenario = new Scenario();
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            service.ExportAsync(plan with { OutputPath = Path.Join(files.Root, "sequence.mkv") }, cancellationToken: cancellationToken));
+            scenario.ExportAsync(scenario.Plan with { OutputPath = Path.Join(scenario.Files.Root, "sequence.mkv") }));
 
-        Assert.Empty(renderer.Plans);
+        Assert.Empty(scenario.Renderer.Plans);
     }
 
     [Fact]
     public async Task Selected_export_still_requires_a_complete_asset_map_for_safe_output_validation()
     {
-        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
-        using var files = new TemporaryFiles();
-        SequenceExportPlan plan = CreatePlan(files, out Guid selectedPlacementId);
-        Guid unselectedPlacementId = plan.Sequence.Placements[0].Id;
-        var renderer = new RecordingSequenceRenderer();
-        var service = new SequenceExportDeliveryService(renderer, new FakeMediaProbe());
+        using var scenario = new Scenario();
+        Guid unselectedPlacementId = scenario.Plan.Sequence.Placements[0].Id;
 
         await Assert.ThrowsAsync<InvalidDataException>(() =>
-            service.ExportAsync(
-                plan with
+            scenario.ExportSelectedAsync(
+                scenario.Plan with
                 {
                     PlacementAssets = new Dictionary<Guid, SequenceRenderPlacementAssets>
                     {
-                        [selectedPlacementId] = plan.PlacementAssets[selectedPlacementId]
+                        [scenario.SelectedPlacementId] = scenario.Plan.PlacementAssets[scenario.SelectedPlacementId]
                     }
-                },
-                selectedPlacementId,
-                cancellationToken));
+                }));
 
-        Assert.True(plan.PlacementAssets.ContainsKey(unselectedPlacementId));
-        Assert.Empty(renderer.Plans);
+        Assert.True(scenario.Plan.PlacementAssets.ContainsKey(unselectedPlacementId));
+        Assert.Empty(scenario.Renderer.Plans);
     }
 
     [Fact]
     public async Task Selected_export_rejects_burn_in_subtitles_until_they_are_rebased()
     {
-        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
-        using var files = new TemporaryFiles();
-        SequenceExportPlan plan = CreatePlan(files, out Guid selectedPlacementId) with
-        {
-            BurnInSubtitlePath = files.Create("sequence.srt")
-        };
-        var renderer = new RecordingSequenceRenderer();
-        var service = new SequenceExportDeliveryService(renderer, new FakeMediaProbe());
+        using var scenario = new Scenario();
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.ExportAsync(plan, selectedPlacementId, cancellationToken));
+            scenario.ExportSelectedAsync(
+                scenario.Plan with { BurnInSubtitlePath = scenario.Files.Create("sequence.srt") }));
 
-        Assert.Empty(renderer.Plans);
+        Assert.Empty(scenario.Renderer.Plans);
     }
 
     [Fact]
     public async Task Rendered_output_shorter_than_planned_sequence_is_blocked()
     {
-        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
-        using var files = new TemporaryFiles();
-        SequenceExportPlan plan = CreatePlan(files, out _);
-        var renderer = new RecordingSequenceRenderer();
-        var probe = new FakeMediaProbe { Snapshot = OutputSnapshot(durationSeconds: 4.5d) };
-        var tierGate = new RecordingTierGate(maxDurationSeconds: 60, requiresWatermark: false);
-        var service = new SequenceExportDeliveryService(renderer, probe, tierGate);
+        using var scenario = new Scenario(
+            new FakeMediaProbe { Snapshot = OutputSnapshot(durationSeconds: 4.5d) },
+            new RecordingTierGate(maxDurationSeconds: 60, requiresWatermark: false));
 
-        SequenceExportDeliveryResult result = await service.ExportAsync(plan, cancellationToken: cancellationToken);
+        SequenceExportDeliveryResult result = await scenario.ExportAsync();
 
         AssertDurationBlocked(result);
-        Assert.False(File.Exists(plan.OutputPath));
-        Assert.Empty(Directory.EnumerateFiles(files.Root, "*.partial.mp4"));
+        Assert.False(File.Exists(scenario.Plan.OutputPath));
+        Assert.Empty(Directory.EnumerateFiles(scenario.Files.Root, "*.partial.mp4"));
     }
 
     private static SequenceExportPlan CreatePlan(TemporaryFiles files, out Guid selectedPlacementId)
@@ -271,6 +227,49 @@ public sealed class SequenceExportDeliveryServiceTests
         BitRate: null,
         AudioStreams: [],
         VideoStreams: [new MediaVideoStream(0, "h264", 1920, 1080, 30, durationSeconds)]);
+
+    private sealed class Scenario : IDisposable
+    {
+        public Scenario(
+            FakeMediaProbe? probe = null,
+            RecordingTierGate? tierGate = null,
+            Exception? renderFailure = null)
+        {
+            Files = new TemporaryFiles();
+            Plan = CreatePlan(Files, out Guid selectedPlacementId);
+            SelectedPlacementId = selectedPlacementId;
+            Renderer = new RecordingSequenceRenderer { Failure = renderFailure };
+            Probe = probe ?? new FakeMediaProbe();
+            TierGate = tierGate;
+            Service = tierGate is null
+                ? new SequenceExportDeliveryService(Renderer, Probe)
+                : new SequenceExportDeliveryService(Renderer, Probe, tierGate);
+        }
+
+        public TemporaryFiles Files { get; }
+
+        public SequenceExportPlan Plan { get; }
+
+        public Guid SelectedPlacementId { get; }
+
+        public RecordingSequenceRenderer Renderer { get; }
+
+        public FakeMediaProbe Probe { get; }
+
+        public RecordingTierGate? TierGate { get; }
+
+        public SequenceExportDeliveryService Service { get; }
+
+        public CancellationToken CancellationToken { get; } = TestContext.Current.CancellationToken;
+
+        public Task<SequenceExportDeliveryResult> ExportAsync(SequenceExportPlan? plan = null) =>
+            Service.ExportAsync(plan ?? Plan, cancellationToken: CancellationToken);
+
+        public Task<SequenceExportDeliveryResult> ExportSelectedAsync(SequenceExportPlan? plan = null) =>
+            Service.ExportAsync(plan ?? Plan, SelectedPlacementId, CancellationToken);
+
+        public void Dispose() => Files.Dispose();
+    }
 
     private sealed class RecordingSequenceRenderer : ISequenceExportRenderer
     {
