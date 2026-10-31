@@ -36,7 +36,6 @@ internal static class FfmpegSequenceRenderCommandBuilder
         ArgumentNullException.ThrowIfNull(plan);
         SequenceFrame frame = plan.Sequence.Frame
             ?? throw new InvalidDataException("Sequence output frame is required.");
-        VideoEncodeProfile? profile = encodeProfile;
         bool hasAudio = HasAudio(plan);
         var filters = new List<string>();
         var videoSettings = new VideoFilterSettings(frame, plan.OutputFrameRate, encodeProfile);

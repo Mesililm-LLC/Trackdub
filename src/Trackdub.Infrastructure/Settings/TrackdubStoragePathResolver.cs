@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Text.Json;
 using Trackdub.Infrastructure;
+using Trackdub.Infrastructure.Persistence.Repositories;
 
 namespace Trackdub.Infrastructure.Settings;
 
@@ -70,6 +71,7 @@ public static class TrackdubStoragePathResolver
         TrackdubStorageOptions roots = ResolveRoots(context);
         string? modelCacheOverride = roots.ExplicitModelCacheDirectory
             ?? ReadDefaultModelCacheDirectory(new DirectoryInfo(roots.UserDataRoot));
+        MigrateModelCacheIfChanged(roots, modelCacheOverride);
         string? engineCacheOverride = NormalizeOptionalPath(GetValue(context.EnvironmentVariables, EngineCacheRootEnvironmentVariable));
         return roots with
         {
@@ -78,55 +80,142 @@ public static class TrackdubStoragePathResolver
         };
     }
 
+    private static void MigrateModelCacheIfChanged(TrackdubStorageOptions roots, string? modelCacheOverride)
+    {
+        string statePath = Path.Join(roots.UserDataRoot, "model-cache-directory.txt");
+        using FileStream stateLock = LocalModelCacheRecordStore.AcquireFileLockAsync(
+            statePath + ".lock", CancellationToken.None).GetAwaiter().GetResult();
+        string defaultDirectory = Path.Join(roots.UserCacheRoot, "model-cache");
+        bool stateExists = File.Exists(statePath);
+        string previousDirectory = stateExists ? File.ReadAllText(statePath) : defaultDirectory;
+        if (string.IsNullOrWhiteSpace(previousDirectory) || !Path.IsPathFullyQualified(previousDirectory))
+        {
+            throw new InvalidDataException("The saved model cache directory is invalid.");
+        }
+
+        string destinationDirectory = modelCacheOverride ?? defaultDirectory;
+        if (!LocalModelCacheRecordStore.RootsEqual(previousDirectory, destinationDirectory))
+        {
+            var previousPaths = new TrackdubStoragePaths(roots with { ExplicitModelCacheDirectory = previousDirectory });
+            var store = new LocalModelCacheRecordStore(previousPaths);
+            store.CopyRecordsToDirectoryAsync(new DirectoryInfo(destinationDirectory)).GetAwaiter().GetResult();
+        }
+        else if (stateExists)
+        {
+            return;
+        }
+
+        string tempPath = statePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllText(tempPath, destinationDirectory);
+            File.Move(tempPath, statePath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                File.Delete(tempPath);
+            }
+        }
+    }
+
     private static TrackdubStorageOptions ResolveRoots(TrackdubStoragePathResolutionContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        string appBaseDirectory = NormalizeRequiredPath(context.AppBaseDirectory, nameof(context.AppBaseDirectory));
-        string localAppDataRoot = NormalizeRequiredPath(context.LocalAppDataRoot, nameof(context.LocalAppDataRoot));
-        string commonAppDataRoot = NormalizeRequiredPath(context.CommonAppDataRoot, nameof(context.CommonAppDataRoot));
+        string appBaseDirectory = NormalizeRequiredPath(context.AppBaseDirectory);
+        string localAppDataRoot = NormalizeRequiredPath(context.LocalAppDataRoot);
+        string commonAppDataRoot = NormalizeRequiredPath(context.CommonAppDataRoot);
         IReadOnlyDictionary<string, string?> environment = context.EnvironmentVariables;
 
+        TrackdubStorageOptions? environmentRoots = ResolveEnvironmentRoots(environment, localAppDataRoot);
+        if (environmentRoots is not null)
+        {
+            return environmentRoots;
+        }
+
+        TrackdubStorageOptions? portableRoots = ResolvePortableRoots(environment, appBaseDirectory);
+        if (portableRoots is not null)
+        {
+            return portableRoots;
+        }
+
+        return ResolveConfiguredRoots(localAppDataRoot, commonAppDataRoot);
+    }
+
+    private static TrackdubStorageOptions? ResolveEnvironmentRoots(
+        IReadOnlyDictionary<string, string?> environment,
+        string localAppDataRoot)
+    {
         string? dataRoot = GetValue(environment, DataRootEnvironmentVariable);
         string? cacheRoot = GetValue(environment, CacheRootEnvironmentVariable);
         string? sharedAssetRoot = GetValue(environment, SharedAssetRootEnvironmentVariable);
-        if (HasValue(dataRoot) || HasValue(cacheRoot) || HasValue(sharedAssetRoot))
+        bool hasOverride = !string.IsNullOrWhiteSpace(dataRoot)
+            || !string.IsNullOrWhiteSpace(cacheRoot)
+            || !string.IsNullOrWhiteSpace(sharedAssetRoot);
+        if (!hasOverride)
         {
-            string normalizedDataRoot = NormalizeOptionalPath(dataRoot) ?? Path.Join(localAppDataRoot, ProductDirectoryName);
-            string normalizedCacheRoot = NormalizeOptionalPath(cacheRoot) ?? normalizedDataRoot;
-            return new TrackdubStorageOptions(
-                normalizedDataRoot,
-                normalizedCacheRoot,
-                NormalizeOptionalPath(sharedAssetRoot),
-                IsPortable: false);
+            return null;
         }
 
-        bool portableRequested = IsTruthy(GetValue(environment, PortableEnvironmentVariable))
+        string normalizedDataRoot = NormalizeOptionalPath(dataRoot) ?? Path.Join(localAppDataRoot, ProductDirectoryName);
+        string normalizedCacheRoot = NormalizeOptionalPath(cacheRoot) ?? normalizedDataRoot;
+        return new TrackdubStorageOptions(
+            normalizedDataRoot,
+            normalizedCacheRoot,
+            NormalizeOptionalPath(sharedAssetRoot),
+            IsPortable: false);
+    }
+
+    private static TrackdubStorageOptions? ResolvePortableRoots(
+        IReadOnlyDictionary<string, string?> environment,
+        string appBaseDirectory)
+    {
+        if (!IsPortableRequested(environment, appBaseDirectory))
+        {
+            return null;
+        }
+
+        string portableDataRoot = NormalizeOptionalPath(GetValue(environment, PortableDataRootEnvironmentVariable))
+            ?? Path.Join(appBaseDirectory, PortableDataDirectoryName);
+        return new TrackdubStorageOptions(portableDataRoot, portableDataRoot, SharedAssetRoot: null, IsPortable: true);
+    }
+
+    private static bool IsPortableRequested(
+        IReadOnlyDictionary<string, string?> environment,
+        string appBaseDirectory)
+    {
+        string? portableValue = GetValue(environment, PortableEnvironmentVariable);
+        return string.Equals(portableValue, "1", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(portableValue, "true", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(portableValue, "yes", StringComparison.OrdinalIgnoreCase)
             || File.Exists(Path.Join(appBaseDirectory, PortableMarkerFileName))
             || Directory.Exists(Path.Join(appBaseDirectory, PortableDataDirectoryName));
-        if (portableRequested)
+    }
+
+    private static TrackdubStorageOptions ResolveConfiguredRoots(
+        string localAppDataRoot,
+        string commonAppDataRoot)
+    {
+        StorageConfig? config = ReadStorageConfig(
+            new DirectoryInfo(localAppDataRoot),
+            new DirectoryInfo(commonAppDataRoot));
+        if (config is null)
         {
-            string portableDataRoot = NormalizeOptionalPath(GetValue(environment, PortableDataRootEnvironmentVariable))
-                ?? Path.Join(appBaseDirectory, PortableDataDirectoryName);
-            return new TrackdubStorageOptions(portableDataRoot, portableDataRoot, SharedAssetRoot: null, IsPortable: true);
+            string defaultRoot = Path.Join(localAppDataRoot, ProductDirectoryName);
+            return new TrackdubStorageOptions(defaultRoot, defaultRoot, SharedAssetRoot: null, IsPortable: false);
         }
 
-        StorageConfig? config = ReadStorageConfig(localAppDataRoot, commonAppDataRoot);
-        if (config != null)
-        {
-            string configuredDataRoot = NormalizeOptionalPath(config.UserDataRoot)
-                ?? Path.Join(localAppDataRoot, ProductDirectoryName);
-            string configuredCacheRoot = NormalizeOptionalPath(config.UserCacheRoot)
-                ?? configuredDataRoot;
-            return new TrackdubStorageOptions(
-                configuredDataRoot,
-                configuredCacheRoot,
-                NormalizeOptionalPath(config.SharedAssetRoot),
-                config.IsPortable ?? config.Portable ?? false);
-        }
-
-        string defaultRoot = Path.Join(localAppDataRoot, ProductDirectoryName);
-        return new TrackdubStorageOptions(defaultRoot, defaultRoot, SharedAssetRoot: null, IsPortable: false);
+        string configuredDataRoot = NormalizeOptionalPath(config.UserDataRoot)
+            ?? Path.Join(localAppDataRoot, ProductDirectoryName);
+        string configuredCacheRoot = NormalizeOptionalPath(config.UserCacheRoot)
+            ?? configuredDataRoot;
+        return new TrackdubStorageOptions(
+            configuredDataRoot,
+            configuredCacheRoot,
+            NormalizeOptionalPath(config.SharedAssetRoot),
+            config.IsPortable ?? config.Portable ?? false);
     }
 
     public static void ApplyToCurrentProcess(TrackdubStoragePaths storagePaths)
@@ -203,91 +292,101 @@ public static class TrackdubStoragePathResolver
         {
             lock (EnvironmentStackSyncRoot)
             {
-                foreach ((string key, LinkedListNode<string?> node) in nodes)
+                foreach (KeyValuePair<string, LinkedListNode<string?>> entry in nodes)
                 {
-                    if (!EnvironmentValueStacks.TryGetValue(key, out LinkedList<string?>? stack))
-                    {
-                        continue;
-                    }
-
-                    // Check if node is still in the list before attempting removal
-                    if (node.List != stack)
-                    {
-                        continue;
-                    }
-
-                    // Only rewrite the env var if this scope's entry was the topmost
-                    // (most recently applied) override. If a newer scope is still on top,
-                    // just remove ourselves from underneath it — the value it sees stays
-                    // untouched, and whichever scope eventually disposes as the new top
-                    // will correctly rebase to what's now beneath it (possibly the true
-                    // baseline), instead of an intermediate value some other scope had
-                    // already unwound.
-                    bool wasTop = ReferenceEquals(stack.Last, node);
-                    string? currentValue = Environment.GetEnvironmentVariable(key);
-                    stack.Remove(node);
-
-                    // A non-scoped caller may have intentionally changed the process
-                    // environment while this scope was active. Restore the preceding
-                    // scoped/baseline value only if the environment still contains the
-                    // exact value applied by this disposing scope; otherwise preserve the
-                    // newer write.
-                    if (wasTop && string.Equals(currentValue, node.Value, StringComparison.Ordinal))
-                    {
-                        Environment.SetEnvironmentVariable(key, stack.Last?.Value);
-                    }
-
-                    // The bottom entry is always the true pre-any-scope baseline captured
-                    // the first time this variable was overridden. Once every scoped
-                    // override has unwound and only that baseline remains, drop the entry
-                    // entirely so a later ApplyToCurrentProcessScoped re-captures whatever
-                    // the process environment now holds as a fresh true baseline — rather
-                    // than reusing the stale first baseline and corrupting static consumers
-                    // if TRACKDUB_* changed between headless hosts.
-                    if (stack.Count == 1)
-                    {
-                        EnvironmentValueStacks.Remove(key);
-                    }
+                    RestoreEnvironmentValue(entry);
                 }
+            }
+        }
+
+        private static void RestoreEnvironmentValue(KeyValuePair<string, LinkedListNode<string?>> entry)
+        {
+            string key = entry.Key;
+            LinkedListNode<string?> node = entry.Value;
+            if (!TryGetActiveStack(key, node, out LinkedList<string?>? stack))
+            {
+                return;
+            }
+
+            // Only rewrite the env var if this scope's entry was the topmost
+            // (most recently applied) override. If a newer scope is still on top,
+            // just remove ourselves from underneath it — the value it sees stays
+            // untouched, and whichever scope eventually disposes as the new top
+            // will correctly rebase to what's now beneath it (possibly the true
+            // baseline), instead of an intermediate value some other scope had
+            // already unwound.
+            bool wasTop = ReferenceEquals(stack.Last, node);
+            string? currentValue = Environment.GetEnvironmentVariable(key);
+            stack.Remove(node);
+
+            // A non-scoped caller may have intentionally changed the process
+            // environment while this scope was active. Restore the preceding
+            // scoped/baseline value only if the environment still contains the
+            // exact value applied by this disposing scope; otherwise preserve the
+            // newer write.
+            if (wasTop)
+            {
+                if (string.Equals(currentValue, node.Value, StringComparison.Ordinal))
+                {
+                    Environment.SetEnvironmentVariable(key, stack.Last?.Value);
+                }
+            }
+
+            // The bottom entry is always the true pre-any-scope baseline captured
+            // the first time this variable was overridden. Once every scoped
+            // override has unwound and only that baseline remains, drop the entry
+            // entirely so a later ApplyToCurrentProcessScoped re-captures whatever
+            // the process environment now holds as a fresh true baseline — rather
+            // than reusing the stale first baseline and corrupting static consumers
+            // if TRACKDUB_* changed between headless hosts.
+            if (stack.Count == 1)
+            {
+                EnvironmentValueStacks.Remove(key);
             }
         }
     }
 
-    private static StorageConfig? ReadStorageConfig(string localAppDataRoot, string commonAppDataRoot)
+    private static StorageConfig? ReadStorageConfig(DirectoryInfo localAppDataRoot, DirectoryInfo commonAppDataRoot)
     {
-        foreach (string candidatePath in new[]
-                 {
-                     Path.Join(localAppDataRoot, ProductDirectoryName, InstallerConfigFileName),
-                     Path.Join(commonAppDataRoot, ProductDirectoryName, InstallerConfigFileName)
-                 })
+        DirectoryInfo[] candidates =
+        [
+            new(Path.Join(localAppDataRoot.FullName, ProductDirectoryName)),
+            new(Path.Join(commonAppDataRoot.FullName, ProductDirectoryName)),
+        ];
+        foreach (DirectoryInfo candidate in candidates)
         {
-            if (!File.Exists(candidatePath))
+            StorageConfig? config = TryReadStorageConfig(
+                new FileInfo(Path.Join(candidate.FullName, InstallerConfigFileName)));
+            if (config is not null)
             {
-                continue;
-            }
-
-            try
-            {
-                using FileStream stream = File.OpenRead(candidatePath);
-                StorageConfig? config = JsonSerializer.Deserialize(stream, InfrastructureSerializationContext.Default.StorageConfig);
-                if (config != null && config.HasAnyRoot)
-                {
-                    return config;
-                }
-            }
-            catch (JsonException)
-            {
-            }
-            catch (IOException)
-            {
-            }
-            catch (UnauthorizedAccessException)
-            {
+                return config;
             }
         }
 
         return null;
     }
+
+    private static StorageConfig? TryReadStorageConfig(FileInfo configFile)
+    {
+        if (!configFile.Exists)
+        {
+            return null;
+        }
+
+        try
+        {
+            using FileStream stream = configFile.OpenRead();
+            StorageConfig? config = JsonSerializer.Deserialize(stream, InfrastructureSerializationContext.Default.StorageConfig);
+            return config?.HasAnyRoot == true ? config : null;
+        }
+        catch (Exception ex) when (IsRecoverableConfigReadException(ex))
+        {
+            return null;
+        }
+    }
+
+    private static bool IsRecoverableConfigReadException(Exception ex) =>
+        ex is JsonException or IOException or UnauthorizedAccessException;
 
     private static string? ReadDefaultModelCacheDirectory(DirectoryInfo userDataRoot)
     {
@@ -308,32 +407,33 @@ public static class TrackdubStoragePathResolver
             using JsonDocument document = JsonDocument.Parse(stream);
             return ReadDefaultModelCacheDirectory(document);
         }
-        catch (JsonException)
-        {
-            return null;
-        }
-        catch (IOException)
-        {
-            return null;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return null;
-        }
-        catch (ArgumentException)
-        {
-            return null;
-        }
-        catch (NotSupportedException)
+        catch (Exception ex) when (IsRecoverableSettingsReadException(ex))
         {
             return null;
         }
     }
 
+    private static bool IsRecoverableSettingsReadException(Exception ex) =>
+        ex is JsonException
+            or IOException
+            or UnauthorizedAccessException
+            or ArgumentException
+            or NotSupportedException;
+
     private static string? ReadDefaultModelCacheDirectory(JsonDocument settings)
     {
-        if (!settings.RootElement.TryGetProperty("defaultModelCacheDirectory", out JsonElement value) ||
-            value.ValueKind != JsonValueKind.String)
+        JsonElement root = settings.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (!root.TryGetProperty("defaultModelCacheDirectory", out JsonElement value))
+        {
+            return null;
+        }
+
+        if (value.ValueKind != JsonValueKind.String)
         {
             return null;
         }
@@ -374,18 +474,11 @@ public static class TrackdubStoragePathResolver
         return null;
     }
 
-    private static bool HasValue(string? value) => !string.IsNullOrWhiteSpace(value);
-
-    private static bool IsTruthy(string? value) =>
-        string.Equals(value, "1", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(value, "yes", StringComparison.OrdinalIgnoreCase);
-
-    private static string NormalizeRequiredPath(string path, string parameterName)
+    private static string NormalizeRequiredPath(string path)
     {
         if (string.IsNullOrWhiteSpace(path))
         {
-            throw new ArgumentException("Storage path must not be empty.", parameterName);
+            throw new ArgumentException("Storage path must not be empty.");
         }
 
         return Path.GetFullPath(Environment.ExpandEnvironmentVariables(path));
@@ -411,10 +504,12 @@ public static class TrackdubStoragePathResolver
         public bool? Portable { get; set; }
 
         public bool HasAnyRoot =>
-            HasValue(UserDataRoot)
-            || HasValue(UserCacheRoot)
-            || HasValue(SharedAssetRoot)
+            HasAnyConfiguredRoot()
             || IsPortable is not null
             || Portable is not null;
+
+        private bool HasAnyConfiguredRoot() =>
+            new[] { UserDataRoot, UserCacheRoot, SharedAssetRoot }
+                .Any(static value => !string.IsNullOrWhiteSpace(value));
     }
 }

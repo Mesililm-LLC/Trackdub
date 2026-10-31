@@ -69,7 +69,7 @@ public sealed class ProjectSessionService(
         }
         else
         {
-            projectParentDirectory = Path.GetFullPath(settings.DefaultProjectDirectory);
+            projectParentDirectory = Path.GetFullPath(settings.DefaultProjectDirectory.Trim());
             if (!Directory.Exists(projectParentDirectory))
             {
                 throw new DirectoryNotFoundException(

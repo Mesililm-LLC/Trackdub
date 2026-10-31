@@ -10,19 +10,24 @@ public sealed partial class TranslationOrchestrationService
         CancellationToken cancellationToken)
     {
         EnsureTranslationHasSourceSegments(currentState);
-        string sourceLanguage = await ResolveSourceLanguageAsync(
-            currentState,
-            request.SourceLanguage,
-            cancellationToken).ConfigureAwait(false);
         string targetLanguage = TranscriptWorkflowUtilities.NormalizeTranslationTargetLanguageCode(request.TargetLanguage);
         TranslationScopePlan scopePlan = await PrepareTranslationScopePlanAsync(
             currentState,
             targetLanguage,
             request.Scope,
             cancellationToken).ConfigureAwait(false);
-        return scopePlan.SelectedSegments.Count == 0
-            ? null
-            : new TranslationRunPreparation(sourceLanguage, targetLanguage, scopePlan);
+        if (scopePlan.SelectedSegments.Count == 0)
+        {
+            return null;
+        }
+
+        // Resolve the language only once there is work to do: a legacy project with no
+        // detected language should report "nothing to update" rather than throw.
+        string sourceLanguage = await ResolveSourceLanguageAsync(
+            currentState,
+            request.SourceLanguage,
+            cancellationToken).ConfigureAwait(false);
+        return new TranslationRunPreparation(sourceLanguage, targetLanguage, scopePlan);
     }
 
     private async Task<TranslationScopePlan> PrepareTranslationScopePlanAsync(

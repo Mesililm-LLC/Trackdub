@@ -33,6 +33,12 @@ public sealed class SequenceExportDeliveryService(
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentException.ThrowIfNullOrWhiteSpace(plan.OutputPath);
+        if (selectedPlacementId is not null && !string.IsNullOrWhiteSpace(plan.BurnInSubtitlePath))
+        {
+            throw new InvalidOperationException(
+                "Burn-in subtitles cannot be exported with a selected placement until they are rebased to that placement.");
+        }
+
         SequenceDocument scopedSequence = CreateScope(plan.Sequence, selectedPlacementId);
         IReadOnlyDictionary<Guid, SequenceRenderPlacementAssets> scopedAssets =
             SelectPlacementAssets(plan, scopedSequence);
@@ -66,6 +72,15 @@ public sealed class SequenceExportDeliveryService(
             if (!string.IsNullOrWhiteSpace(blockedReason))
             {
                 return SequenceExportDeliveryResult.Blocked(blockedReason, render.Warnings);
+            }
+
+            string? plannedMismatch = CheckRenderedDuration(
+                renderedDuration,
+                export.PlannedDuration,
+                export.Plan.OutputFrameRate);
+            if (!string.IsNullOrWhiteSpace(plannedMismatch))
+            {
+                return SequenceExportDeliveryResult.Blocked(plannedMismatch, render.Warnings);
             }
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -111,6 +126,22 @@ public sealed class SequenceExportDeliveryService(
     }
 
     private string? CheckDuration(TimeSpan duration) => exportTierGate?.CheckDurationGate(duration);
+
+    private static string? CheckRenderedDuration(
+        TimeSpan renderedDuration,
+        TimeSpan plannedDuration,
+        int outputFrameRate)
+    {
+        // Allow a couple of frames of rounding, but never publish a visibly truncated render.
+        double toleranceSeconds = Math.Max(2d / Math.Max(outputFrameRate, 1), 0.1d);
+        if (renderedDuration.TotalSeconds + toleranceSeconds < plannedDuration.TotalSeconds)
+        {
+            return $"The rendered output duration is shorter than the planned sequence duration " +
+                $"({renderedDuration.TotalSeconds:0.###}s < {plannedDuration.TotalSeconds:0.###}s).";
+        }
+
+        return null;
+    }
 
     private static SequenceDocument CreateScope(SequenceDocument sequence, Guid? selectedPlacementId)
     {

@@ -632,7 +632,10 @@ public static class CompositionRoot
     private static void AddSequenceExport(IServiceCollection services)
     {
         services.TryAddSingleton<ISequenceExportRenderer>(sp =>
-            new FfmpegSequenceRenderer(sp.GetRequiredService<IMediaProbe>(), ffmpegPath: null));
+            new FfmpegSequenceRenderer(
+                sp.GetRequiredService<IMediaProbe>(),
+                sp.GetRequiredService<IMediaGpuHintProvider>(),
+                ffmpegPath: null));
         services.TryAddScoped<SequenceExportDeliveryService>();
     }
 
