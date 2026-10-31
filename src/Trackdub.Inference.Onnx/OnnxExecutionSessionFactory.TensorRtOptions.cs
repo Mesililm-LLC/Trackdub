@@ -28,6 +28,19 @@ namespace Trackdub.Inference.Onnx;
 internal static partial class OnnxExecutionSessionFactory
 {
     /// <summary>
+    /// Value object for the classic TensorRT cache identity. It keeps the fingerprint from being
+    /// passed around as a bare primitive and centralises the string conversion at call sites.
+    /// </summary>
+    internal readonly record struct ClassicTensorRtCacheIdentity
+    {
+        public string Value { get; init; }
+
+        public static implicit operator ClassicTensorRtCacheIdentity(string value) => new() { Value = value };
+
+        public static implicit operator string(ClassicTensorRtCacheIdentity identity) => identity.Value;
+    }
+
+    /// <summary>
     /// Builds TensorRT-RTX provider options.
     /// </summary>
     /// <param name="enableCudaGraph">
@@ -69,19 +82,36 @@ internal static partial class OnnxExecutionSessionFactory
         Dictionary<string, string> trtOptions,
         IReadOnlyDictionary<string, string> additionalTrtOptions)
     {
+        CopyCallerTensorRtRtxOptions(trtOptions, additionalTrtOptions);
+        CopyClassicTensorRtProfileAliases(trtOptions, additionalTrtOptions);
+    }
+
+    private static void CopyCallerTensorRtRtxOptions(
+        Dictionary<string, string> trtOptions,
+        IReadOnlyDictionary<string, string> additionalTrtOptions)
+    {
         foreach ((string key, string value) in additionalTrtOptions)
         {
             // EP ABI 0.5.0 removed device_id (the device comes from the selected OrtEpDevice);
             // passing it through would fail session creation on an unknown option.
-            if (ClassicTrtProfileKeysToNvRtx.ContainsKey(key) ||
-                string.Equals(key, "device_id", StringComparison.Ordinal))
+            if (ClassicTrtProfileKeysToNvRtx.ContainsKey(key))
+            {
+                continue;
+            }
+
+            if (string.Equals(key, "device_id", StringComparison.Ordinal))
             {
                 continue;
             }
 
             trtOptions[key] = value;
         }
+    }
 
+    private static void CopyClassicTensorRtProfileAliases(
+        Dictionary<string, string> trtOptions,
+        IReadOnlyDictionary<string, string> additionalTrtOptions)
+    {
         foreach ((string classicKey, string nvKey) in ClassicTrtProfileKeysToNvRtx)
         {
             if (trtOptions.ContainsKey(nvKey))
@@ -122,30 +152,18 @@ internal static partial class OnnxExecutionSessionFactory
 
     internal static IReadOnlyDictionary<string, string> BuildTensorRtOptions(
         IReadOnlyDictionary<string, string>? additionalTrtOptions,
-        string environmentFingerprint) =>
+        ClassicTensorRtCacheIdentity environmentFingerprint) =>
         BuildTensorRtOptions(additionalTrtOptions, environmentFingerprint, trtModelPath: null);
 
     private static IReadOnlyDictionary<string, string> BuildTensorRtOptions(
         IReadOnlyDictionary<string, string>? additionalTrtOptions,
-        string environmentFingerprint,
+        ClassicTensorRtCacheIdentity environmentFingerprint,
         string? trtModelPath)
     {
         var trtOptions = new Dictionary<string, string>(StringComparer.Ordinal);
         if (additionalTrtOptions is not null)
         {
-            foreach ((string key, string value) in additionalTrtOptions)
-            {
-                // Caller options are shared with the TensorRT-RTX builder. The classic EP rejects
-                // unknown keys, which makes UpdateOptions throw and drops the session to no-cache.
-                if (string.Equals(key, "enable_cuda_graph", StringComparison.Ordinal))
-                {
-                    trtOptions["trt_cuda_graph_enable"] = value;
-                }
-                else if (!key.StartsWith("nv_", StringComparison.Ordinal))
-                {
-                    trtOptions[key] = value;
-                }
-            }
+            ApplyCallerClassicTensorRtOptions(trtOptions, additionalTrtOptions);
         }
 
         if (!HasCompleteClassicTensorRtCacheIdentity(environmentFingerprint))
@@ -153,9 +171,7 @@ internal static partial class OnnxExecutionSessionFactory
             // A process-specific TRT identity prevents cross-process reuse only when TRT itself
             // is unknown. Unknown GPU/driver/ORT identity is equally unsafe, so disable the cache
             // outright instead of creating a misleading persistent directory.
-            trtOptions["trt_engine_cache_enable"] = "0";
-            trtOptions.Remove("trt_engine_cache_path");
-            trtOptions.Remove("trt_engine_cache_prefix");
+            DisableClassicTensorRtCache(trtOptions);
             return trtOptions;
         }
 
@@ -168,6 +184,32 @@ internal static partial class OnnxExecutionSessionFactory
         return trtOptions;
     }
 
+    private static void ApplyCallerClassicTensorRtOptions(
+        Dictionary<string, string> trtOptions,
+        IReadOnlyDictionary<string, string> additionalTrtOptions)
+    {
+        foreach ((string key, string value) in additionalTrtOptions)
+        {
+            // Caller options are shared with the TensorRT-RTX builder. The classic EP rejects
+            // unknown keys, which makes UpdateOptions throw and drops the session to no-cache.
+            if (string.Equals(key, "enable_cuda_graph", StringComparison.Ordinal))
+            {
+                trtOptions["trt_cuda_graph_enable"] = value;
+            }
+            else if (!key.StartsWith("nv_", StringComparison.Ordinal))
+            {
+                trtOptions[key] = value;
+            }
+        }
+    }
+
+    private static void DisableClassicTensorRtCache(Dictionary<string, string> trtOptions)
+    {
+        trtOptions["trt_engine_cache_enable"] = "0";
+        trtOptions.Remove("trt_engine_cache_path");
+        trtOptions.Remove("trt_engine_cache_prefix");
+    }
+
     internal static string BuildClassicTensorRtModelCachePrefix(string modelPath)
     {
         string normalizedPath = Path.GetFullPath(modelPath);
@@ -178,7 +220,7 @@ internal static partial class OnnxExecutionSessionFactory
     internal static string ResolveClassicTensorRtEngineCacheDirectory() =>
         ResolveClassicTensorRtEngineCacheDirectory(BuildClassicTensorRtEnvironmentFingerprint());
 
-    internal static string ResolveClassicTensorRtEngineCacheDirectory(string environmentFingerprint) =>
+    internal static string ResolveClassicTensorRtEngineCacheDirectory(ClassicTensorRtCacheIdentity environmentFingerprint) =>
         Path.Join(
             ResolveEngineCacheRoot(),
             "classic-trt",
@@ -204,32 +246,82 @@ internal static partial class OnnxExecutionSessionFactory
         return $"{gpuArchitecture}|{gpuModel}|{driver}|trt-{ResolveTensorRtVersionIdentity()}|ort-{EpContextArtifact.HostOrtRuntimeVersion}";
     }
 
-    internal static bool HasCompleteClassicTensorRtCacheIdentity(string environmentFingerprint)
+    internal static bool HasCompleteClassicTensorRtCacheIdentity(ClassicTensorRtCacheIdentity environmentFingerprint)
     {
-        string[] parts = environmentFingerprint.Split('|');
-        if (parts.Length != 5 || parts.Any(static part => string.IsNullOrWhiteSpace(part)
-            || string.Equals(part, "unknown", StringComparison.OrdinalIgnoreCase)))
+        string[] parts = environmentFingerprint.Value.Split('|');
+        if (parts.Length != 5)
         {
             return false;
         }
 
-        const string tensorRtHashPrefix = "trt-sha256-";
-        if (!parts[3].StartsWith(tensorRtHashPrefix, StringComparison.Ordinal)
-            || parts[3].Length != tensorRtHashPrefix.Length + 64
-            || !parts[3].AsSpan(tensorRtHashPrefix.Length).ToArray().All(Uri.IsHexDigit))
+        if (!HasKnownFingerprintParts(parts))
         {
             return false;
         }
 
-        return parts[4].StartsWith("ort-", StringComparison.Ordinal)
-            && parts[4].Length > "ort-".Length
-            && !string.Equals(parts[4], "ort-unknown", StringComparison.OrdinalIgnoreCase);
+        if (!HasValidTensorRtBinaryIdentity(parts))
+        {
+            return false;
+        }
+
+        return HasValidOrtIdentity(parts);
     }
 
-    private static string SanitizeClassicTensorRtCacheKey(string environmentFingerprint)
+    private static bool HasKnownFingerprintParts(string[] parts)
     {
-        var builder = new System.Text.StringBuilder(environmentFingerprint.Length);
-        foreach (char c in environmentFingerprint)
+        foreach (string part in parts)
+        {
+            if (string.IsNullOrWhiteSpace(part))
+            {
+                return false;
+            }
+
+            if (string.Equals(part, "unknown", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool HasValidTensorRtBinaryIdentity(string[] parts)
+    {
+        const string tensorRtHashPrefix = "trt-sha256-";
+        string identity = parts[3];
+        if (!identity.StartsWith(tensorRtHashPrefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (identity.Length != tensorRtHashPrefix.Length + 64)
+        {
+            return false;
+        }
+
+        return identity.AsSpan(tensorRtHashPrefix.Length).ToArray().All(Uri.IsHexDigit);
+    }
+
+    private static bool HasValidOrtIdentity(string[] parts)
+    {
+        string identity = parts[4];
+        if (!identity.StartsWith("ort-", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (identity.Length <= "ort-".Length)
+        {
+            return false;
+        }
+
+        return !string.Equals(identity, "ort-unknown", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string SanitizeClassicTensorRtCacheKey(ClassicTensorRtCacheIdentity environmentFingerprint)
+    {
+        var builder = new System.Text.StringBuilder(environmentFingerprint.Value.Length);
+        foreach (char c in environmentFingerprint.Value)
         {
             builder.Append(char.IsLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '-');
         }

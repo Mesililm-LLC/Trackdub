@@ -27,59 +27,101 @@ namespace Trackdub.Inference.Onnx;
 
 internal static partial class OnnxExecutionSessionFactory
 {
-    internal static ExecutionProviderKind ResolveCatalogEffectiveProviderFromSession(InferenceSession session)
+    private static readonly IReadOnlyDictionary<ExecutionProviderKind, int> WildcardCatalogEpRank =
+        new Dictionary<ExecutionProviderKind, int>
+        {
+            [ExecutionProviderKind.TensorRTRtx] = 0,
+            [ExecutionProviderKind.Migraphx] = 1,
+            [ExecutionProviderKind.VitisAi] = 4,
+            [ExecutionProviderKind.DirectMl] = 5,
+            [ExecutionProviderKind.Cpu] = 10,
+        };
+
+    private static readonly IReadOnlyDictionary<(ExecutionProviderKind Provider, OrtHardwareDeviceType DeviceType), int> DeviceCatalogEpRank =
+        new Dictionary<(ExecutionProviderKind Provider, OrtHardwareDeviceType DeviceType), int>
+        {
+            [(ExecutionProviderKind.Qnn, OrtHardwareDeviceType.NPU)] = 2,
+            [(ExecutionProviderKind.OpenVinoCatalog, OrtHardwareDeviceType.NPU)] = 3,
+            [(ExecutionProviderKind.Qnn, OrtHardwareDeviceType.GPU)] = 6,
+            [(ExecutionProviderKind.OpenVinoCatalog, OrtHardwareDeviceType.GPU)] = 7,
+            [(ExecutionProviderKind.OpenVinoCatalog, OrtHardwareDeviceType.CPU)] = 8,
+            [(ExecutionProviderKind.Dnnl, OrtHardwareDeviceType.CPU)] = 9,
+        };
+
+    private static readonly IReadOnlyDictionary<string, ExecutionProviderKind> ExactCatalogEpNames =
+        new Dictionary<string, ExecutionProviderKind>(StringComparer.OrdinalIgnoreCase)
+        {
+            [MigraphxProviderConstants.OrtExecutionProviderName] = ExecutionProviderKind.Migraphx,
+            [OpenVinoCatalogProviderConstants.OrtExecutionProviderName] = ExecutionProviderKind.OpenVinoCatalog,
+            [QnnProviderConstants.OrtExecutionProviderName] = ExecutionProviderKind.Qnn,
+            [VitisAiProviderConstants.OrtExecutionProviderName] = ExecutionProviderKind.VitisAi,
+            ["CPUExecutionProvider"] = ExecutionProviderKind.Cpu,
+        };
+
+    internal static ExecutionProviderKind ResolveCatalogEffectiveProviderFromSession(InferenceSession session) =>
+        ResolveBestCatalogProvider(GetEpDevicesForInputs(session));
+
+    private static IReadOnlyList<OrtEpDevice> GetEpDevicesForInputs(InferenceSession session)
     {
-        IReadOnlyList<OrtEpDevice> devices;
         try
         {
-            devices = session.GetEpDeviceForInputs();
+            return session.GetEpDeviceForInputs();
         }
         catch (OnnxRuntimeException)
         {
-            return ExecutionProviderKind.Cpu;
+            return [];
         }
+    }
 
-        if (devices.Count == 0)
-        {
-            return ExecutionProviderKind.Cpu;
-        }
-
+    private static ExecutionProviderKind ResolveBestCatalogProvider(IReadOnlyList<OrtEpDevice> devices)
+    {
         ExecutionProviderKind? bestProvider = null;
         int bestRank = int.MaxValue;
         foreach (OrtEpDevice device in devices)
         {
-            if (!TryMapCatalogEpNameToExecutionProviderKind(device.EpName, out ExecutionProviderKind mappedProvider))
-            {
-                ReportUnmappedCatalogEpName(device.EpName, CatalogEpNameSource.GetEpDeviceForInputs, devices.Count);
-                continue;
-            }
-
-            int rank = GetCatalogEpHonestyRank(mappedProvider, device.HardwareDevice.Type);
+            (ExecutionProviderKind provider, int rank) = RankCatalogDevice(device, devices.Count);
             if (rank >= bestRank)
             {
                 continue;
             }
 
             bestRank = rank;
-            bestProvider = mappedProvider;
+            bestProvider = provider;
         }
 
         return bestProvider ?? ExecutionProviderKind.Cpu;
+    }
+
+    private static (ExecutionProviderKind Provider, int Rank) RankCatalogDevice(OrtEpDevice device, int deviceCount)
+    {
+        if (!TryMapCatalogEpNameToExecutionProviderKind(device.EpName, out ExecutionProviderKind provider))
+        {
+            ReportUnmappedCatalogEpName(device.EpName, CatalogEpNameSource.GetEpDeviceForInputs, deviceCount);
+            return (ExecutionProviderKind.Cpu, int.MaxValue);
+        }
+
+        return (provider, GetCatalogEpHonestyRank(provider, device.HardwareDevice.Type));
     }
 
     internal static bool TryMapCatalogEpNameToExecutionProviderKind(
         string epName,
         out ExecutionProviderKind executionProviderKind)
     {
-        if (IsTensorRtRtxDeviceCandidate(epName, OrtHardwareDeviceType.GPU))
+        if (TryMapDeviceCandidateCatalogEpName(epName, out executionProviderKind))
         {
-            executionProviderKind = ExecutionProviderKind.TensorRTRtx;
             return true;
         }
 
-        if (string.Equals(epName, MigraphxProviderConstants.OrtExecutionProviderName, StringComparison.OrdinalIgnoreCase))
+        return ExactCatalogEpNames.TryGetValue(epName, out executionProviderKind);
+    }
+
+    private static bool TryMapDeviceCandidateCatalogEpName(
+        string epName,
+        out ExecutionProviderKind executionProviderKind)
+    {
+        if (IsTensorRtRtxDeviceCandidate(epName, OrtHardwareDeviceType.GPU))
         {
-            executionProviderKind = ExecutionProviderKind.Migraphx;
+            executionProviderKind = ExecutionProviderKind.TensorRTRtx;
             return true;
         }
 
@@ -92,30 +134,6 @@ internal static partial class OnnxExecutionSessionFactory
         if (IsDirectMlDeviceCandidate(epName, OrtHardwareDeviceType.GPU))
         {
             executionProviderKind = ExecutionProviderKind.DirectMl;
-            return true;
-        }
-
-        if (string.Equals(epName, OpenVinoCatalogProviderConstants.OrtExecutionProviderName, StringComparison.OrdinalIgnoreCase))
-        {
-            executionProviderKind = ExecutionProviderKind.OpenVinoCatalog;
-            return true;
-        }
-
-        if (string.Equals(epName, QnnProviderConstants.OrtExecutionProviderName, StringComparison.OrdinalIgnoreCase))
-        {
-            executionProviderKind = ExecutionProviderKind.Qnn;
-            return true;
-        }
-
-        if (string.Equals(epName, VitisAiProviderConstants.OrtExecutionProviderName, StringComparison.OrdinalIgnoreCase))
-        {
-            executionProviderKind = ExecutionProviderKind.VitisAi;
-            return true;
-        }
-
-        if (string.Equals(epName, "CPUExecutionProvider", StringComparison.OrdinalIgnoreCase))
-        {
-            executionProviderKind = ExecutionProviderKind.Cpu;
             return true;
         }
 
@@ -151,20 +169,13 @@ internal static partial class OnnxExecutionSessionFactory
             deviceCount);
     }
 
-    private static int GetCatalogEpHonestyRank(ExecutionProviderKind provider, OrtHardwareDeviceType deviceType) =>
-        (provider, deviceType) switch
+    private static int GetCatalogEpHonestyRank(ExecutionProviderKind provider, OrtHardwareDeviceType deviceType)
+    {
+        if (DeviceCatalogEpRank.TryGetValue((provider, deviceType), out int rank))
         {
-            (ExecutionProviderKind.TensorRTRtx, _) => 0,
-            (ExecutionProviderKind.Migraphx, _) => 1,
-            (ExecutionProviderKind.Qnn, OrtHardwareDeviceType.NPU) => 2,
-            (ExecutionProviderKind.OpenVinoCatalog, OrtHardwareDeviceType.NPU) => 3,
-            (ExecutionProviderKind.VitisAi, _) => 4,
-            (ExecutionProviderKind.DirectMl, _) => 5,
-            (ExecutionProviderKind.Qnn, OrtHardwareDeviceType.GPU) => 6,
-            (ExecutionProviderKind.OpenVinoCatalog, OrtHardwareDeviceType.GPU) => 7,
-            (ExecutionProviderKind.OpenVinoCatalog, OrtHardwareDeviceType.CPU) => 8,
-            (ExecutionProviderKind.Dnnl, OrtHardwareDeviceType.CPU) => 9,
-            (ExecutionProviderKind.Cpu, _) => 10,
-            _ => 11
-        };
+            return rank;
+        }
+
+        return WildcardCatalogEpRank.GetValueOrDefault(provider, 11);
+    }
 }

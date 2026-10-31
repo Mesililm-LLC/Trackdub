@@ -63,18 +63,40 @@ internal static partial class OnnxExecutionSessionFactory
 
     private static SessionOptionsSelection? AppendProviderSpecificSelection(
         SessionOptions options,
-        SessionOptionsRequest request)
-    {
-        return request.Provider switch
+        SessionOptionsRequest request) =>
+        AppendComputeProviderSelection(options, request)
+        ?? AppendCatalogProviderSelection(options, request)
+        ?? AppendPlatformProviderSelection(options, request);
+
+    private static SessionOptionsSelection? AppendComputeProviderSelection(
+        SessionOptions options,
+        SessionOptionsRequest request) =>
+        request.Provider switch
         {
             ExecutionProviderKind.DirectMl => CreateDirectMlSelection(options),
             ExecutionProviderKind.Dnnl => CreateDnnlSelection(options),
             ExecutionProviderKind.TensorRTRtx => CreateTensorRtRtxSelection(options, request.AdditionalTrtOptions, request.EnableCudaGraph),
             ExecutionProviderKind.Migraphx => CreateMigraphxSelection(options),
+            _ => null,
+        };
+
+    private static SessionOptionsSelection? AppendCatalogProviderSelection(
+        SessionOptions options,
+        SessionOptionsRequest request) =>
+        request.Provider switch
+        {
             ExecutionProviderKind.CoreMl => CreateCoreMlSelection(options),
             ExecutionProviderKind.OpenVinoCatalog => CreateOpenVinoCatalogSelection(options),
             ExecutionProviderKind.Qnn => CreateQnnSelection(options),
             ExecutionProviderKind.VitisAi => CreateVitisAiSelection(options),
+            _ => null,
+        };
+
+    private static SessionOptionsSelection? AppendPlatformProviderSelection(
+        SessionOptions options,
+        SessionOptionsRequest request) =>
+        request.Provider switch
+        {
             ExecutionProviderKind.Cuda when !OperatingSystem.IsMacOS() => CreateCudaSelection(options),
             ExecutionProviderKind.TensorRt when !OperatingSystem.IsMacOS() => CreateTensorRtSelection(options, request.AdditionalTrtOptions, request.TrtModelPath),
 #if LINML
@@ -82,7 +104,6 @@ internal static partial class OnnxExecutionSessionFactory
 #endif
             _ => null,
         };
-    }
 
     private static SessionOptionsSelection CreateDirectMlSelection(SessionOptions options)
     {
@@ -226,28 +247,22 @@ internal static partial class OnnxExecutionSessionFactory
             : CoreMLFlags.COREML_FLAG_USE_NONE;
     }
 
-    internal static bool TryAppendDirectMlProvider(SessionOptions options, out string? failureReason)
-    {
-        try
-        {
-            AppendDirectMlProvider(options);
-            failureReason = null;
-            return true;
-        }
-        catch (Exception ex) when (ex is OnnxRuntimeException or InvalidOperationException or DllNotFoundException or EntryPointNotFoundException)
-        {
-            failureReason = ex.Message;
-            return false;
-        }
-    }
+    internal static bool TryAppendDirectMlProvider(SessionOptions options, out string? failureReason) =>
+        TryAppendProvider(options, AppendDirectMlProvider, out failureReason);
 
     // Direct DML path — no WinML catalog/WinAppSDK bootstrap required.
     // Used when the catalog path is unavailable (e.g., test processes, headless runners).
-    internal static bool TryAppendDirectMlProviderDirect(SessionOptions options, out string? failureReason)
+    internal static bool TryAppendDirectMlProviderDirect(SessionOptions options, out string? failureReason) =>
+        TryAppendProvider(options, static target => target.AppendExecutionProvider_DML(deviceId: 0), out failureReason);
+
+    private static bool TryAppendProvider(
+        SessionOptions options,
+        Action<SessionOptions> appendProvider,
+        out string? failureReason)
     {
         try
         {
-            options.AppendExecutionProvider_DML(deviceId: 0);
+            appendProvider(options);
             failureReason = null;
             return true;
         }
