@@ -2107,13 +2107,25 @@ internal static partial class OnnxExecutionSessionFactory
             [
                 new SessionLeaseRequest(
                     encoderKey,
-                    ct => Task.FromResult(CreateSession(encoderModelPath, encoderOptionsSelection.Options, sessionFactory, ct, encoderOptionsSelection.SelectedProvider, devicePolicy))),
+                    ct => Task.FromResult(CreateSession(encoderModelPath, encoderOptionsSelection.Options, sessionFactory, ct, encoderOptionsSelection.SelectedProvider, devicePolicy)),
+                    session => ResolveEffectiveProviderKindFromSession(
+                        session,
+                        encoderOptionsSelection.SelectedProvider,
+                        ShouldUseCatalogDevicePolicy(devicePolicy, encoderOptionsSelection.SelectedProvider))),
                 new SessionLeaseRequest(
                     decoderInitKey,
-                    ct => Task.FromResult(CreateSession(decoderInitModelPath, decoderInitOptions, sessionFactory, ct, decoderOptionsSelectedProvider, devicePolicy))),
+                    ct => Task.FromResult(CreateSession(decoderInitModelPath, decoderInitOptions, sessionFactory, ct, decoderOptionsSelectedProvider, devicePolicy)),
+                    session => ResolveEffectiveProviderKindFromSession(
+                        session,
+                        decoderOptionsSelectedProvider,
+                        ShouldUseCatalogDevicePolicy(devicePolicy, decoderOptionsSelectedProvider))),
                 new SessionLeaseRequest(
                     decoderStepKey,
-                    ct => Task.FromResult(CreateSession(decoderStepModelPath, decoderStepOptions, sessionFactory, ct, decoderOptionsSelectedProvider, devicePolicy))),
+                    ct => Task.FromResult(CreateSession(decoderStepModelPath, decoderStepOptions, sessionFactory, ct, decoderOptionsSelectedProvider, devicePolicy)),
+                    session => ResolveEffectiveProviderKindFromSession(
+                        session,
+                        decoderOptionsSelectedProvider,
+                        ShouldUseCatalogDevicePolicy(devicePolicy, decoderOptionsSelectedProvider))),
             ],
             cancellationToken).ConfigureAwait(false);
 
@@ -2258,16 +2270,32 @@ internal static partial class OnnxExecutionSessionFactory
             [
                 new SessionLeaseRequest(
                     unetKey,
-                    ct => Task.FromResult(CreateSession(unetModelPath, unetOptions, sessionFactory, ct, unetSelectedProvider, devicePolicy))),
+                    ct => Task.FromResult(CreateSession(unetModelPath, unetOptions, sessionFactory, ct, unetSelectedProvider, devicePolicy)),
+                    session => ResolveEffectiveProviderKindFromSession(
+                        session,
+                        unetOptionsSelection.SelectedProvider,
+                        ShouldUseCatalogDevicePolicy(devicePolicy, unetOptionsSelection.SelectedProvider))),
                 new SessionLeaseRequest(
                     vaeEncKey,
-                    ct => Task.FromResult(CreateSession(vaeEncoderModelPath, vaeEncOptions, sessionFactory, ct, vaeEncOptionsSelection.SelectedProvider, devicePolicy))),
+                    ct => Task.FromResult(CreateSession(vaeEncoderModelPath, vaeEncOptions, sessionFactory, ct, vaeEncOptionsSelection.SelectedProvider, devicePolicy)),
+                    session => ResolveEffectiveProviderKindFromSession(
+                        session,
+                        vaeEncOptionsSelection.SelectedProvider,
+                        ShouldUseCatalogDevicePolicy(devicePolicy, vaeEncOptionsSelection.SelectedProvider))),
                 new SessionLeaseRequest(
                     vaeDecKey,
-                    ct => Task.FromResult(CreateSession(vaeDecoderModelPath, vaeDecOptions, sessionFactory, ct, vaeDecOptionsSelection.SelectedProvider, devicePolicy))),
+                    ct => Task.FromResult(CreateSession(vaeDecoderModelPath, vaeDecOptions, sessionFactory, ct, vaeDecOptionsSelection.SelectedProvider, devicePolicy)),
+                    session => ResolveEffectiveProviderKindFromSession(
+                        session,
+                        vaeDecOptionsSelection.SelectedProvider,
+                        ShouldUseCatalogDevicePolicy(devicePolicy, vaeDecOptionsSelection.SelectedProvider))),
                 new SessionLeaseRequest(
                     whisperKey,
-                    ct => Task.FromResult(CreateSession(whisperEncoderModelPath, whisperOptions, sessionFactory, ct, whisperSelectedProvider, devicePolicy))),
+                    ct => Task.FromResult(CreateSession(whisperEncoderModelPath, whisperOptions, sessionFactory, ct, whisperSelectedProvider, devicePolicy)),
+                    session => ResolveEffectiveProviderKindFromSession(
+                        session,
+                        whisperOptionsSelection.SelectedProvider,
+                        ShouldUseCatalogDevicePolicy(devicePolicy, whisperOptionsSelection.SelectedProvider))),
             ],
             cancellationToken).ConfigureAwait(false);
 

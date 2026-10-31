@@ -51,14 +51,37 @@ internal static partial class OnnxExecutionSessionFactory
 
         if (useCatalogDevicePolicy && IsCatalogGpuProvider(provider))
         {
-            return new SessionOptionsSelection(
-                options,
-                provider,
-                BuildDevicePolicyFallbackReason(request.DevicePolicy, devicePolicyApplied));
+            return CreateCatalogGpuSelection(options, request, provider, devicePolicyApplied);
         }
 
         return AppendProviderSpecificSelection(options, request)
             ?? throw new ArgumentOutOfRangeException(nameof(request), provider, "Unsupported execution provider kind.");
+    }
+
+    private static SessionOptionsSelection CreateCatalogGpuSelection(
+        SessionOptions options,
+        SessionOptionsRequest request,
+        ExecutionProviderKind provider,
+        bool devicePolicyApplied)
+    {
+        string? policyFallbackReason = BuildDevicePolicyFallbackReason(request.DevicePolicy, devicePolicyApplied);
+        if (devicePolicyApplied || provider is not ExecutionProviderKind.Migraphx)
+        {
+            return new SessionOptionsSelection(options, provider, policyFallbackReason);
+        }
+
+        // The extended device policy was requested but could not be applied, so ORT never runs its
+        // EP auto-selection. Append the requested catalog GPU provider explicitly instead of
+        // silently leaving the session on CPU, while keeping the truthful policy fallback reason.
+        SessionOptionsSelection explicitSelection = CreateMigraphxSelection(options);
+        string? combinedFallbackReason = (policyFallbackReason, explicitSelection.FallbackReason) switch
+        {
+            (null, _) => explicitSelection.FallbackReason,
+            (_, null) => policyFallbackReason,
+            _ => $"{policyFallbackReason} {explicitSelection.FallbackReason}",
+        };
+
+        return explicitSelection with { FallbackReason = combinedFallbackReason };
     }
 
     private static SessionOptionsSelection? AppendProviderSpecificSelection(

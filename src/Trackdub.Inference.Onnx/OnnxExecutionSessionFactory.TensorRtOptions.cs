@@ -36,8 +36,6 @@ internal static partial class OnnxExecutionSessionFactory
         public string Value { get; init; }
 
         public static implicit operator ClassicTensorRtCacheIdentity(string value) => new() { Value = value };
-
-        public static implicit operator string(ClassicTensorRtCacheIdentity identity) => identity.Value;
     }
 
     /// <summary>
@@ -321,14 +319,12 @@ internal static partial class OnnxExecutionSessionFactory
 
     private static string SanitizeClassicTensorRtCacheKey(ClassicTensorRtCacheIdentity environmentFingerprint)
     {
-        var builder = new System.Text.StringBuilder(environmentFingerprint.Value.Length);
-        foreach (char c in environmentFingerprint.Value)
-        {
-            builder.Append(char.IsLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '-');
-        }
-
-        string sanitized = builder.ToString().Trim('-');
-        return sanitized.Length == 0 ? "unknown" : sanitized;
+        // Hash the full identity so distinct fingerprints (for example GPU model names that differ
+        // only in punctuation) always map to distinct directories. A character-replacement scheme
+        // is not injective and could let two hardware identities share an engine directory.
+        byte[] digest = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(environmentFingerprint.Value));
+        return Convert.ToHexString(digest).ToLowerInvariant();
     }
 
     private static readonly string UnresolvedTensorRtIdentity = $"unknown-process-{Guid.NewGuid():N}";

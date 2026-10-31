@@ -48,6 +48,10 @@ internal static partial class OnnxExecutionSessionFactory
             [(ExecutionProviderKind.Dnnl, OrtHardwareDeviceType.CPU)] = 9,
         };
 
+    // Names that map to a provider without inspecting the device type. TensorRT RTX, DNNL, and
+    // DirectML are intentionally absent: TryMapDeviceCandidateCatalogEpName maps them with
+    // hardware-type awareness (and the DNNL spelling aliases), so adding them here would let a
+    // direct reader bypass that check and claim a GPU placement for a non-GPU device.
     private static readonly IReadOnlyDictionary<string, ExecutionProviderKind> ExactCatalogEpNames =
         new Dictionary<string, ExecutionProviderKind>(StringComparer.OrdinalIgnoreCase)
         {
