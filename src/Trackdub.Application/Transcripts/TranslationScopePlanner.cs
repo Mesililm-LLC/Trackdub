@@ -76,7 +76,8 @@ internal sealed record TranslationScopePlan(
                     segment.EndSeconds,
                     segment.Text,
                     segment.SourceSegmentHash,
-                    segment.Words) with { Origin = segment.Origin }))
+                    segment.Words) with
+                { Origin = segment.Origin }))
             .OrderBy(static segment => segment.SegmentIndex)
             .ToArray();
     }

@@ -361,8 +361,8 @@ public sealed partial class TranslationOrchestrationService(
                     text,
                     hasSourceSegment
                         ? TranscriptWorkflowUtilities.ComputeSourceSegmentHash(sourceSegment!)
-                        : null,
-                    words: []) with { Origin = TranslationSegmentOrigin.Generated };
+                        : null) with
+                { Origin = TranslationSegmentOrigin.Generated };
 
                 if (hasText && hasSourceSegment)
                 {
@@ -638,8 +638,8 @@ public sealed partial class TranslationOrchestrationService(
                 sourceSegment.StartSeconds,
                 sourceSegment.EndSeconds,
                 replacementText,
-                TranscriptWorkflowUtilities.ComputeSourceSegmentHash(sourceSegment),
-                words: []) with { Origin = TranslationSegmentOrigin.Generated };
+                TranscriptWorkflowUtilities.ComputeSourceSegmentHash(sourceSegment)) with
+            { Origin = TranslationSegmentOrigin.Generated };
             if (!string.IsNullOrWhiteSpace(translatedTextSegment?.Text))
             {
                 replacementSegment = await AlignTranslatedWordsAsync(
@@ -846,7 +846,8 @@ public sealed partial class TranslationOrchestrationService(
                 segment.EndSeconds,
                 segment.Text,
                 segment.SourceSegmentHash,
-                segment.Words) with { Origin = segment.Origin })
+                segment.Words) with
+            { Origin = segment.Origin })
             .ToArray();
 
         await translationRepository.SaveRevisionAsync(restoredRevision, restoredSegments, cancellationToken).ConfigureAwait(false);
@@ -967,7 +968,8 @@ public sealed partial class TranslationOrchestrationService(
                 translatedSegment.EndSeconds,
                 translatedSegment.Text,
                 translatedSegment.SourceSegmentHash,
-                alignment.Words) with { Origin = translatedSegment.Origin }
+                alignment.Words) with
+            { Origin = translatedSegment.Origin }
             : translatedSegment with { Words = [] };
     }
 

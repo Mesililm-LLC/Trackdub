@@ -75,7 +75,8 @@ public sealed partial class TranslationOrchestrationService
             segment.EndSeconds,
             replacement,
             segment.SourceSegmentHash,
-            textChanged ? [] : segment.Words) with { Origin = textChanged ? TranslationSegmentOrigin.Manual : segment.Origin };
+            textChanged ? [] : segment.Words) with
+        { Origin = textChanged ? TranslationSegmentOrigin.Manual : segment.Origin };
     }
 
     private sealed record TranslationRunPreparation(

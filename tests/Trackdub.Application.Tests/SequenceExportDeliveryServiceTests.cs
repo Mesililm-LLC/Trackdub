@@ -131,10 +131,13 @@ public sealed class SequenceExportDeliveryServiceTests
 
         await Assert.ThrowsAsync<InvalidDataException>(() =>
             service.ExportAsync(
-                plan with { PlacementAssets = new Dictionary<Guid, SequenceRenderPlacementAssets>
+                plan with
                 {
-                    [selectedPlacementId] = plan.PlacementAssets[selectedPlacementId]
-                } },
+                    PlacementAssets = new Dictionary<Guid, SequenceRenderPlacementAssets>
+                    {
+                        [selectedPlacementId] = plan.PlacementAssets[selectedPlacementId]
+                    }
+                },
                 selectedPlacementId,
                 cancellationToken));
 
