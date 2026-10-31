@@ -112,7 +112,7 @@ public static class RuntimeModelRequestFactory
             EnableAsrTextRefinement: preferences.EnableAsrTextRefinement,
             ModelVariantOverrides: CreateModelVariantOverridesFromPreferences(preferences),
             VadModelAlias: preferences.VadModelAlias,
-            PreferredExecutionProvider: preferences.GlobalPreferredExecutionProvider,
+            PreferredExecutionProvider: NormalizePreferredExecutionProvider(preferences.GlobalPreferredExecutionProvider),
             RequiredExecutionProviderStages: preferences.RequiredExecutionProviderStages));
     }
 
@@ -143,7 +143,7 @@ public static class RuntimeModelRequestFactory
             ModelVariantOverrides: settings.ModelVariantOverrides,
             RequirePreferredExecutionProviders: settings.RequirePreferredExecutionProviders,
             VadModelAlias: ResolveVadAlias(settings, explicitPreferences),
-            PreferredExecutionProvider: settings.PreferredExecutionProvider));
+            PreferredExecutionProvider: NormalizePreferredExecutionProvider(settings.PreferredExecutionProvider)));
     }
 
     private static RuntimeModelSelections CaptureSettingsSelectionIntents(StudioSettings settings,
@@ -592,8 +592,12 @@ public static class RuntimeModelRequestFactory
         RuntimeStage stage)
     {
         ExecutionProviderKind? stagePreference = ResolveStageExecutionProviderOverride(options, stage);
-        return stagePreference ?? options.PreferredExecutionProvider;
+        return NormalizePreferredExecutionProvider(stagePreference ?? options.PreferredExecutionProvider);
     }
+
+    // A saved value outside ExecutionProviderKind means automatic selection, not a forbidden provider.
+    private static ExecutionProviderKind? NormalizePreferredExecutionProvider(ExecutionProviderKind? provider) =>
+        provider is { } kind && Enum.IsDefined(kind) ? kind : null;
 
     private static ExecutionProviderKind? ResolveStageExecutionProviderOverride(
         RuntimeModelRequestOptions options,
