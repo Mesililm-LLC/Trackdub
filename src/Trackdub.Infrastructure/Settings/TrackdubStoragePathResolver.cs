@@ -299,6 +299,20 @@ public static class TrackdubStoragePathResolver
             }
         }
 
+        private static bool TryGetActiveStack(
+            string key,
+            LinkedListNode<string?> node,
+            [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out LinkedList<string?>? stack)
+        {
+            if (!EnvironmentValueStacks.TryGetValue(key, out stack) || node.List != stack)
+            {
+                stack = null;
+                return false;
+            }
+
+            return true;
+        }
+
         private static void RestoreEnvironmentValue(KeyValuePair<string, LinkedListNode<string?>> entry)
         {
             string key = entry.Key;

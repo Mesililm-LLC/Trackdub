@@ -142,7 +142,10 @@ public sealed partial class TranslationOrchestrationService
 
     internal sealed record TranslationRunProgress(
         IProgress<PipelineProgressEvent>? Progress,
-        ITranslatedSegmentObserver? Observer);
+        ITranslatedSegmentObserver? SegmentObserver)
+    {
+        public ITranslatedSegmentObserver? Observer => SegmentObserver;
+    }
 
     private sealed record TranslationRouteRequest(
         string SourceLanguage,

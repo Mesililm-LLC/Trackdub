@@ -235,7 +235,7 @@ public sealed partial class TranslationOrchestrationService(
         GenerateTranslationAsync(
             currentState,
             request,
-            new TranslationRunProgress(progress, segmentObserver: null),
+            new TranslationRunProgress(progress, SegmentObserver: null),
             cancellationToken);
 
     internal async Task GenerateTranslationAsync(

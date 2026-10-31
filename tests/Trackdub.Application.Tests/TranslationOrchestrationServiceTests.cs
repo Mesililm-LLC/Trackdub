@@ -413,9 +413,8 @@ public sealed class TranslationOrchestrationServiceTests
         await harness.Service.GenerateTranslationAsync(
             harness.State,
             new GenerateTranslationRequest(SourceLanguage: "auto", TargetLanguage: "es", EnableSegmentStreaming: true),
-            TestContext.Current.CancellationToken,
-            progress: null,
-            observer);
+            new TranslationOrchestrationService.TranslationRunProgress(Progress: null, observer),
+            TestContext.Current.CancellationToken);
 
         Assert.Equal([0, 1, 2], observer.Segments.Select(segment => segment.Index).ToArray());
         TranslationRevision revision = Assert.Single(harness.TranslationRepository.Revisions);
