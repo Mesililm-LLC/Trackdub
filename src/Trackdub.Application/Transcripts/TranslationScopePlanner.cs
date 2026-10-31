@@ -70,10 +70,15 @@ internal sealed record TranslationScopePlan(
         }
 
         HashSet<int> selectedIndices = SelectedSegments.Select(static segment => segment.SegmentIndex).ToHashSet();
-        bool completeOutput = engineResults.Count == selectedIndices.Count &&
-            engineResults.All(static segment => !string.IsNullOrWhiteSpace(segment.Text)) &&
-            generatedSegments.Select(static segment => segment.SegmentIndex).ToHashSet().SetEquals(selectedIndices);
-        if (!completeOutput)
+        HashSet<int> generatedIndices = generatedSegments.Select(static segment => segment.SegmentIndex).ToHashSet();
+
+        // An engine result with no text that was only rescued by the source-text fallback means
+        // the engine output is unreliable, so keep the existing translations. A segment with
+        // neither engine text nor a fallback is dropped; it stays absent and is reported as
+        // TRANSLATION_SEGMENT_DROPPED while the rest of the run still commits.
+        bool fallbackOnlyOutput = engineResults.Any(segment =>
+            string.IsNullOrWhiteSpace(segment.Text) && generatedIndices.Contains(segment.Index));
+        if (fallbackOnlyOutput)
         {
             throw new InvalidDataException("Translation did not return every requested segment; existing translations were preserved.");
         }
