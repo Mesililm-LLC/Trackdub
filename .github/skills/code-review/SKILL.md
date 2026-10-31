@@ -1,7 +1,7 @@
 ---
 name: code-review
 description: >-
-  Review pull requests in the Trackdub public core (Mesililm-LLC/Trackdub).
+  Review pull requests in the Trackdub public core (MesilimLLC/Trackdub).
   Use for Copilot code review, PR review, architecture checks, dependency-direction
   violations, model/license safety, fake readiness, runtime planner routing, and
   honest test evidence. Prefer this skill whenever reviewing diffs, pull requests,
@@ -10,11 +10,11 @@ description: >-
 
 # Trackdub public core code review
 
-You are reviewing changes in the Apache-2.0 public core (`Mesililm-LLC/Trackdub`):
+You are reviewing changes in the Apache-2.0 public core (`MesilimLLC/Trackdub`):
 engine, SDK, CLI, pipeline, inference, and shared libraries.
 
 Private Avalonia desktop shell and gated licensing trust-ring work belong in
-`Mesililm-LLC/Trackdub-gated`, not here.
+`MesilimLLC/Trackdub-gated`, not here.
 
 ## Required context
 

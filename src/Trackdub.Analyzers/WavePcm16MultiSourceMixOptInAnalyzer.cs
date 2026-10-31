@@ -24,7 +24,7 @@ public sealed class WavePcm16MultiSourceMixOptInAnalyzer : DiagnosticAnalyzer
 {
     public const string DiagnosticId = "TRACKDUB001";
 
-    private const string HelpLink = "https://github.com/Mesililm-LLC/Trackdub/blob/main/docs/adr/ADR-0012-wave-pcm16-loudness-policy.md";
+    private const string HelpLink = "https://github.com/MesilimLLC/Trackdub/blob/main/docs/adr/ADR-0012-wave-pcm16-loudness-policy.md";
 
     private static readonly DiagnosticDescriptor Rule = new(
         DiagnosticId,

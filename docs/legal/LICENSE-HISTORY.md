@@ -2,7 +2,7 @@
 
 Trackdub is split into two repositories with different licenses:
 
-- **`Mesililm-LLC/Trackdub`** (this repository) — the public core: SDK, CLI,
+- **`MesilimLLC/Trackdub`** (this repository) — the public core: SDK, CLI,
   pipeline, inference, media processing, infrastructure, and neutral
   licensing mechanisms. Licensed under [Apache License, Version 2.0](../../LICENSE)
   (see the root [NOTICE](../../NOTICE)).

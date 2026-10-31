@@ -4,7 +4,7 @@
 
 **Covers:** C9, C2, C2b, M-H1, M2, M-H2/H3
 
-**Status:** Merged to `origin/main` via PRs [#530](https://github.com/Mesililm-LLC/Trackdub/pull/530), [#533](https://github.com/Mesililm-LLC/Trackdub/pull/533), and their fix-ups. The branch `cutover` this file sits on is unrelated (editing-flow work).
+**Status:** Merged to `origin/main` via PRs [#530](https://github.com/MesilimLLC/Trackdub/pull/530), [#533](https://github.com/MesilimLLC/Trackdub/pull/533), and their fix-ups. The branch `cutover` this file sits on is unrelated (editing-flow work).
 
 **Next in audit order** (see `docs/audits/inference-pipeline-cold-start-audit-2026-10-25.md#recommended-next-steps`): C4 (highest remaining cold-start value — `ep-smoke` dominated the measured pre-stage cost), then C1/C3, then C7. M-H1/M2 are done; M-H2/H3 are done; M-H4 stays blocked (Opus `optimum::if` export is broken, not a code fix).
 

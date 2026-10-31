@@ -2,7 +2,7 @@
 # Vendored Olive recipe trees under resources/olive-recipes are standalone
 # per-model pipelines (e.g. Llama-3.1 vs Phi-4 QAIRT scripts intentionally share
 # AIMET boilerplate because each Olive recipe must run from a single script).
-# See https://github.com/Mesililm-LLC/Trackdub/issues/224. Exclude them from
+# See https://github.com/MesilimLLC/Trackdub/issues/224. Exclude them from
 # duplication analysis; security/style issues in those files are fixed in code.
 MinLineCount: 20
 IgnorePatterns:

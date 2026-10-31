@@ -30,7 +30,7 @@ permission:
 
 <context>
   <specialist_domain>
-    Failure triage for `Mesililm-LLC/Trackdub`. Toolchain facts that drive most diagnoses:
+    Failure triage for `MesilimLLC/Trackdub`. Toolchain facts that drive most diagnoses:
     `Directory.Build.props` sets `net10.0`, `Nullable=enable`, `ImplicitUsings=enable`,
     `TreatWarningsAsErrors=true`, `EnableWindowsTargeting=true`, `RestorePackagesWithLockFile=true`,
     and demotes `RS0030` (`Path.Combine`, from `Microsoft.CodeAnalysis.BannedApiAnalyzers` + 

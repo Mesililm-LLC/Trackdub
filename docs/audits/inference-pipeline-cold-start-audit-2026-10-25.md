@@ -2,7 +2,7 @@
 
 ## Verified snapshot
 
-Audited `Mesililm-LLC/Trackdub` on 2026-10-24/25. Every finding was confirmed against live
+Audited `MesilimLLC/Trackdub` on 2026-10-24/25. Every finding was confirmed against live
 source, not inferred from names or comments. Progress below is verified against `main` at
 `92dc8f00` (merge of PR #533).
 

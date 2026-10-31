@@ -83,8 +83,8 @@ Long-term exploration lanes include speech/noise split, dialogue enhancement, ov
 
 ## 6. Commercial Strategy (from open-core split plan and legal docs)
 
-- **Public core:** `Mesililm-LLC/Trackdub` is Apache-2.0 and contains the reusable engine, SDK, CLI, pipeline, inference, media, licensing mechanisms, tooling, and tests.
-- **Private product:** `Mesililm-LLC/Trackdub-gated` is the proprietary desktop product with the Avalonia shell, branding, installer, signing, activation, and tier gating.
+- **Public core:** `MesilimLLC/Trackdub` is Apache-2.0 and contains the reusable engine, SDK, CLI, pipeline, inference, media, licensing mechanisms, tooling, and tests.
+- **Private product:** `MesilimLLC/Trackdub-gated` is the proprietary desktop product with the Avalonia shell, branding, installer, signing, activation, and tier gating.
 - **Future private services:** `api.trackdub`, `portal.trackdub`, and `trackdub.com` repositories are reserved for server-side activation, product API, portal, and marketing site.
 - **Contributor licensing:** A contributor license agreement lets Trackdub LLC relicense contributions under commercial terms.
 
