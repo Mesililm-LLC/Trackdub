@@ -354,7 +354,9 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
 
     private static bool ContainsRecord(IReadOnlyList<LocalModelCacheRecord> records, LocalModelCacheRecord candidate) =>
         records.Any(record => string.Equals(record.ModelId, candidate.ModelId, StringComparison.OrdinalIgnoreCase) &&
-            RootsEqual(record.RootPath, candidate.RootPath));
+            RootsEqual(record.RootPath, candidate.RootPath) &&
+            string.Equals(record.Revision, candidate.Revision, StringComparison.Ordinal) &&
+            string.Equals(record.Sha256, candidate.Sha256, StringComparison.OrdinalIgnoreCase));
 
     private static IReadOnlyList<LocalModelCacheRecord> NormalizeRecords(IReadOnlyList<LocalModelCacheRecord> records) =>
         records.GroupBy(record => record.ModelId, StringComparer.OrdinalIgnoreCase)

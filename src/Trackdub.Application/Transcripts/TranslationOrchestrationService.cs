@@ -252,6 +252,7 @@ public sealed partial class TranslationOrchestrationService(
             await PrepareTranslationRunAsync(currentState, request, cancellationToken).ConfigureAwait(false);
         if (preparation is null)
         {
+            await SetSelectedTranslationTargetLanguageAsync(currentState, request.TargetLanguage, cancellationToken).ConfigureAwait(false);
             await RecordSkippedTranslationAsync(currentState, runProgress.Progress, progressStartedAt, cancellationToken).ConfigureAwait(false);
             return;
         }
@@ -488,7 +489,9 @@ public sealed partial class TranslationOrchestrationService(
         TranslationRunProgress runProgress,
         CancellationToken cancellationToken)
     {
+        // Engine results for indices outside the transcript do not belong in the revision.
         TranslatedTextSegment[] orderedSegments = buildRequest.TextSegments
+            .Where(segment => buildRequest.SourceSegmentsByIndex.ContainsKey(segment.Index))
             .OrderBy(static segment => segment.Index)
             .ToArray();
         PipelineProgressReporter.Phase(

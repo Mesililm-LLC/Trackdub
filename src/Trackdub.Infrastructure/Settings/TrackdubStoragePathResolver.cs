@@ -79,12 +79,14 @@ public static class TrackdubStoragePathResolver
         };
     }
 
-    public static void MigrateModelCacheIfChanged(TrackdubStorageOptions roots)
+    public static void MigrateModelCacheIfChanged(
+        TrackdubStorageOptions roots,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(roots);
         string statePath = Path.Join(roots.UserDataRoot, "model-cache-directory.txt");
         using FileStream stateLock = LocalModelCacheRecordStore.AcquireFileLockAsync(
-            statePath + ".lock", CancellationToken.None).GetAwaiter().GetResult();
+            statePath + ".lock", cancellationToken).GetAwaiter().GetResult();
         string defaultDirectory = Path.Join(roots.UserCacheRoot, "model-cache");
         bool stateExists = File.Exists(statePath);
         string previousDirectory = stateExists ? File.ReadAllText(statePath) : defaultDirectory;
@@ -98,7 +100,7 @@ public static class TrackdubStoragePathResolver
         {
             var previousPaths = new TrackdubStoragePaths(roots with { ExplicitModelCacheDirectory = previousDirectory });
             var store = new LocalModelCacheRecordStore(previousPaths);
-            store.CopyRecordsToDirectoryAsync(new DirectoryInfo(destinationDirectory)).GetAwaiter().GetResult();
+            store.CopyRecordsToDirectoryAsync(new DirectoryInfo(destinationDirectory), cancellationToken).GetAwaiter().GetResult();
         }
         else if (stateExists && !invalidState)
         {

@@ -59,15 +59,29 @@ public sealed class JsonStudioSettingsService(
             await JsonSerializer.SerializeAsync(stream, normalized, JsonOptions, cancellationToken).ConfigureAwait(false);
         }
 
+        // Migrate before publishing settings.json so a failed migration does not leave settings
+        // that point at a cache directory the records were never moved to.
+        TrackdubStoragePathResolver.MigrateModelCacheIfChanged(
+            new TrackdubStorageOptions(
+                storagePaths.UserDataRoot,
+                storagePaths.UserCacheRoot,
+                storagePaths.SharedAssetRoot,
+                storagePaths.IsPortable,
+                ResolveSavedModelCacheDirectory(normalized.DefaultModelCacheDirectory)),
+            cancellationToken);
         File.Move(tempPath, storagePaths.SettingsPath, overwrite: true);
-        TrackdubStoragePathResolver.MigrateModelCacheIfChanged(new TrackdubStorageOptions(
-            storagePaths.UserDataRoot,
-            storagePaths.UserCacheRoot,
-            storagePaths.SharedAssetRoot,
-            storagePaths.IsPortable,
-            string.IsNullOrWhiteSpace(normalized.DefaultModelCacheDirectory)
-                ? null
-                : Path.GetFullPath(Environment.ExpandEnvironmentVariables(normalized.DefaultModelCacheDirectory))));
+    }
+
+    // A relative saved value would resolve against the working directory, so it is treated as unset.
+    private static string? ResolveSavedModelCacheDirectory(string? configured)
+    {
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            return null;
+        }
+
+        string expanded = Environment.ExpandEnvironmentVariables(configured.Trim());
+        return Path.IsPathFullyQualified(expanded) ? Path.GetFullPath(expanded) : null;
     }
 
     public async Task<StudioSettings> TouchRecentProjectAsync(
