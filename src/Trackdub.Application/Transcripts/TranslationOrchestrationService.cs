@@ -612,7 +612,7 @@ public sealed partial class TranslationOrchestrationService(
         }
 
         await ReportEmptyOutputDegradationAsync(input, translatedTextSegments, cancellationToken).ConfigureAwait(false);
-        await ReportDroppedSegmentDegradationAsync(input, translatedTextSegments, translatedSegments, cancellationToken).ConfigureAwait(false);
+        await ReportDroppedSegmentDegradationAsync(input, translatedSegments, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task ReportEmptyOutputDegradationAsync(
@@ -649,20 +649,18 @@ public sealed partial class TranslationOrchestrationService(
 
     private async Task ReportDroppedSegmentDegradationAsync(
         TranslationGenerationInput input,
-        IReadOnlyList<TranslatedTextSegment> translatedTextSegments,
         IReadOnlyList<TranslatedSegment> translatedSegments,
         CancellationToken cancellationToken)
     {
-        // Identify segments where both the engine output and the source-text fallback
-        // were unusable, causing the segment to be dropped from the revision entirely.
-        // These are distinct from TRANSLATION_EMPTY_OUTPUT (engine empty but source
-        // fallback succeeded): here no text at all could be produced, so downstream
-        // stages (TTS, alignment) will see a gap in segment indices.
+        // Identify requested segments that produced no revision entry: the engine omitted them,
+        // or returned no text and no source-text fallback was available. These are distinct from
+        // TRANSLATION_EMPTY_OUTPUT (engine empty but source fallback succeeded): here no text at
+        // all could be produced, so downstream stages (TTS, alignment) will see a gap in indices.
         HashSet<int> builtIndices = translatedSegments
             .Select(static s => s.SegmentIndex)
             .ToHashSet();
-        int[] droppedIndices = translatedTextSegments
-            .Select(static s => s.Index)
+        int[] droppedIndices = input.ScopePlan.SelectedSegments
+            .Select(static s => s.SegmentIndex)
             .Where(i => !builtIndices.Contains(i))
             .ToArray();
         if (droppedIndices.Length == 0)
@@ -676,7 +674,7 @@ public sealed partial class TranslationOrchestrationService(
                 StageNames.Translation,
                 "TRANSLATION_SEGMENT_DROPPED",
                 $"Translation produced no usable text for {droppedIndices.Length} segment(s) (indices: {indexSummary}); " +
-                "engine output was empty and no source-text fallback was available. These segments are absent from the revision.",
+                "the engine omitted them or returned empty output with no source-text fallback available. These segments are absent from the revision.",
                 Detail: null,
                 SelectedFallback: null,
                 RecommendedAction: "Check that all transcript segment indices are present in the translation engine output and that the source transcript is not empty for these indices.",
