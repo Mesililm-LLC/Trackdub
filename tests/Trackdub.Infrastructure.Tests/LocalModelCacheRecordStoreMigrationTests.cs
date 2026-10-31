@@ -85,6 +85,62 @@ public sealed class LocalModelCacheRecordStoreMigrationTests : IDisposable
         Assert.Contains(destinationRecords, record => record.ModelId == addedBeforeRestart.ModelId);
     }
 
+    [Fact]
+    public async Task Copy_waits_for_destination_mutation_and_preserves_both_records()
+    {
+        var source = new LocalModelCacheRecordStore(CreateStoragePaths(Path.Join(root, "source")));
+        var destination = new LocalModelCacheRecordStore(CreateStoragePaths(Path.Join(root, "destination")));
+        var sourceRecord = Record("source");
+        var destinationRecord = Record("destination");
+        await source.MutateAsync(_ => [sourceRecord], TestContext.Current.CancellationToken);
+
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        Task mutation = Task.Run(() => destination.MutateAsync(records =>
+        {
+            entered.Set();
+            release.Wait(TestContext.Current.CancellationToken);
+            return [.. records, destinationRecord];
+        }, TestContext.Current.CancellationToken));
+        try
+        {
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(10)));
+            Task copy = source.CopyRecordsToDirectoryAsync(new DirectoryInfo(Path.Join(root, "destination")), TestContext.Current.CancellationToken);
+            Assert.False(copy.IsCompleted);
+            release.Set();
+            await Task.WhenAll(mutation, copy);
+        }
+        finally
+        {
+            release.Set();
+            await mutation;
+        }
+
+        Assert.Equal(2, (await destination.LoadAsync(TestContext.Current.CancellationToken)).Count);
+
+        var laterRecord = Record("later");
+        await destination.MutateAsync(records => [.. records, laterRecord], TestContext.Current.CancellationToken);
+        await source.MutateAsync(records => records.Where(record => record.ModelId != sourceRecord.ModelId).ToArray(), TestContext.Current.CancellationToken);
+        IReadOnlyList<LocalModelCacheRecord> result = await destination.LoadAsync(TestContext.Current.CancellationToken);
+        Assert.DoesNotContain(result, record => record.ModelId == sourceRecord.ModelId);
+        Assert.Contains(result, record => record.ModelId == destinationRecord.ModelId);
+        Assert.Contains(result, record => record.ModelId == laterRecord.ModelId);
+    }
+
+    [Fact]
+    public async Task Waiting_for_index_lock_observes_cancellation()
+    {
+        TrackdubStoragePaths paths = CreateStoragePaths(Path.Join(root, "locked"));
+        Directory.CreateDirectory(paths.ModelCacheDirectory);
+        using var fileLock = new FileStream(paths.ModelCacheIndexPath + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        var store = new LocalModelCacheRecordStore(paths);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.MutateAsync(_ => [Record("locked")], cancellation.Token));
+    }
+
+    private LocalModelCacheRecord Record(string name) => new(
+        name, Path.Join(root, name), "revision", new string('a', 64), DateTimeOffset.UnixEpoch);
+
     private TrackdubStoragePaths CreateStoragePaths(string modelCacheDirectory) => new(new TrackdubStorageOptions(
         Path.Join(root, "user-data"),
         Path.Join(root, "user-cache"),

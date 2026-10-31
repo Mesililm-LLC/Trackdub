@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Text.Json;
 using Trackdub.Infrastructure;
+using Trackdub.Infrastructure.Persistence.Repositories;
 
 namespace Trackdub.Infrastructure.Settings;
 
@@ -70,12 +71,53 @@ public static class TrackdubStoragePathResolver
         TrackdubStorageOptions roots = ResolveRoots(context);
         string? modelCacheOverride = roots.ExplicitModelCacheDirectory
             ?? ReadDefaultModelCacheDirectory(new DirectoryInfo(roots.UserDataRoot));
+        MigrateModelCacheIfChanged(roots, modelCacheOverride);
         string? engineCacheOverride = NormalizeOptionalPath(GetValue(context.EnvironmentVariables, EngineCacheRootEnvironmentVariable));
         return roots with
         {
             ExplicitModelCacheDirectory = modelCacheOverride,
             ExplicitEngineCacheDirectory = engineCacheOverride ?? roots.ExplicitEngineCacheDirectory
         };
+    }
+
+    private static void MigrateModelCacheIfChanged(TrackdubStorageOptions roots, string? modelCacheOverride)
+    {
+        string statePath = Path.Join(roots.UserDataRoot, "model-cache-directory.txt");
+        using FileStream stateLock = LocalModelCacheRecordStore.AcquireFileLockAsync(
+            statePath + ".lock", CancellationToken.None).GetAwaiter().GetResult();
+        string defaultDirectory = Path.Join(roots.UserCacheRoot, "model-cache");
+        bool stateExists = File.Exists(statePath);
+        string previousDirectory = stateExists ? File.ReadAllText(statePath) : defaultDirectory;
+        if (string.IsNullOrWhiteSpace(previousDirectory) || !Path.IsPathFullyQualified(previousDirectory))
+        {
+            throw new InvalidDataException("The saved model cache directory is invalid.");
+        }
+
+        string destinationDirectory = modelCacheOverride ?? defaultDirectory;
+        if (!LocalModelCacheRecordStore.RootsEqual(previousDirectory, destinationDirectory))
+        {
+            var previousPaths = new TrackdubStoragePaths(roots with { ExplicitModelCacheDirectory = previousDirectory });
+            var store = new LocalModelCacheRecordStore(previousPaths);
+            store.CopyRecordsToDirectoryAsync(new DirectoryInfo(destinationDirectory)).GetAwaiter().GetResult();
+        }
+        else if (stateExists)
+        {
+            return;
+        }
+
+        string tempPath = statePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllText(tempPath, destinationDirectory);
+            File.Move(tempPath, statePath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                File.Delete(tempPath);
+            }
+        }
     }
 
     private static TrackdubStorageOptions ResolveRoots(TrackdubStoragePathResolutionContext context)
