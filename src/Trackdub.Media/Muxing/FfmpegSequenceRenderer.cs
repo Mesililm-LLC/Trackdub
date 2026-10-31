@@ -68,6 +68,7 @@ public sealed class FfmpegSequenceRenderer : ISequenceExportRenderer
         {
             await RenderToTemporaryFileAsync(plan, temporaryOutputPath, warnings, cancellationToken)
                 .ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
             File.Move(temporaryOutputPath, outputPath, overwrite: true);
             return new SequenceExportRenderResult(outputPath, warnings);
         }
