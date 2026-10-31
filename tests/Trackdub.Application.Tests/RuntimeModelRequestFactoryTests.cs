@@ -192,6 +192,19 @@ public sealed class RuntimeModelRequestFactoryTests
     }
 
     [Fact]
+    public void CreateSelectionsFromSettings_maps_undefined_global_provider_to_null()
+    {
+        StudioSettings settings = StudioSettings.Default with
+        {
+            PreferredExecutionProvider = (ExecutionProviderKind)int.MaxValue,
+        };
+
+        RuntimeModelSelections selections = RuntimeModelRequestFactory.CreateSelectionsFromSettings(settings, isDevBuild: true);
+
+        Assert.Null(selections.PreferredExecutionProvider);
+    }
+
+    [Fact]
     public void CreateSelectionsFromSettings_uses_stage_aliases_from_starter_pack()
     {
         StudioSettings settings = StudioSettings.Default with

@@ -756,6 +756,12 @@ public sealed partial class TranslationOrchestrationService(
 
         string sourceLanguage = TranscriptWorkflowUtilities.NormalizeRequiredTranscriptLanguageCode(request.SourceLanguage);
         string targetLanguage = TranscriptWorkflowUtilities.NormalizeTranslationTargetLanguageCode(request.TargetLanguage);
+        if (!string.Equals(currentTranslationRevision.TargetLanguage, targetLanguage, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The selected translation target language does not match the current translation revision.");
+        }
+
         if (!string.Equals(currentState.TranscriptLanguage, sourceLanguage, StringComparison.Ordinal))
         {
             throw new InvalidOperationException("Set the transcript language before starting translation.");
@@ -790,6 +796,22 @@ public sealed partial class TranslationOrchestrationService(
         CancellationToken cancellationToken)
     {
         (string replacementText, bool hasUsableEngineText) = await TranslateSegmentAsync(context, cancellationToken).ConfigureAwait(false);
+        if (!hasUsableEngineText && degradationWriter is not null)
+        {
+            await TryWriteDegradationAsync(
+                new PipelineDegradationRecord(
+                    StageNames.Translation,
+                    "TRANSLATION_EMPTY_OUTPUT",
+                    $"Translation engine returned empty output for segment {context.SourceSegment.SegmentIndex}; source text used as fallback.",
+                    Detail: null,
+                    SelectedFallback: "source-text",
+                    RecommendedAction: "Review source text for this segment or try a different translation model.",
+                    DateTimeOffset.UtcNow,
+                    context.StageRun.Id),
+                context.CurrentState,
+                cancellationToken).ConfigureAwait(false);
+        }
+
         TranslationRevision translationRevision = await CreateRetranslationRevisionAsync(context, cancellationToken).ConfigureAwait(false);
         TranslatedSegment replacementSegment = await CreateReplacementSegmentAsync(
             context,
