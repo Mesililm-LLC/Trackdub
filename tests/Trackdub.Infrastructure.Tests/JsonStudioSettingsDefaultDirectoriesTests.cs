@@ -15,7 +15,7 @@ public sealed class JsonStudioSettingsDefaultDirectoriesTests
         {
             DefaultProjectDirectory = @"D:\Projects",
             DefaultExportDirectory = @"D:\Exports",
-            DefaultModelCacheDirectory = @"E:\TrackdubModels"
+            DefaultModelCacheDirectory = Path.Join(tempRoot, "models")
         };
 
         try
