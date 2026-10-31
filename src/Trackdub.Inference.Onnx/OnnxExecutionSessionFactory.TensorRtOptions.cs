@@ -27,6 +27,18 @@ namespace Trackdub.Inference.Onnx;
 
 internal static partial class OnnxExecutionSessionFactory
 {
+    /// <summary>
+    /// Builds TensorRT-RTX provider options.
+    /// </summary>
+    /// <param name="enableCudaGraph">
+    /// CUDA graph capture replays a fixed sequence of GPU kernel launches against fixed device
+    /// memory addresses (see ONNX Runtime's TensorRT-RTX EP docs: "Avoid enabling CUDA Graph ...
+    /// if input shapes or device bindings frequently change"). Defaults to <see langword="false"/>
+    /// because most call sites build fresh input tensors on every <c>Run()</c>, which violates that
+    /// precondition and can silently replay stale device buffers. Pass <see langword="true"/> only
+    /// for a session whose call site is verified to feed stable, IoBinding-backed device buffers
+    /// across iterations.
+    /// </param>
     internal static IReadOnlyDictionary<string, string> BuildTensorRtRtxOptions(
         IReadOnlyDictionary<string, string>? additionalTrtOptions,
         bool enableCudaGraph = false)

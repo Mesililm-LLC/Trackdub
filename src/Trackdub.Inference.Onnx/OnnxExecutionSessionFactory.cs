@@ -833,11 +833,6 @@ internal static partial class OnnxExecutionSessionFactory
         }
     }
 
-    /// <summary>
-    /// Pre-warms a pooled single session and immediately releases it, leaving the warm
-    /// session in <see cref="InferenceSessionPool"/> for a later stage run. Use at startup
-    /// or after plan resolution to amortise first-call latency.
-    /// </summary>
     internal sealed record SessionOptionsFactoryBundle(
         Func<SessionOptions> CreateOptions,
         ExecutionProviderKind RequestedProvider,
@@ -1212,18 +1207,6 @@ internal static partial class OnnxExecutionSessionFactory
             ["trt_profile_opt_shapes"] = "nv_profile_opt_shapes",
         };
 
-    /// <summary>
-    /// Builds TensorRT-RTX provider options.
-    /// </summary>
-    /// <param name="enableCudaGraph">
-    /// CUDA graph capture replays a fixed sequence of GPU kernel launches against fixed device
-    /// memory addresses (see ONNX Runtime's TensorRT-RTX EP docs: "Avoid enabling CUDA Graph ...
-    /// if input shapes or device bindings frequently change"). Defaults to <see langword="false"/>
-    /// because most call sites build fresh input tensors on every <c>Run()</c>, which violates that
-    /// precondition and can silently replay stale device buffers. Pass <see langword="true"/> only
-    /// for a session whose call site is verified to feed stable, IoBinding-backed device buffers
-    /// across iterations.
-    /// </param>
     private static string BuildSessionOptionsFingerprint(
         ExecutionProviderKind selectedProviderKind,
         WindowsMlExecutionDevicePolicy devicePolicy,

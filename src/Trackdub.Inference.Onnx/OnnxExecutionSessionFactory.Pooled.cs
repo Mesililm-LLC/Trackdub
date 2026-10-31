@@ -27,6 +27,11 @@ namespace Trackdub.Inference.Onnx;
 
 internal static partial class OnnxExecutionSessionFactory
 {
+    /// <summary>
+    /// Pre-warms a pooled single session and immediately releases it, leaving the warm
+    /// session in <see cref="InferenceSessionPool"/> for a later stage run. Use at startup
+    /// or after plan resolution to amortise first-call latency.
+    /// </summary>
     public static async Task WarmPooledSingleAsync(
         string engineFamily,
         string modelPath,
