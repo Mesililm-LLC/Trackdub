@@ -454,7 +454,7 @@ public static class TrackdubStoragePathResolver
             return null;
         }
 
-        return NormalizeOptionalPath(value.GetString());
+        return NormalizeSavedModelCacheDirectory(value.GetString());
     }
 
     private static IReadOnlyDictionary<string, string?> CaptureEnvironment()
@@ -504,6 +504,19 @@ public static class TrackdubStoragePathResolver
         string.IsNullOrWhiteSpace(path)
             ? null
             : Path.GetFullPath(Environment.ExpandEnvironmentVariables(path));
+
+    // A saved model-cache directory is kept only in absolute form. A relative value would
+    // resolve against the working directory, so it is treated as unset on both save and read.
+    internal static string? NormalizeSavedModelCacheDirectory(string? saved)
+    {
+        if (string.IsNullOrWhiteSpace(saved))
+        {
+            return null;
+        }
+
+        string expanded = Environment.ExpandEnvironmentVariables(saved.Trim());
+        return Path.IsPathFullyQualified(expanded) ? Path.GetFullPath(expanded) : null;
+    }
 
     // Kept internal (not private) so the JSON source generator in
     // InfrastructureSerializationContext can bind metadata for it at compile time.

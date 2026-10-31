@@ -81,13 +81,7 @@ public sealed class JsonStudioSettingsService(
     // is treated as unset.
     private static string? ResolveSavedModelCacheDirectory(string? configured)
     {
-        if (string.IsNullOrWhiteSpace(configured))
-        {
-            return null;
-        }
-
-        string expanded = Environment.ExpandEnvironmentVariables(configured.Trim());
-        return Path.IsPathFullyQualified(expanded) ? Path.GetFullPath(expanded) : null;
+        return TrackdubStoragePathResolver.NormalizeSavedModelCacheDirectory(configured);
     }
 
     public async Task<StudioSettings> TouchRecentProjectAsync(
