@@ -50,7 +50,8 @@ internal static partial class OnnxExecutionSessionFactory
     /// because most call sites build fresh input tensors on every <c>Run()</c>, which violates that
     /// precondition and can silently replay stale device buffers. Pass <see langword="true"/> only
     /// for a session whose call site is verified to feed stable, IoBinding-backed device buffers
-    /// across iterations.
+    /// across iterations. An <c>enable_cuda_graph</c> key in <paramref name="additionalTrtOptions"/>
+    /// overrides this argument, so a caller-supplied profile value takes precedence.
     /// </param>
     internal static IReadOnlyDictionary<string, string> BuildTensorRtRtxOptions(
         IReadOnlyDictionary<string, string>? additionalTrtOptions,
