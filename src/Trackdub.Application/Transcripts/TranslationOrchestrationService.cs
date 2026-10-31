@@ -529,7 +529,7 @@ public sealed partial class TranslationOrchestrationService(
         TranslatedTextSegment segment,
         CancellationToken cancellationToken)
     {
-        bool hasText = !string.IsNullOrEmpty(segment.Text);
+        bool hasText = !string.IsNullOrWhiteSpace(segment.Text);
         bool hasSourceSegment = buildRequest.SourceSegmentsByIndex.TryGetValue(segment.Index, out TranscriptSegment? sourceSegment);
         string? text = hasText
             ? segment.Text

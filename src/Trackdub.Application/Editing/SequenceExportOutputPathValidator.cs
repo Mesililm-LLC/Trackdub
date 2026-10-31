@@ -110,11 +110,10 @@ internal static class SequenceExportOutputPathValidator
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // An unresolvable link falls back to its normalized path; the string comparison
-            // still rejects the obvious same-path case.
+            // A path whose links cannot be resolved may still alias a protected file, so refuse
+            // the export rather than compare an unresolved path.
+            throw new InvalidDataException($"The output path could not be resolved safely: {path}", ex);
         }
-
-        return path;
     }
 
     private enum ExportPathConflict
