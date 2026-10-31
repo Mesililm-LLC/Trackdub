@@ -808,5 +808,4 @@ internal static partial class OnnxExecutionSessionFactory
             DecoderPoolLease = pair.DecoderLease
         };
     }
-
 }

@@ -167,5 +167,4 @@ internal static partial class OnnxExecutionSessionFactory
             (ExecutionProviderKind.Cpu, _) => 10,
             _ => 11
         };
-
 }

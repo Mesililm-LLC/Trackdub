@@ -257,5 +257,4 @@ internal static partial class OnnxExecutionSessionFactory
             return false;
         }
     }
-
 }

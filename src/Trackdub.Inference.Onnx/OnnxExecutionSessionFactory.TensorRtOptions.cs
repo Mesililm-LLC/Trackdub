@@ -356,5 +356,4 @@ internal static partial class OnnxExecutionSessionFactory
 
     private static string NormalizePath(string path) =>
         Path.GetFullPath(Environment.ExpandEnvironmentVariables(path));
-
 }
