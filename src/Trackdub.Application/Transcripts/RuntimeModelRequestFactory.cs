@@ -620,7 +620,9 @@ public static class RuntimeModelRequestFactory
             }
         }
 
-        return options.HardwareOverrides.TryGetValue(key, out ExecutionProviderKind provider) ? provider : null;
+        return options.HardwareOverrides.TryGetValue(key, out ExecutionProviderKind provider)
+            ? NormalizePreferredExecutionProvider(provider)
+            : null;
     }
 
     public static string? ResolvePreferredModelVariantAlias(
