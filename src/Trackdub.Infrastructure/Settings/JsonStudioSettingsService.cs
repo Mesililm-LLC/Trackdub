@@ -51,6 +51,10 @@ public sealed class JsonStudioSettingsService(
     public async Task SaveAsync(StudioSettings settings, CancellationToken cancellationToken)
     {
         StudioSettings normalized = Normalize(settings);
+        normalized = normalized with
+        {
+            DefaultModelCacheDirectory = ResolveSavedModelCacheDirectory(normalized.DefaultModelCacheDirectory),
+        };
         Directory.CreateDirectory(storagePaths.RootDirectory);
 
         string tempPath = $"{storagePaths.SettingsPath}.tmp";
@@ -67,12 +71,14 @@ public sealed class JsonStudioSettingsService(
                 storagePaths.UserCacheRoot,
                 storagePaths.SharedAssetRoot,
                 storagePaths.IsPortable,
-                ResolveSavedModelCacheDirectory(normalized.DefaultModelCacheDirectory)),
+                normalized.DefaultModelCacheDirectory),
             cancellationToken);
         File.Move(tempPath, storagePaths.SettingsPath, overwrite: true);
     }
 
-    // A relative saved value would resolve against the working directory, so it is treated as unset.
+    // The saved value is persisted in its absolute form, so the settings and the cache resolver
+    // read the same directory. A relative value would resolve against the working directory and
+    // is treated as unset.
     private static string? ResolveSavedModelCacheDirectory(string? configured)
     {
         if (string.IsNullOrWhiteSpace(configured))
