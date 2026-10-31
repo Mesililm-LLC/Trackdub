@@ -1176,7 +1176,7 @@ public sealed class OnnxExecutionSessionFactoryTests
 
         object result = method.Invoke(
             null,
-            [ExecutionProviderKind.DirectMl, devicePolicy, null, false, null, null])
+            [new OnnxExecutionSessionFactory.SessionOptionsRequest(ExecutionProviderKind.DirectMl, devicePolicy)])
             ?? throw new InvalidOperationException("Session options factory returned null.");
         Type resultType = result.GetType();
         using var options = Assert.IsAssignableFrom<SessionOptions>(
@@ -1219,7 +1219,7 @@ public sealed class OnnxExecutionSessionFactoryTests
 
         object result = method.Invoke(
             null,
-            [ExecutionProviderKind.Dnnl, WindowsMlExecutionDevicePolicy.Explicit, null, false, null, null])
+            [new OnnxExecutionSessionFactory.SessionOptionsRequest(ExecutionProviderKind.Dnnl, WindowsMlExecutionDevicePolicy.Explicit)])
             ?? throw new InvalidOperationException("Session options factory returned null.");
         Type resultType = result.GetType();
         using var options = Assert.IsAssignableFrom<SessionOptions>(
