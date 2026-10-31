@@ -621,7 +621,7 @@ public sealed partial class TranslationOrchestrationService(
         CancellationToken cancellationToken)
     {
         int[] emptyIndices = translatedTextSegments
-            .Where(static s => string.IsNullOrEmpty(s.Text))
+            .Where(static s => string.IsNullOrWhiteSpace(s.Text))
             .Select(static s => s.Index)
             .ToArray();
         if (emptyIndices.Length == 0)

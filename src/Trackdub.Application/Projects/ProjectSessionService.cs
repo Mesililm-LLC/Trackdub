@@ -72,7 +72,7 @@ public sealed class ProjectSessionService(
             // A relative value would resolve against the process working directory, which is not
             // a stable project location, so require an absolute folder.
             string configuredDirectory = settings.DefaultProjectDirectory.Trim();
-            if (!Path.IsPathRooted(configuredDirectory))
+            if (!Path.IsPathFullyQualified(configuredDirectory))
             {
                 throw new InvalidOperationException(
                     $"The default project folder must be an absolute path: {configuredDirectory}");
