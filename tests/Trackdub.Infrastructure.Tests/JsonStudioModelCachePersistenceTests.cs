@@ -44,6 +44,21 @@ public sealed class JsonStudioModelCachePersistenceTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Failed_save_removes_its_temp_file()
+    {
+        var paths = new TrackdubStoragePaths(root);
+        Directory.CreateDirectory(paths.RootDirectory);
+        string blocked = Path.Join(root, "blocked");
+        File.WriteAllText(blocked, "not a directory");
+        var service = new JsonStudioSettingsService(paths);
+        StudioSettings settings = StudioSettings.Default with { DefaultModelCacheDirectory = blocked };
+
+        await Assert.ThrowsAnyAsync<IOException>(() => service.SaveAsync(settings, TestContext.Current.CancellationToken));
+
+        Assert.Empty(Directory.GetFiles(paths.RootDirectory, "settings.json.*.tmp"));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(root))
