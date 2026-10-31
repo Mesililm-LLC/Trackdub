@@ -25,7 +25,8 @@ public sealed record RuntimeModelRequestOptions(
     IReadOnlyDictionary<string, string>? ModelVariantOverrides = null,
     bool RequirePreferredExecutionProviders = false,
     string? VadModelAlias = null,
-    string? SpeechEnhancementModelAlias = null);
+    string? SpeechEnhancementModelAlias = null,
+    ExecutionProviderKind? PreferredExecutionProvider = null);
 
 public sealed record RuntimeModelSelections(
     AsrModelOverride AsrModelOverride,
@@ -48,7 +49,8 @@ public sealed record RuntimeModelSelections(
     bool RequirePreferredExecutionProviders = false,
     string? VadModelAlias = null,
     IReadOnlyDictionary<RuntimeStage, RuntimeModelSelectionIntent>? SelectionIntents = null,
-    string? SpeechEnhancementModelAlias = null)
+    string? SpeechEnhancementModelAlias = null,
+    ExecutionProviderKind? PreferredExecutionProvider = null)
 {
     public RuntimeModelSelectionIntent GetSelectionIntent(RuntimeStage stage)
     {
@@ -136,7 +138,8 @@ public static class RuntimeModelRequestFactory
             SeparationModelOverride: settings.SeparationModelOverride,
             ModelVariantOverrides: settings.ModelVariantOverrides,
             RequirePreferredExecutionProviders: settings.RequirePreferredExecutionProviders,
-            VadModelAlias: ResolveVadAlias(settings, explicitPreferences)));
+            VadModelAlias: ResolveVadAlias(settings, explicitPreferences),
+            PreferredExecutionProvider: settings.PreferredExecutionProvider));
     }
 
     private static RuntimeModelSelections CaptureSettingsSelectionIntents(StudioSettings settings,
@@ -391,7 +394,8 @@ public static class RuntimeModelRequestFactory
             selections.ModelVariantOverrides,
             selections.RequirePreferredExecutionProviders,
             selections.VadModelAlias,
-            selections.SpeechEnhancementModelAlias);
+            selections.SpeechEnhancementModelAlias,
+            selections.PreferredExecutionProvider);
     }
 
     public static InferenceModelPreferences CreateModelPreferences(RuntimeModelSelections selections) =>
@@ -575,6 +579,14 @@ public static class RuntimeModelRequestFactory
         };
 
     public static ExecutionProviderKind? ResolvePreferredExecutionProvider(
+        RuntimeModelRequestOptions options,
+        RuntimeStage stage)
+    {
+        ExecutionProviderKind? stagePreference = ResolveStageExecutionProviderOverride(options, stage);
+        return stagePreference ?? options.PreferredExecutionProvider;
+    }
+
+    private static ExecutionProviderKind? ResolveStageExecutionProviderOverride(
         RuntimeModelRequestOptions options,
         RuntimeStage stage)
     {
@@ -810,7 +822,7 @@ public static class RuntimeModelRequestFactory
     private static bool IsPreferredExecutionProviderRequired(
         RuntimeModelRequestOptions options,
         RuntimeStage stage) =>
-        ResolvePreferredExecutionProvider(options, stage) is not null
+        ResolveStageExecutionProviderOverride(options, stage) is not null
         && (options.IsDevBuild || options.RequirePreferredExecutionProviders);
 
     private static bool RequiresExplicitAsrModelAlias(RuntimeModelRequestOptions options) =>

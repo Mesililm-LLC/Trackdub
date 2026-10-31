@@ -148,6 +148,28 @@ public sealed class RuntimeModelRequestFactoryTests
     }
 
     [Fact]
+    public void CreateSelectionsFromSettings_applies_global_provider_before_stage_overrides()
+    {
+        StudioSettings settings = StudioSettings.Default with
+        {
+            AsrModelOverride = AsrModelOverride.GenAi,
+            PreferredExecutionProvider = ExecutionProviderKind.DirectMl,
+            HardwareOverrides = new Dictionary<string, ExecutionProviderKind>
+            {
+                ["AsrGenAi"] = ExecutionProviderKind.Cpu,
+                ["Tts"] = ExecutionProviderKind.TensorRTRtx,
+            },
+        };
+
+        RuntimeModelSelections selections = RuntimeModelRequestFactory.CreateSelectionsFromSettings(settings, isDevBuild: true);
+        AssertSelectionPreferences(selections);
+
+        InferenceModelPreferences preferences = RuntimeModelRequestFactory.CreateModelPreferences(selections);
+        AssertGlobalPreferenceIsSoft(preferences);
+        AssertStageOverridesRemainRequired(preferences);
+    }
+
+    [Fact]
     public void CreateSelectionsFromSettings_uses_stage_aliases_from_starter_pack()
     {
         StudioSettings settings = StudioSettings.Default with
@@ -492,5 +514,31 @@ public sealed class RuntimeModelRequestFactoryTests
         Assert.Equal(RuntimeStage.Tts, request.Stage);
         Assert.Equal("cosyvoice-300m", request.PreferredModelAlias);
         Assert.True(request.RequirePreferredModelAlias);
+    }
+
+    private static void AssertSelectionPreferences(RuntimeModelSelections selections)
+    {
+        Assert.Equal(ExecutionProviderKind.DirectMl, selections.PreferredExecutionProvider);
+        Assert.Equal(ExecutionProviderKind.Cpu, selections.HardwareOverrides["AsrGenAi"]);
+        Assert.Equal(ExecutionProviderKind.TensorRTRtx, selections.HardwareOverrides["Tts"]);
+    }
+
+    private static void AssertGlobalPreferenceIsSoft(InferenceModelPreferences preferences)
+    {
+        Assert.Equal(ExecutionProviderKind.DirectMl, preferences.GetPreferredExecutionProvider(RuntimeStage.Vad));
+        Assert.Equal(ExecutionProviderKind.DirectMl, preferences.GetPreferredExecutionProvider(RuntimeStage.Translation));
+        AssertGlobalPreferenceDoesNotRequireProvider(preferences);
+    }
+
+    private static void AssertGlobalPreferenceDoesNotRequireProvider(InferenceModelPreferences preferences)
+    {
+        Assert.False(preferences.RequiresPreferredExecutionProvider(RuntimeStage.Vad));
+        Assert.False(preferences.RequiresPreferredExecutionProvider(RuntimeStage.Translation));
+    }
+
+    private static void AssertStageOverridesRemainRequired(InferenceModelPreferences preferences)
+    {
+        Assert.True(preferences.RequiresPreferredExecutionProvider(RuntimeStage.Asr));
+        Assert.True(preferences.RequiresPreferredExecutionProvider(RuntimeStage.Tts));
     }
 }
