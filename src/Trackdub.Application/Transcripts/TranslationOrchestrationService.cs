@@ -1184,5 +1184,4 @@ public sealed partial class TranslationOrchestrationService(
         return new TranslationStreamCommit(request.RunId, snapshotId, request.SourceRevisionId,
             request.TranslationRequest.Segments.Select(segment => segment.Index).ToArray(), collected);
     }
-
 }
