@@ -205,6 +205,23 @@ public sealed class RuntimeModelRequestFactoryTests
     }
 
     [Fact]
+    public void CreateDiarizationRequest_maps_undefined_stage_override_to_automatic_selection()
+    {
+        var options = new RuntimeModelRequestOptions(
+            AsrModelOverride: AsrModelOverride.Auto,
+            IsDevBuild: true,
+            HardwareOverrides: new Dictionary<string, ExecutionProviderKind>
+            {
+                [nameof(RuntimeStage.Diarization)] = (ExecutionProviderKind)int.MaxValue,
+            });
+
+        RuntimeModelRequest request = RuntimeModelRequestFactory.CreateDiarizationRequest(options);
+
+        Assert.Null(request.PreferredExecutionProvider);
+        Assert.False(request.RequirePreferredExecutionProvider);
+    }
+
+    [Fact]
     public void CreateSelectionsFromSettings_uses_stage_aliases_from_starter_pack()
     {
         StudioSettings settings = StudioSettings.Default with
