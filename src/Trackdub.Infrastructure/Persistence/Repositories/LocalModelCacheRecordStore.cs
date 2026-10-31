@@ -259,11 +259,17 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
         }
     }
 
-    // errno 35 is EWOULDBLOCK on macOS; on Linux it is EDEADLK, which must not be retried.
-    private static bool IsLockContention(IOException ex) =>
-        (ex.HResult & 0xffff) is 11 or 32 or 33
-        || (OperatingSystem.IsMacOS() && (ex.HResult & 0xffff) == 35)
-        || ex.Message.Contains("used by another process", StringComparison.OrdinalIgnoreCase);
+    // Each code signals contention only on the platform where it means that: Windows sharing or
+    // lock violations, EWOULDBLOCK on Linux (11) and macOS (35). Elsewhere the same numbers mean
+    // other errors (for example EDEADLK or EPIPE), which must not be retried.
+    private static bool IsLockContention(IOException ex)
+    {
+        int code = ex.HResult & 0xffff;
+        return (OperatingSystem.IsWindows() && (code is 32 or 33))
+            || (OperatingSystem.IsLinux() && code == 11)
+            || (OperatingSystem.IsMacOS() && code == 35)
+            || ex.Message.Contains("used by another process", StringComparison.OrdinalIgnoreCase);
+    }
 
     private sealed class IndexLocks(List<FileStream> locks) : IDisposable
     {
