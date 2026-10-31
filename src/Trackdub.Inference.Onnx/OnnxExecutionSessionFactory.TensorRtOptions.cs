@@ -322,6 +322,8 @@ internal static partial class OnnxExecutionSessionFactory
         // Hash the full identity so distinct fingerprints (for example GPU model names that differ
         // only in punctuation) always map to distinct directories. A character-replacement scheme
         // is not injective and could let two hardware identities share an engine directory.
+        // This changes the directory for every identity, so existing classic-trt directories are
+        // no longer read: engines recompile once, and `trackdub cache clear` removes the stale ones.
         byte[] digest = System.Security.Cryptography.SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(environmentFingerprint.Value));
         return Convert.ToHexString(digest).ToLowerInvariant();
