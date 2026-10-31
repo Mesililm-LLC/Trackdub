@@ -1,3 +1,28 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Globalization;
+using System.Linq;
+using System.Runtime.InteropServices;
+using Microsoft.Extensions.Logging;
+using Trackdub.Contracts;
+using Trackdub.Contracts.ApplicationContracts;
+using Trackdub.Contracts.Benchmarking;
+using Trackdub.Domain;
+using Trackdub.Inference.Onnx.Dnnl;
+using Trackdub.Inference.Onnx.EpContext;
+using Trackdub.Inference.Onnx.ExecutionProviders;
+using Trackdub.Inference.Onnx.Pool;
+#if WINDOWS
+using Trackdub.Inference.Onnx.WindowsMl;
+#endif
+using Trackdub.Inference.Onnx.Migraphx;
+using Trackdub.Inference.Onnx.TensorRtRtx;
+using Trackdub.Inference.Runtime.Migraphx;
+using Trackdub.Inference.Runtime.TensorRtRtx;
+using Trackdub.Inference.Runtime.WinMlCatalog;
+using Trackdub.Inference.Runtime.Planning;
+using Microsoft.ML.OnnxRuntime;
+
 namespace Trackdub.Inference.Onnx;
 
 internal static partial class OnnxExecutionSessionFactory
