@@ -252,12 +252,16 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
                 // Keep the lock file in place: deleting it would allow another process to lock a different inode.
                 return new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
             }
-            catch (IOException ex) when ((ex.HResult & 0xffff) is 11 or 32 or 33)
+            catch (IOException ex) when (IsLockContention(ex))
             {
                 await Task.Delay(50, cancellationToken).ConfigureAwait(false);
             }
         }
     }
+
+    private static bool IsLockContention(IOException ex) =>
+        (ex.HResult & 0xffff) is 11 or 32 or 33 or 35
+        || ex.Message.Contains("used by another process", StringComparison.OrdinalIgnoreCase);
 
     private sealed class IndexLocks(List<FileStream> locks) : IDisposable
     {
