@@ -91,11 +91,12 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
         try
         {
             string destinationIndexPath = Path.Join(destinationDirectory, "model-cache-records.json");
-            secondaryIndexPath = destinationIndexPath;
             IReadOnlyList<LocalModelCacheRecord> sourceRecords = Load();
             IReadOnlyList<LocalModelCacheRecord> destinationRecords = LoadIndex(destinationIndexPath);
             if (sourceRecords.Count == 0 && destinationRecords.Count == 0)
             {
+                // Nothing to copy, but still mirror future writes to the new directory.
+                secondaryIndexPath = destinationIndexPath;
                 return;
             }
 
@@ -105,6 +106,9 @@ public sealed class LocalModelCacheRecordStore(TrackdubStoragePaths storagePaths
                 await WriteIndexAsync(storagePaths.ModelCacheIndexPath, combined, cancellationToken).ConfigureAwait(false);
                 Interlocked.Increment(ref revision);
                 await WriteIndexAsync(destinationIndexPath, combined, cancellationToken).ConfigureAwait(false);
+                // Arm the mirror only after the destination copy succeeds so a failed write
+                // does not leave later SaveAsync calls targeting an unwritable directory.
+                secondaryIndexPath = destinationIndexPath;
             }
         }
         finally

@@ -27,6 +27,19 @@ public sealed class FfmpegSequenceRenderer : ISequenceExportRenderer
     {
     }
 
+    public FfmpegSequenceRenderer(
+        IMediaProbe mediaProbe,
+        IMediaGpuHintProvider? gpuHintProvider,
+        string? ffmpegPath = null)
+        : this(
+            new ProcessRunner(),
+            mediaProbe,
+            new FfmpegVideoEncoderCapabilityService(ffmpegPath),
+            gpuHintProvider,
+            ffmpegPath)
+    {
+    }
+
     internal FfmpegSequenceRenderer(
         IProcessRunner processRunner,
         IMediaProbe mediaProbe,

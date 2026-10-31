@@ -145,6 +145,42 @@ public sealed class SequenceExportDeliveryServiceTests
         Assert.Empty(renderer.Plans);
     }
 
+    [Fact]
+    public async Task Selected_export_rejects_burn_in_subtitles_until_they_are_rebased()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TemporaryFiles();
+        SequenceExportPlan plan = CreatePlan(files, out Guid selectedPlacementId) with
+        {
+            BurnInSubtitlePath = files.Create("sequence.srt")
+        };
+        var renderer = new RecordingSequenceRenderer();
+        var service = new SequenceExportDeliveryService(renderer, new FakeMediaProbe());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.ExportAsync(plan, selectedPlacementId, cancellationToken));
+
+        Assert.Empty(renderer.Plans);
+    }
+
+    [Fact]
+    public async Task Rendered_output_shorter_than_planned_sequence_is_blocked()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TemporaryFiles();
+        SequenceExportPlan plan = CreatePlan(files, out _);
+        var renderer = new RecordingSequenceRenderer();
+        var probe = new FakeMediaProbe { Snapshot = OutputSnapshot(durationSeconds: 4.5d) };
+        var tierGate = new RecordingTierGate(maxDurationSeconds: 60, requiresWatermark: false);
+        var service = new SequenceExportDeliveryService(renderer, probe, tierGate);
+
+        SequenceExportDeliveryResult result = await service.ExportAsync(plan, cancellationToken: cancellationToken);
+
+        AssertDurationBlocked(result);
+        Assert.False(File.Exists(plan.OutputPath));
+        Assert.Empty(Directory.EnumerateFiles(files.Root, "*.partial.mp4"));
+    }
+
     private static SequenceExportPlan CreatePlan(TemporaryFiles files, out Guid selectedPlacementId)
     {
         Guid projectId = Guid.NewGuid();

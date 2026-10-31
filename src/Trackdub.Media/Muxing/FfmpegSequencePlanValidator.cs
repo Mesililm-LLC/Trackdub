@@ -17,6 +17,7 @@ internal static class FfmpegSequencePlanValidator
         ValidateSequenceFrame(plan.Sequence);
         ValidateOutputFrameRate(plan.OutputFrameRate);
         ValidateOptions(plan);
+        ValidateOutputContainerExtension(plan);
         ValidatePlacementAssets(plan);
         ValidateOutputInputs(plan);
         ValidateSubtitleInput(plan);
@@ -61,6 +62,22 @@ internal static class FfmpegSequencePlanValidator
         if (!Enum.IsDefined(plan.AudioMode))
         {
             throw new ArgumentOutOfRangeException(nameof(plan.AudioMode));
+        }
+    }
+
+    private static void ValidateOutputContainerExtension(SequenceExportPlan plan)
+    {
+        string expectedExtension = plan.Container switch
+        {
+            ExportOutputContainer.Mp4 => ".mp4",
+            ExportOutputContainer.Mkv => ".mkv",
+            _ => throw new ArgumentOutOfRangeException(nameof(plan.Container))
+        };
+        if (!string.Equals(Path.GetExtension(plan.OutputPath), expectedExtension, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                $"The output path extension must match the selected {plan.Container} container.",
+                nameof(plan.OutputPath));
         }
     }
 

@@ -52,10 +52,53 @@ internal static class SequenceExportOutputPathValidator
 
     private static void EnsureDifferentPath(string outputPath, string? inputPath, string errorMessage)
     {
-        if (!string.IsNullOrWhiteSpace(inputPath) &&
-            FilePathComparison.AreSame(outputPath, Path.GetFullPath(inputPath)))
+        if (string.IsNullOrWhiteSpace(inputPath))
+        {
+            return;
+        }
+
+        // Compare resolved filesystem identity, not just normalized strings: an input that is
+        // a symlink (or lives under a symlinked directory) can resolve to the requested output,
+        // and publishing over it would destroy the source media.
+        if (FilePathComparison.AreSame(ResolveRealPath(outputPath), ResolveRealPath(inputPath)))
         {
             throw new InvalidOperationException(errorMessage);
         }
+    }
+
+    private static string ResolveRealPath(string path)
+    {
+        string fullPath = Path.GetFullPath(path);
+        string root = Path.GetPathRoot(fullPath) ?? string.Empty;
+        string[] segments = fullPath[root.Length..].Split(
+            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+            StringSplitOptions.RemoveEmptyEntries);
+        string current = root;
+        foreach (string segment in segments)
+        {
+            current = ResolveLink(Path.Join(current, segment));
+        }
+
+        return current;
+    }
+
+    private static string ResolveLink(string path)
+    {
+        try
+        {
+            FileSystemInfo info = Directory.Exists(path) ? new DirectoryInfo(path) : new FileInfo(path);
+            if (info.Exists && info.LinkTarget is not null &&
+                info.ResolveLinkTarget(returnFinalTarget: true) is { } target)
+            {
+                return Path.GetFullPath(target.FullName);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // An unresolvable link falls back to its normalized path; the string comparison
+            // still rejects the obvious same-path case.
+        }
+
+        return path;
     }
 }

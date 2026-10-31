@@ -332,7 +332,8 @@ public static class TrackdubStoragePathResolver
 
     private static string? ReadDefaultModelCacheDirectory(JsonDocument settings)
     {
-        if (!settings.RootElement.TryGetProperty("defaultModelCacheDirectory", out JsonElement value) ||
+        if (settings.RootElement.ValueKind != JsonValueKind.Object ||
+            !settings.RootElement.TryGetProperty("defaultModelCacheDirectory", out JsonElement value) ||
             value.ValueKind != JsonValueKind.String)
         {
             return null;

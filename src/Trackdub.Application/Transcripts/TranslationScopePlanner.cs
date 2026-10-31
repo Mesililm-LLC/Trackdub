@@ -10,8 +10,20 @@ public static class TranslationScopePlanner
         TranslationRunScope scope,
         IReadOnlyList<TranscriptSegment> source,
         IReadOnlyList<TranslatedSegment> existing,
-        TranslationRevision? previousRevision) =>
-        new(scope, Select(scope, source, existing), existing, previousRevision);
+        TranslationRevision? previousRevision)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(existing);
+
+        // Deleted transcript segments are renumbered, so a prior revision can still carry
+        // translations for indices that no longer exist in the current source. Preserving
+        // those would publish a revision with more segments than the transcript.
+        HashSet<int> sourceIndices = source.Select(static segment => segment.SegmentIndex).ToHashSet();
+        IReadOnlyList<TranslatedSegment> currentExisting = existing
+            .Where(segment => sourceIndices.Contains(segment.SegmentIndex))
+            .ToArray();
+        return new(scope, Select(scope, source, currentExisting), currentExisting, previousRevision);
+    }
 
     public static IReadOnlyList<TranscriptSegment> Select(
         TranslationRunScope scope,

@@ -215,6 +215,14 @@ public sealed partial class TranslationOrchestrationService(
             await PrepareTranslationRunAsync(currentState, request, cancellationToken).ConfigureAwait(false);
         if (preparation is null)
         {
+            // Record a benign skipped run so the pipeline engine can bind this invocation to
+            // a stage row instead of reporting STAGE_RUN_MISSING and blocking downstream stages.
+            StageRunRecord skippedTranslationRun = await StageRunHelper
+                .StartAsync(stageRunStore, currentState.ProjectState.Project.Id, StageNames.Translation, cancellationToken)
+                .ConfigureAwait(false);
+            await StageRunHelper
+                .SkipAsync(stageRunStore, skippedTranslationRun, null, StageSkipReasonCodes.ExistingArtifactsValid, cancellationToken)
+                .ConfigureAwait(false);
             PipelineProgressReporter.Skipped(progress, StageNames.Translation,
                 "No translations need updating.", DateTimeOffset.UtcNow - progressStartedAt);
             return;
@@ -359,7 +367,7 @@ public sealed partial class TranslationOrchestrationService(
                     segment.StartSeconds,
                     segment.EndSeconds,
                     text,
-                    hasSourceSegment
+                    hasText && hasSourceSegment
                         ? TranscriptWorkflowUtilities.ComputeSourceSegmentHash(sourceSegment!)
                         : null) with
                 { Origin = TranslationSegmentOrigin.Generated };
@@ -397,7 +405,7 @@ public sealed partial class TranslationOrchestrationService(
                 new AtomicRevisionCommitRequest(translationRevision, scopePlan.PreviousRevision?.Id, revisionSegments, streamCommit),
                 (revision, ct) => artifactWriter.PrepareTranslationArtifactAsync(
                     currentState.ProjectState.Project.Id, TranscriptWorkflowUtilities.GetRequiredMediaAsset(currentState),
-                    revision, translatedSegments, translationStageRun.Id, "generated-translation", ct),
+                    revision, revisionSegments, translationStageRun.Id, "generated-translation", ct),
                 cancellationToken).ConfigureAwait(false);
 
             if (degradationWriter is not null)
@@ -610,9 +618,10 @@ public sealed partial class TranslationOrchestrationService(
 
             TranslatedTextSegment? translatedTextSegment = translatedTextSegments
                 .FirstOrDefault(segment => segment.Index == sourceSegment.SegmentIndex);
-            string replacementText = translatedTextSegment is null || string.IsNullOrWhiteSpace(translatedTextSegment.Text)
-                ? sourceSegment.Text
-                : translatedTextSegment.Text;
+            bool hasUsableEngineText = !string.IsNullOrWhiteSpace(translatedTextSegment?.Text);
+            string replacementText = hasUsableEngineText
+                ? translatedTextSegment!.Text
+                : sourceSegment.Text;
 
             int nextRevisionNumber = await translationRepository.GetNextRevisionNumberAsync(
                 currentState.ProjectState.Project.Id,
@@ -638,9 +647,11 @@ public sealed partial class TranslationOrchestrationService(
                 sourceSegment.StartSeconds,
                 sourceSegment.EndSeconds,
                 replacementText,
-                TranscriptWorkflowUtilities.ComputeSourceSegmentHash(sourceSegment)) with
+                hasUsableEngineText
+                    ? TranscriptWorkflowUtilities.ComputeSourceSegmentHash(sourceSegment)
+                    : null) with
             { Origin = TranslationSegmentOrigin.Generated };
-            if (!string.IsNullOrWhiteSpace(translatedTextSegment?.Text))
+            if (hasUsableEngineText)
             {
                 replacementSegment = await AlignTranslatedWordsAsync(
                     replacementSegment,
@@ -749,9 +760,12 @@ public sealed partial class TranslationOrchestrationService(
             throw new InvalidOperationException("Translation edits were based on a different target language.");
         }
 
-        Dictionary<int, string> replacements = request.Segments.ToDictionary(
-            segment => segment.SegmentIndex,
-            segment => segment.Text);
+        // Trim before comparing so whitespace-only edits are treated as unchanged and do not
+        // drop word alignment or mark TTS takes stale. Empty results are ignored entirely.
+        Dictionary<int, string> replacements = request.Segments
+            .Select(segment => (segment.SegmentIndex, Text: segment.Text.Trim()))
+            .Where(entry => entry.Text.Length > 0)
+            .ToDictionary(entry => entry.SegmentIndex, entry => entry.Text);
         int nextRevisionNumber = await translationRepository.GetNextRevisionNumberAsync(
             currentState.ProjectState.Project.Id,
             targetLanguage,

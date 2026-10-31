@@ -110,14 +110,15 @@ internal sealed class FfmpegSequenceMediaRangeValidator(IMediaProbe mediaProbe)
             return containerDuration;
         }
 
-        IEnumerable<double> streamDurations = streams.Select(stream => stream switch
+        // The render command maps stream 0 of each type (:v:0 / :a:0), so validate that
+        // stream's duration rather than the longest stream in the container.
+        double duration = streams[0] switch
         {
             MediaAudioStream audio => audio.DurationSeconds,
             MediaVideoStream video => video.DurationSeconds,
             _ => 0d
-        });
-        double duration = streamDurations.Where(double.IsFinite).DefaultIfEmpty(0d).Max();
-        return duration > 0d ? duration : containerDuration;
+        };
+        return double.IsFinite(duration) && duration > 0d ? duration : containerDuration;
     }
 
     private sealed record PlacementMediaContext(

@@ -96,7 +96,51 @@ public sealed partial class OrchestrationServiceTests
             TestContext.Current.CancellationToken);
 
         Assert.Single(context.TranslationRepository.Revisions);
-        Assert.Empty(context.StageRunStore.All);
+        StageRunRecord skippedRun = Assert.Single(context.StageRunStore.All);
+        Assert.Equal(StageNames.Translation, skippedRun.StageName);
+        Assert.Equal(StageRunStatus.Skipped, skippedRun.Status);
+        Assert.Equal(StageSkipReasonCodes.ExistingArtifactsValid, skippedRun.FailureReason);
+    }
+
+    [Fact]
+    public async Task Scoped_translation_keeps_generated_segment_whose_source_hash_is_current()
+    {
+        var engine = new FakeTranslationEngine((_, segment) => $"new:{segment.Index}");
+        TranslationServiceContext context = CreateTranslationServiceContext(engine);
+        TranscriptProjectState state = CreateTranslatedProjectStateWithWords();
+        string currentHash = TranscriptWorkflowUtilities.ComputeSourceSegmentHash(state.TranscriptSegments[0]);
+        TranslatedSegment upToDate = state.TranslatedSegments[0] with
+        {
+            Origin = TranslationSegmentOrigin.Generated,
+            SourceSegmentHash = currentHash,
+        };
+        TranslatedSegment outdated = state.TranslatedSegments[1] with
+        {
+            Origin = TranslationSegmentOrigin.Generated,
+            SourceSegmentHash = "stale",
+        };
+        context.TranslationRepository.Seed(state.CurrentTranslationRevision!, [upToDate, outdated]);
+
+        await context.Service.GenerateTranslationAsync(state,
+            new GenerateTranslationRequest("en", "es", Scope: TranslationRunScope.MissingOrOutdated),
+            TestContext.Current.CancellationToken);
+
+        TranslationRevision revision = Assert.Single(context.TranslationRepository.Revisions, item => item.RevisionNumber == 2);
+        IReadOnlyList<TranslatedSegment> result = await context.TranslationRepository
+            .GetSegmentsAsync(revision.Id, TestContext.Current.CancellationToken);
+        Assert.Collection(
+            result.OrderBy(static segment => segment.SegmentIndex),
+            kept =>
+            {
+                Assert.Equal(upToDate.Text, kept.Text);
+                Assert.Equal(TranslationSegmentOrigin.Generated, kept.Origin);
+                Assert.Equal(currentHash, kept.SourceSegmentHash);
+            },
+            regenerated =>
+            {
+                Assert.Equal("new:1", regenerated.Text);
+                Assert.Equal(TranslationSegmentOrigin.Generated, regenerated.Origin);
+            });
     }
 
     [Fact]
