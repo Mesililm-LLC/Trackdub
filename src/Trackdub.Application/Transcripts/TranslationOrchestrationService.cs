@@ -196,13 +196,6 @@ public sealed partial class TranslationOrchestrationService(
         string? normalizedTargetLanguage =
             TranscriptWorkflowUtilities.NormalizeTranslationTargetLanguageCodeOrNull(targetLanguage);
         ProjectUiSettings currentUiSettings = currentState.ProjectState.UiSettings?.Normalize() ?? new ProjectUiSettings();
-        if (string.Equals(
-                currentUiSettings.SelectedTranslationTargetLanguage,
-                normalizedTargetLanguage,
-                StringComparison.Ordinal))
-        {
-            return;
-        }
 
         await _manifestLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -211,7 +204,15 @@ public sealed partial class TranslationOrchestrationService(
                 currentState.ProjectState.Project,
                 currentState.TranscriptLanguage,
                 cancellationToken).ConfigureAwait(false);
-            ProjectUiSettings uiSettings = (manifest.UiSettings ?? currentUiSettings).Normalize() with
+            // Compare against the manifest under the lock: the loaded state can be stale if another
+            // session changed the target after it was read.
+            ProjectUiSettings baseSettings = (manifest.UiSettings ?? currentUiSettings).Normalize();
+            if (string.Equals(baseSettings.SelectedTranslationTargetLanguage, normalizedTargetLanguage, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            ProjectUiSettings uiSettings = baseSettings with
             {
                 SelectedTranslationTargetLanguage = normalizedTargetLanguage,
             };

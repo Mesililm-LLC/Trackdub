@@ -834,7 +834,7 @@ public static class RuntimeModelRequestFactory
             _ => stage.ToString().Trim().ToLowerInvariant()
         };
 
-    private static bool IsPreferredExecutionProviderRequired(
+    public static bool IsPreferredExecutionProviderRequired(
         RuntimeModelRequestOptions options,
         RuntimeStage stage) =>
         ResolveStageExecutionProviderOverride(options, stage) is not null

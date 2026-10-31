@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Trackdub.Contracts;
 using Trackdub.Contracts.ApplicationContracts;
+using Trackdub.Infrastructure.Persistence.Repositories;
 
 namespace Trackdub.Infrastructure.Settings;
 
@@ -55,9 +56,13 @@ public sealed class JsonStudioSettingsService(
         {
             DefaultModelCacheDirectory = ResolveSavedModelCacheDirectory(normalized.DefaultModelCacheDirectory),
         };
+        // Hold a settings lock across the migration and the publish so concurrent saves cannot
+        // interleave: each publishes its own content after its matching migration.
+        using FileStream saveLock = await LocalModelCacheRecordStore.AcquireFileLockAsync(
+            storagePaths.SettingsPath + ".lock", cancellationToken).ConfigureAwait(false);
         Directory.CreateDirectory(storagePaths.RootDirectory);
 
-        string tempPath = $"{storagePaths.SettingsPath}.tmp";
+        string tempPath = $"{storagePaths.SettingsPath}.{Guid.NewGuid():N}.tmp";
         await using (FileStream stream = File.Create(tempPath))
         {
             await JsonSerializer.SerializeAsync(stream, normalized, JsonOptions, cancellationToken).ConfigureAwait(false);
